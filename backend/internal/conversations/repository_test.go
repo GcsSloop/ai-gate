@@ -81,3 +81,37 @@ func TestSQLiteRepositoryConversationMessageAndRunPersistence(t *testing.T) {
 		t.Fatalf("StreamOffset = %d, want 42", runs[0].StreamOffset)
 	}
 }
+
+func TestSQLiteRepositoryListConversations(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := conversations.NewSQLiteRepository(store.DB())
+
+	for i := 0; i < 3; i++ {
+		if _, err := repo.CreateConversation(conversations.Conversation{
+			ClientID:             "client",
+			TargetProviderFamily: "openai",
+			DefaultModel:         "gpt-4.1",
+			State:                "active",
+		}); err != nil {
+			t.Fatalf("CreateConversation(%d) returned error: %v", i, err)
+		}
+	}
+
+	got, err := repo.ListConversations(1, 2)
+	if err != nil {
+		t.Fatalf("ListConversations returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListConversations returned %d rows, want 2", len(got))
+	}
+	if got[0].ID != 2 {
+		t.Fatalf("first returned conversation id = %d, want 2", got[0].ID)
+	}
+}

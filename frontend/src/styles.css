@@ -1,0 +1,84 @@
+:root {
+  color: #e8ecf3;
+  background:
+    radial-gradient(circle at top left, rgba(64, 115, 255, 0.35), transparent 32%),
+    radial-gradient(circle at bottom right, rgba(0, 195, 161, 0.2), transparent 28%),
+    #09111f;
+  font-family: "IBM Plex Sans", "Helvetica Neue", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: transparent;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  padding: 32px 24px;
+  background: rgba(8, 15, 29, 0.82);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px);
+}
+
+.sidebar h1 {
+  margin: 8px 0 24px;
+  font-size: 32px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #8ea0bf;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 12px;
+}
+
+.nav {
+  display: grid;
+  gap: 12px;
+}
+
+.nav a {
+  color: #ced8eb;
+  text-decoration: none;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.nav a.active {
+  background: linear-gradient(135deg, rgba(52, 126, 255, 0.55), rgba(27, 196, 152, 0.4));
+  color: white;
+}
+
+.content {
+  padding: 32px;
+}
+
+.panel {
+  max-width: 720px;
+  padding: 24px;
+  border-radius: 20px;
+  background: rgba(10, 19, 36, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.25);
+}
+
+.panel h2 {
+  margin-top: 0;
+  font-size: 28px;
+}

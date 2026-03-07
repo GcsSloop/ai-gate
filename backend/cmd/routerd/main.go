@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 
 	"github.com/gcssloop/codex-router/backend/internal/bootstrap"
 	"github.com/gcssloop/codex-router/backend/internal/config"
@@ -15,11 +16,20 @@ func main() {
 	}
 
 	app, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
-		ListenAddr: cfg.ListenAddr,
+		ListenAddr:   cfg.ListenAddr,
+		DatabasePath: cfg.DatabasePath,
 	})
 	if err != nil {
 		log.Fatalf("create app: %v", err)
 	}
+	defer func() {
+		if err := app.Close(); err != nil {
+			log.Printf("close app: %v", err)
+		}
+	}()
 
-	log.Printf("routerd initialized on %s", app.ListenAddr())
+	log.Printf("routerd listening on %s", app.ListenAddr())
+	if err := http.ListenAndServe(app.ListenAddr(), app.Handler()); err != nil {
+		log.Fatalf("serve http: %v", err)
+	}
 }

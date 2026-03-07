@@ -64,3 +64,53 @@ func TestSQLiteRepositorySaveAndGetLatest(t *testing.T) {
 		t.Fatalf("CheckedAt = %v, want %v", got.CheckedAt, checkedAt)
 	}
 }
+
+func TestSQLiteRepositoryListLatest(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+
+	if err := repo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        10,
+		QuotaRemaining: 500,
+		CheckedAt:      time.Date(2026, 3, 7, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Save(account 1, old) returned error: %v", err)
+	}
+	if err := repo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        8,
+		QuotaRemaining: 300,
+		CheckedAt:      time.Date(2026, 3, 7, 11, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Save(account 1, new) returned error: %v", err)
+	}
+	if err := repo.Save(usage.Snapshot{
+		AccountID:      2,
+		Balance:        5,
+		QuotaRemaining: 200,
+		CheckedAt:      time.Date(2026, 3, 7, 9, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Save(account 2) returned error: %v", err)
+	}
+
+	got, err := repo.ListLatest()
+	if err != nil {
+		t.Fatalf("ListLatest returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListLatest returned %d rows, want 2", len(got))
+	}
+	if got[0].AccountID != 1 || got[0].Balance != 8 {
+		t.Fatalf("first latest snapshot = %+v, want latest account 1 snapshot", got[0])
+	}
+}

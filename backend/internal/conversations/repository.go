@@ -30,6 +30,47 @@ func (r *SQLiteRepository) CreateConversation(conversation Conversation) (int64,
 	return result.LastInsertId()
 }
 
+func (r *SQLiteRepository) ListConversations(offset, limit int) ([]Conversation, error) {
+	rows, err := r.db.Query(
+		`SELECT id, client_id, target_provider_family, default_model, current_account_id, state, created_at
+		 FROM conversations
+		 ORDER BY id ASC
+		 LIMIT ? OFFSET ?`,
+		limit,
+		offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query conversations: %w", err)
+	}
+	defer rows.Close()
+
+	var items []Conversation
+	for rows.Next() {
+		var item Conversation
+		var currentAccount sql.NullInt64
+		if err := rows.Scan(
+			&item.ID,
+			&item.ClientID,
+			&item.TargetProviderFamily,
+			&item.DefaultModel,
+			&currentAccount,
+			&item.State,
+			&item.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan conversation: %w", err)
+		}
+		if currentAccount.Valid {
+			value := currentAccount.Int64
+			item.CurrentAccountID = &value
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate conversations: %w", err)
+	}
+	return items, nil
+}
+
 func (r *SQLiteRepository) AppendMessage(message Message) error {
 	_, err := r.db.Exec(
 		`INSERT INTO messages (conversation_id, role, content, sequence_no) VALUES (?, ?, ?, ?)`,
