@@ -55,7 +55,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	mux.Handle("/monitoring/overview", api.NewMonitoringHandler(accountRepo, usageRepo))
 	mux.Handle("/conversations", conversationsHandler)
 	mux.Handle("/conversations/", conversationsHandler)
-	mux.Handle("/v1/chat/completions", api.NewGatewayHandler())
+	mux.Handle("/v1/chat/completions", api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo))
 
 	return &App{listenAddr: cfg.ListenAddr, handler: mux, store: store}, nil
 }
