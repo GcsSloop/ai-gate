@@ -16,8 +16,9 @@ func main() {
 	}
 
 	app, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
-		ListenAddr:   cfg.ListenAddr,
-		DatabasePath: cfg.DatabasePath,
+		ListenAddr:        cfg.ListenAddr,
+		DatabasePath:      cfg.DatabasePath,
+		SchedulerInterval: cfg.SchedulerInterval,
 	})
 	if err != nil {
 		log.Fatalf("create app: %v", err)

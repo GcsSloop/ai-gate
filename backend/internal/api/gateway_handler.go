@@ -2,10 +2,13 @@ package api
 
 import (
 	"bytes"
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
@@ -13,6 +16,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/providers"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/routing"
+	streamproxy "github.com/gcssloop/codex-router/backend/internal/streaming"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
 
@@ -97,6 +101,11 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Stream {
+		h.serveStream(r.Context(), w, req, body, candidates, conversationID)
+		return
+	}
+
 	var upstreamResponse []byte
 	executor := routing.NewExecutor(h.conversations, func(ctx context.Context, candidate routing.Candidate) error {
 		adapter := provideropenai.NewAdapter(candidate.Account.BaseURL)
@@ -138,4 +147,102 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, bytes.NewReader(upstreamResponse))
+}
+
+func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter, req gatewayopenai.ChatCompletionRequest, body []byte, candidates []routing.Candidate, conversationID int64) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, _ := w.(http.Flusher)
+	writeChunk := func(delta string) error {
+		payload := map[string]any{
+			"choices": []map[string]any{
+				{"delta": map[string]string{"content": delta}},
+			},
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
+	}
+
+	proxy := streamproxy.NewProxy(h.conversations, func(ctx context.Context, attempt streamproxy.Attempt) error {
+		adapter := provideropenai.NewAdapter(attempt.Candidate.Account.BaseURL)
+		upstreamReq, err := adapter.BuildRequest(ctx, providers.Request{
+			Path:   "/chat/completions",
+			Method: http.MethodPost,
+			APIKey: attempt.Candidate.Account.CredentialRef,
+			Body:   body,
+		})
+		if err != nil {
+			return err
+		}
+
+		resp, err := h.client.Do(upstreamReq)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			return providers.HTTPError{StatusCode: resp.StatusCode}
+		}
+
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			if !strings.HasPrefix(line, "data: ") {
+				return errors.New("invalid stream frame")
+			}
+			payload := strings.TrimPrefix(line, "data: ")
+			if payload == "[DONE]" {
+				return nil
+			}
+
+			var frame struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal([]byte(payload), &frame); err != nil {
+				return err
+			}
+			if len(frame.Choices) == 0 {
+				continue
+			}
+			if err := attempt.Emit(frame.Choices[0].Delta.Content); err != nil {
+				return err
+			}
+		}
+		return scanner.Err()
+	})
+
+	output, err := proxy.Execute(ctx, conversationID, candidates, routing.TokenBudget{
+		ProjectedInputTokens:  float64(len(req.Messages) * 500),
+		ProjectedOutputTokens: 1500,
+		SafetyFactor:          1.3,
+		EstimatedCost:         0.01,
+	})
+	if err != nil {
+		_ = writeChunk("[stream failed over and exhausted candidates]")
+		return
+	}
+	_ = writeChunk(output)
+
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	if flusher != nil {
+		flusher.Flush()
+	}
 }

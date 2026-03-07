@@ -101,3 +101,85 @@ func TestGatewayHandlerProxiesToConfiguredAccount(t *testing.T) {
 		t.Fatalf("response model = %v, want %v", response["model"], "gpt-5.2-codex")
 	}
 }
+
+func TestGatewayHandlerStreamsWithFailover(t *testing.T) {
+	t.Parallel()
+
+	firstHit := true
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+
+		if firstHit {
+			firstHit = false
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"))
+			_, _ = w.Write([]byte("data: {broken\n\n"))
+			return
+		}
+
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello world\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for i, name := range []string{"ppchat-a", "ppchat-b"} {
+		if err := accountRepo.Create(accounts.Account{
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   name,
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       upstream.URL + "/v1",
+			CredentialRef: "sk-test",
+			Status:        accounts.StatusActive,
+			Priority:      100 - i,
+		}); err != nil {
+			t.Fatalf("Create(account %d) returned error: %v", i, err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for id := int64(1); id <= 2; id++ {
+		if err := usageRepo.Save(usage.Snapshot{
+			AccountID:      id,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.9,
+		}); err != nil {
+			t.Fatalf("Save(snapshot %d) returned error: %v", id, err)
+		}
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-5.2-codex",
+		"stream":true,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gateway status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("content type = %q, want %q", got, "text/event-stream")
+	}
+	body := rec.Body.String()
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"content":"Hello world"`)) {
+		t.Fatalf("stream body missing failover output: %s", body)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`[DONE]`)) {
+		t.Fatalf("stream body missing done marker: %s", body)
+	}
+}
