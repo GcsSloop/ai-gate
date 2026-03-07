@@ -15,6 +15,7 @@ type Repository interface {
 	GetByID(id int64) (Account, error)
 	Update(account Account) error
 	Delete(id int64) error
+	SetActive(id int64) error
 	UpdateStatus(id int64, status Status) error
 	UpdateCooldown(id int64, until *time.Time) error
 }
@@ -39,8 +40,8 @@ func (r *SQLiteRepository) Create(account Account) error {
 	}
 
 	_, err = r.db.Exec(
-		`INSERT INTO accounts (provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, cooldown_until)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO accounts (provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, cooldown_until)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		account.ProviderType,
 		account.AccountName,
 		account.AuthMode,
@@ -48,6 +49,7 @@ func (r *SQLiteRepository) Create(account Account) error {
 		account.BaseURL,
 		account.Status,
 		account.Priority,
+		boolToInt(account.IsActive),
 		nullTime(account.CooldownUntil),
 	)
 	if err != nil {
@@ -58,7 +60,7 @@ func (r *SQLiteRepository) Create(account Account) error {
 
 func (r *SQLiteRepository) List() ([]Account, error) {
 	records, err := r.db.Query(
-		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, cooldown_until, created_at
+		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, cooldown_until, created_at
 		 FROM accounts
 		 ORDER BY priority DESC, id ASC`,
 	)
@@ -71,6 +73,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 	for records.Next() {
 		var account Account
 		var cooldown sql.NullTime
+		var isActive int
 
 		if err := records.Scan(
 			&account.ID,
@@ -81,11 +84,13 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 			&account.BaseURL,
 			&account.Status,
 			&account.Priority,
+			&isActive,
 			&cooldown,
 			&account.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan account: %w", err)
 		}
+		account.IsActive = isActive == 1
 
 		if cooldown.Valid {
 			value := cooldown.Time.UTC()
@@ -108,13 +113,14 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 
 func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 	row := r.db.QueryRow(
-		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, cooldown_until, created_at
+		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, cooldown_until, created_at
 		 FROM accounts WHERE id = ?`,
 		id,
 	)
 
 	var account Account
 	var cooldown sql.NullTime
+	var isActive int
 	if err := row.Scan(
 		&account.ID,
 		&account.ProviderType,
@@ -124,11 +130,13 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 		&account.BaseURL,
 		&account.Status,
 		&account.Priority,
+		&isActive,
 		&cooldown,
 		&account.CreatedAt,
 	); err != nil {
 		return Account{}, fmt.Errorf("select account: %w", err)
 	}
+	account.IsActive = isActive == 1
 	if cooldown.Valid {
 		value := cooldown.Time.UTC()
 		account.CooldownUntil = &value
@@ -149,13 +157,14 @@ func (r *SQLiteRepository) Update(account Account) error {
 
 	_, err = r.db.Exec(
 		`UPDATE accounts
-		 SET account_name = ?, base_url = ?, credential_ref = ?, status = ?, priority = ?, cooldown_until = ?
+		 SET account_name = ?, base_url = ?, credential_ref = ?, status = ?, priority = ?, is_active = ?, cooldown_until = ?
 		 WHERE id = ?`,
 		account.AccountName,
 		account.BaseURL,
 		credentialRef,
 		account.Status,
 		account.Priority,
+		boolToInt(account.IsActive),
 		nullTime(account.CooldownUntil),
 		account.ID,
 	)
@@ -169,6 +178,37 @@ func (r *SQLiteRepository) Delete(id int64) error {
 	_, err := r.db.Exec(`DELETE FROM accounts WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete account: %w", err)
+	}
+	return nil
+}
+
+func (r *SQLiteRepository) SetActive(id int64) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin set active transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err = tx.Exec(`UPDATE accounts SET is_active = 0 WHERE is_active = 1`); err != nil {
+		return fmt.Errorf("reset active account: %w", err)
+	}
+	result, err := tx.Exec(`UPDATE accounts SET is_active = 1 WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("set active account: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read set active rows affected: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("set active account: id %d not found", id)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit set active transaction: %w", err)
 	}
 	return nil
 }
@@ -218,6 +258,13 @@ func (r *SQLiteRepository) UpdateCooldown(id int64, until *time.Time) error {
 		return fmt.Errorf("update account cooldown: %w", err)
 	}
 	return nil
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func nullTime(value *time.Time) sql.NullTime {

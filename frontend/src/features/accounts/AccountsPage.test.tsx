@@ -12,6 +12,7 @@ describe("AccountsPage", () => {
         auth_mode: "api_key",
         base_url: "https://code.ppchat.vip/v1",
         status: "active",
+        is_active: false,
         priority: 2,
         balance: 12.5,
         quota_remaining: 5000,
@@ -48,30 +49,46 @@ describe("AccountsPage", () => {
         },
       );
 
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(listResponse())
-      .mockResolvedValueOnce(summaryResponse())
-      .mockResolvedValueOnce(new Response(null, { status: 201 }))
-      .mockResolvedValueOnce(listResponse())
-      .mockResolvedValueOnce(summaryResponse())
-      .mockResolvedValueOnce(new Response(null, { status: 201 }))
-      .mockResolvedValueOnce(listResponse())
-      .mockResolvedValueOnce(summaryResponse())
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            ok: true,
-            message: "远端连通性测试成功",
-            details: "模型 gpt-5.4 已返回响应",
-            content: "pong",
-          }),
-          {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(listResponse());
+      }
+      if (url === "/ai-router/api/dashboard/summary") {
+        return Promise.resolve(summaryResponse());
+      }
+      if (url === "/ai-router/api/dashboard/account-stats") {
+        return Promise.resolve(
+          new Response(JSON.stringify([{ account_id: 1, total_calls: 3, models: { "gpt-5.4": 3 } }]), {
             status: 200,
             headers: { "Content-Type": "application/json" },
-          },
-        ),
-      );
+          }),
+        );
+      }
+      if (url === "/ai-router/api/accounts/import-local" && init?.method === "POST") {
+        return Promise.resolve(new Response(null, { status: 201 }));
+      }
+      if (url === "/ai-router/api/accounts" && init?.method === "POST") {
+        return Promise.resolve(new Response(null, { status: 201 }));
+      }
+      if (url === "/ai-router/api/accounts/1/test" && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              ok: true,
+              message: "远端连通性测试成功",
+              details: "模型 gpt-5.4 已返回响应",
+              content: "pong",
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
 
     vi.stubGlobal("fetch", fetchMock);
 
@@ -81,7 +98,9 @@ describe("AccountsPage", () => {
     expect(screen.getByText("本地 Codex 接入说明")).toBeInTheDocument();
     expect(screen.getByText(/base_url = "http:\/\/127\.0\.0\.1:6789\/ai-router\/api"/)).toBeInTheDocument();
     expect(screen.getByText("会话统计")).toBeInTheDocument();
+    expect(screen.getByText("账户调用详情（全量累计）")).toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5.4 × 3")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /添加账户/ }));
     fireEvent.click(await screen.findByText("官方账户"));
@@ -143,5 +162,97 @@ describe("AccountsPage", () => {
 
     expect(await within(testModal).findByText("远端连通性测试成功")).toBeInTheDocument();
     expect(within(testModal).getByText("pong")).toBeInTheDocument();
+  });
+
+  it("highlights active account and allows manual activation", async () => {
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "account-a",
+        auth_mode: "api_key",
+        base_url: "https://a.example/v1",
+        status: "active",
+        is_active: false,
+        priority: 2,
+        balance: 12.5,
+        quota_remaining: 5000,
+        rpm_remaining: 90,
+        tpm_remaining: 80000,
+        health_score: 0.93,
+        recent_error_rate: 0.01,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+      {
+        id: 2,
+        provider_type: "openai-compatible",
+        account_name: "account-b",
+        auth_mode: "api_key",
+        base_url: "https://b.example/v1",
+        status: "active",
+        is_active: true,
+        priority: 1,
+        balance: 12.5,
+        quota_remaining: 5000,
+        rpm_remaining: 90,
+        tpm_remaining: 80000,
+        health_score: 0.93,
+        recent_error_rate: 0.01,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const summary = {
+      total_conversations: 1,
+      active_conversations: 1,
+      total_runs: 1,
+      failover_runs: 0,
+    };
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/dashboard/summary") {
+        return Promise.resolve(new Response(JSON.stringify(summary), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/dashboard/account-stats") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/1" && init?.method === "PUT") {
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AccountsPage />);
+
+    expect(await screen.findByText("account-a")).toBeInTheDocument();
+    const activeRow = screen.getByText("account-b").closest("tr");
+    expect(activeRow).toHaveClass("active-account-row");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "设为激活" })[0]);
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ is_active: true }),
+        }),
+      );
+    });
   });
 });

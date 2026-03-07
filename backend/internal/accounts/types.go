@@ -36,6 +36,7 @@ type Account struct {
 	BaseURL       string
 	Status        Status
 	Priority      int
+	IsActive      bool
 	CooldownUntil *time.Time
 	CreatedAt     time.Time
 }

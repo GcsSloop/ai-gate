@@ -8,6 +8,7 @@ export type AccountRecord = {
   base_url: string;
   status: string;
   priority: number;
+  is_active: boolean;
   cooldown_remaining_seconds?: number;
   balance: number;
   quota_remaining: number;
@@ -38,6 +39,12 @@ export type DashboardSummary = {
   active_conversations: number;
   total_runs: number;
   failover_runs: number;
+};
+
+export type AccountCallStats = {
+  account_id: number;
+  total_calls: number;
+  models: Record<string, number>;
 };
 
 export type AccountTestResult = {
@@ -73,7 +80,7 @@ export async function createAccount(payload: CreateAccountPayload): Promise<void
 
 export async function updateAccount(
   id: number,
-  payload: Partial<CreateAccountPayload> & { account_name?: string; status?: string; priority?: number },
+  payload: Partial<CreateAccountPayload> & { account_name?: string; status?: string; priority?: number; is_active?: boolean },
 ): Promise<void> {
   const response = await fetch(apiPath(`/accounts/${id}`), {
     method: "PUT",
@@ -81,7 +88,8 @@ export async function updateAccount(
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    throw new Error("failed to update account");
+    const details = await response.text();
+    throw new Error(details || "failed to update account");
   }
 }
 
@@ -89,6 +97,14 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
   const response = await fetch(apiPath("/dashboard/summary"));
   if (!response.ok) {
     throw new Error("failed to load dashboard summary");
+  }
+  return response.json();
+}
+
+export async function getAccountCallStats(): Promise<AccountCallStats[]> {
+  const response = await fetch(apiPath("/dashboard/account-stats"));
+  if (!response.ok) {
+    throw new Error("failed to load account call stats");
   }
   return response.json();
 }

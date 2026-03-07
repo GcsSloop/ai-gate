@@ -21,6 +21,7 @@ import type { ColumnsType } from "antd/es/table";
 import { useEffect, useRef, useState, type HTMLAttributes } from "react";
 
 import {
+  getAccountCallStats,
   createAccount,
   deleteAccount,
   getDashboardSummary,
@@ -29,6 +30,7 @@ import {
   testAccount,
   updateAccount,
   type AccountRecord,
+  type AccountCallStats,
   type AccountTestResult,
   type DashboardSummary,
 } from "../../lib/api";
@@ -88,6 +90,7 @@ export function AccountsPage() {
     total_runs: 0,
     failover_runs: 0,
   });
+  const [accountCallStats, setAccountCallStats] = useState<AccountCallStats[]>([]);
   const [addModalMode, setAddModalMode] = useState<AddModalMode>(null);
   const [editingAccount, setEditingAccount] = useState<AccountRecord | null>(null);
   const [testingAccount, setTestingAccount] = useState<AccountRecord | null>(null);
@@ -105,9 +108,14 @@ export function AccountsPage() {
   }, []);
 
   async function refreshAll() {
-    const [accountItems, dashboardSummary] = await Promise.all([listAccounts(), getDashboardSummary()]);
+    const [accountItems, dashboardSummary, callStats] = await Promise.all([
+      listAccounts(),
+      getDashboardSummary(),
+      getAccountCallStats(),
+    ]);
     setAccounts(accountItems);
     setSummary(dashboardSummary);
+    setAccountCallStats(callStats);
   }
 
   async function handleCreateThirdParty(values: { account_name: string; base_url: string; credential_ref: string }) {
@@ -188,17 +196,41 @@ export function AccountsPage() {
     if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) {
       return;
     }
+    const previous = [...accounts];
     const reordered = [...accounts];
     const [moved] = reordered.splice(fromIndex, 1);
     reordered.splice(toIndex, 0, moved);
     setAccounts(reordered);
-    await Promise.all(
-      reordered.map((account, index) =>
-        updateAccount(account.id, { priority: reordered.length - index }),
-      ),
+    try {
+      for (let index = 0; index < reordered.length; index += 1) {
+        const account = reordered[index];
+        await updateAccount(account.id, { priority: reordered.length - index });
+      }
+      void messageApi.success("优先级顺序已更新");
+    } catch (error) {
+      setAccounts(previous);
+      void messageApi.error(error instanceof Error ? error.message : "优先级更新失败，已回滚");
+    }
+  }
+
+  async function handleSetActive(account: AccountRecord) {
+    if (account.is_active) {
+      return;
+    }
+    const previous = [...accounts];
+    setAccounts((items) =>
+      items.map((item) => ({
+        ...item,
+        is_active: item.id === account.id,
+      })),
     );
-    await refreshAll();
-    void messageApi.success("优先级顺序已更新");
+    try {
+      await updateAccount(account.id, { is_active: true });
+      void messageApi.success(`已切换当前激活账户为 ${account.account_name}`);
+    } catch (error) {
+      setAccounts(previous);
+      void messageApi.error(error instanceof Error ? error.message : "切换激活账户失败");
+    }
   }
 
   const columns: ColumnsType<AccountRecord> = [
@@ -214,6 +246,12 @@ export function AccountsPage() {
       render: (_, record) => (
         <div>
           <Text strong>{record.account_name}</Text>
+          {record.is_active ? (
+            <>
+              {" "}
+              <Tag color="green">当前激活</Tag>
+            </>
+          ) : null}
           <br />
           <Text type="secondary">{record.base_url || "OpenAI 官方"}</Text>
           {record.last_total_tokens > 0 || record.primary_used_percent > 0 || record.secondary_used_percent > 0 ? (
@@ -286,6 +324,9 @@ export function AccountsPage() {
       width: 220,
       render: (_, record) => (
         <Space>
+          <Button type="link" disabled={record.is_active} onClick={() => void handleSetActive(record)}>
+            设为激活
+          </Button>
           <Button type="link" onClick={() => openEditModal(record)}>
             编辑
           </Button>
@@ -306,6 +347,53 @@ export function AccountsPage() {
     },
   ];
 
+  type AccountStatsRow = {
+    id: number;
+    account_name: string;
+    total_calls: number;
+    model_stats: Record<string, number>;
+  };
+  const statsByAccount = new Map(accountCallStats.map((item) => [item.account_id, item]));
+  const accountStatsRows: AccountStatsRow[] = accounts.map((account) => {
+    const stats = statsByAccount.get(account.id);
+    return {
+      id: account.id,
+      account_name: account.account_name,
+      total_calls: stats?.total_calls ?? 0,
+      model_stats: stats?.models ?? {},
+    };
+  });
+  const accountStatsColumns: ColumnsType<AccountStatsRow> = [
+    {
+      title: "账户",
+      dataIndex: "account_name",
+    },
+    {
+      title: "调用次数",
+      dataIndex: "total_calls",
+      width: 140,
+    },
+    {
+      title: "模型统计",
+      dataIndex: "model_stats",
+      render: (value: Record<string, number>) => {
+        const entries = Object.entries(value).sort((a, b) => b[1] - a[1]);
+        if (entries.length === 0) {
+          return <Text type="secondary">暂无调用</Text>;
+        }
+        return (
+          <Space wrap>
+            {entries.map(([model, count]) => (
+              <Tag key={model}>
+                {model} × {count}
+              </Tag>
+            ))}
+          </Space>
+        );
+      },
+    },
+  ];
+
   return (
     <div className="dashboard-page">
       {contextHolder}
@@ -314,7 +402,7 @@ export function AccountsPage() {
           <Title level={2} style={{ marginBottom: 8 }}>
             账户列表
           </Title>
-          <Text type="secondary">拖拽行顺序即可调整优先级，顶部账户优先被路由使用。</Text>
+          <Text type="secondary">拖拽顺序仅用于故障切换优先级；当前激活账户由手动切换决定。</Text>
         </div>
         <Dropdown
           menu={{
@@ -354,6 +442,7 @@ requires_openai_auth = true`}</pre>
           columns={columns}
           dataSource={accounts}
           pagination={false}
+          rowClassName={(record) => (record.is_active ? "active-account-row" : "")}
           components={{
             body: {
               row: (props: HTMLAttributes<HTMLTableRowElement> & { "data-row-key"?: string }) => {
@@ -380,6 +469,10 @@ requires_openai_auth = true`}</pre>
             },
           }}
         />
+      </Card>
+
+      <Card title="账户调用详情（全量累计）" variant="borderless" className="summary-card">
+        <Table rowKey="id" columns={accountStatsColumns} dataSource={accountStatsRows} pagination={false} />
       </Card>
 
       <Card title="会话统计" variant="borderless" className="summary-card">

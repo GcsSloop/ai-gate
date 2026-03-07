@@ -55,6 +55,14 @@ body {
   background: #f8fbff !important;
 }
 
+.ant-table-tbody > tr.active-account-row > td {
+  background: #ecfdf3 !important;
+}
+
+.ant-table-tbody > tr.active-account-row:hover > td {
+  background: #dcfce7 !important;
+}
+
 .modal-footer {
   display: flex;
   justify-content: flex-end;

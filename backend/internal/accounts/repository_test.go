@@ -184,3 +184,40 @@ func TestSQLiteRepositoryReadsLegacyPlaintextCredentialRef(t *testing.T) {
 		t.Fatalf("List returned %+v, want legacy plaintext credential", items)
 	}
 }
+
+func TestSQLiteRepositorySetActiveKeepsSingleActiveAccount(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	for _, item := range []accounts.Account{
+		{ProviderType: accounts.ProviderOpenAICompatible, AccountName: "a", AuthMode: accounts.AuthModeAPIKey, CredentialRef: "sk-a", Priority: 2, Status: accounts.StatusActive},
+		{ProviderType: accounts.ProviderOpenAICompatible, AccountName: "b", AuthMode: accounts.AuthModeAPIKey, CredentialRef: "sk-b", Priority: 1, Status: accounts.StatusActive},
+	} {
+		if err := repo.Create(item); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+
+	if err := repo.SetActive(2); err != nil {
+		t.Fatalf("SetActive returned error: %v", err)
+	}
+
+	items, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if !items[1].IsActive {
+		t.Fatal("account id=2 should be active")
+	}
+	if items[0].IsActive {
+		t.Fatal("account id=1 should not be active")
+	}
+}

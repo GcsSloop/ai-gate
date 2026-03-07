@@ -212,7 +212,8 @@ func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 		"base_url":"`+upstream.URL+`/v1",
 		"credential_ref":"sk-updated",
 		"status":"cooldown",
-		"priority":7
+		"priority":7,
+		"is_active":true
 	}`))
 	updateReq.Header.Set("Content-Type", "application/json")
 	updateRec := httptest.NewRecorder()
@@ -233,6 +234,9 @@ func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 	}
 	if listed[0].Priority != 7 {
 		t.Fatalf("Priority = %d, want 7", listed[0].Priority)
+	}
+	if !listed[0].IsActive {
+		t.Fatal("IsActive = false, want true")
 	}
 
 	testReq := httptest.NewRequest(http.MethodPost, "/accounts/1/test", bytes.NewBufferString(`{

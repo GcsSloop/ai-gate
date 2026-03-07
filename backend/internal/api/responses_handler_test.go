@@ -305,6 +305,86 @@ func TestResponsesHandlerProxiesLocalImportedOfficialAccountFromCompletedOutputO
 	}
 }
 
+func TestResponsesHandlerPrefersActiveAccountOverPriority(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-active" {
+			t.Fatalf("authorization = %q, want Bearer sk-active", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "pong"}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, item := range []accounts.Account{
+		{
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "high-priority",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       upstream.URL + "/v1",
+			CredentialRef: "sk-high",
+			Status:        accounts.StatusActive,
+			Priority:      100,
+		},
+		{
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "manual-active",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       upstream.URL + "/v1",
+			CredentialRef: "sk-active",
+			Status:        accounts.StatusActive,
+			Priority:      1,
+			IsActive:      true,
+		},
+	} {
+		if err := accountRepo.Create(item); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for id := int64(1); id <= 2; id++ {
+		if err := usageRepo.Save(usage.Snapshot{
+			AccountID:      id,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.9,
+		}); err != nil {
+			t.Fatalf("Save returned error: %v", err)
+		}
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "pong") {
+		t.Fatalf("body = %s, want pong", rec.Body.String())
+	}
+}
+
 func TestResponsesHandlerPreservesOfficialCompletedOutputItems(t *testing.T) {
 	t.Parallel()
 

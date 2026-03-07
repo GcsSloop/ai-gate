@@ -70,6 +70,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/policy/", api.NewPolicyHandler(policyRepo))
 	apiMux.Handle("/monitoring/overview", api.NewMonitoringHandler(accountRepo, usageRepo))
 	apiMux.Handle("/dashboard/summary", api.NewDashboardHandler(conversationRepo))
+	apiMux.Handle("/dashboard/account-stats", api.NewDashboardHandler(conversationRepo))
 	apiMux.Handle("/conversations", conversationsHandler)
 	apiMux.Handle("/conversations/", conversationsHandler)
 	gatewayHandler := api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo)

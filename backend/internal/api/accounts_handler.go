@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -82,6 +83,7 @@ type updateAccountRequest struct {
 	CredentialRef string          `json:"credential_ref"`
 	Status        accounts.Status `json:"status"`
 	Priority      *int            `json:"priority"`
+	IsActive      *bool           `json:"is_active"`
 }
 
 type accountTestResponse struct {
@@ -150,6 +152,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 		PrimaryResetsAt          *time.Time            `json:"primary_resets_at,omitempty"`
 		SecondaryResetsAt        *time.Time            `json:"secondary_resets_at,omitempty"`
 		Priority                 int                   `json:"priority"`
+		IsActive                 bool                  `json:"is_active"`
 	}
 
 	response := make([]responseItem, 0, len(accountList))
@@ -186,6 +189,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 			PrimaryResetsAt:      snapshot.PrimaryResetsAt,
 			SecondaryResetsAt:    snapshot.SecondaryResetsAt,
 			Priority:             account.Priority,
+			IsActive:             account.IsActive,
 		}
 		if account.CooldownUntil != nil {
 			remaining := int64(account.CooldownUntil.Sub(now).Seconds())
@@ -320,6 +324,16 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.Priority != nil {
 		current.Priority = *req.Priority
+	}
+	if req.IsActive != nil {
+		current.IsActive = *req.IsActive
+		if *req.IsActive {
+			if err := h.repo.SetActive(id); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			log.Printf("accounts: active account updated account_id=%d account_name=%q", current.ID, current.AccountName)
+		}
 	}
 
 	if err := h.repo.Update(current); err != nil {

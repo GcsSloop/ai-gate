@@ -8,7 +8,7 @@ import (
 )
 
 type Candidate struct {
-	Account accounts.Account
+	Account  accounts.Account
 	Snapshot usage.Snapshot
 	Score    float64
 }
@@ -29,6 +29,10 @@ func ScoreCandidates(candidates []Candidate) []Candidate {
 }
 
 func scoreCandidate(candidate Candidate) float64 {
+	if candidate.Account.IsActive {
+		return 1_000_000_000
+	}
+
 	score := float64(candidate.Account.Priority) * 0.75
 	score += candidate.Snapshot.HealthScore * 100
 	score -= candidate.Snapshot.AvgLatencyMS / 10
