@@ -10,7 +10,7 @@ type TokenBudget struct {
 }
 
 func IsFeasible(budget TokenBudget, snapshot usage.Snapshot) bool {
-	if snapshot.Balance < budget.EstimatedCost {
+	if !usesWindowPercentLimits(snapshot) && snapshot.Balance < budget.EstimatedCost {
 		return false
 	}
 	if snapshot.RPMRemaining < 1 {
@@ -18,6 +18,9 @@ func IsFeasible(budget TokenBudget, snapshot usage.Snapshot) bool {
 	}
 
 	requiredTokens := (budget.ProjectedInputTokens + budget.ProjectedOutputTokens) * max(1, budget.SafetyFactor)
+	if usesWindowPercentLimits(snapshot) {
+		return snapshot.TPMRemaining >= 1
+	}
 	if snapshot.QuotaRemaining < requiredTokens {
 		return false
 	}
@@ -26,6 +29,13 @@ func IsFeasible(budget TokenBudget, snapshot usage.Snapshot) bool {
 	}
 
 	return true
+}
+
+func usesWindowPercentLimits(snapshot usage.Snapshot) bool {
+	return snapshot.PrimaryResetsAt != nil ||
+		snapshot.SecondaryResetsAt != nil ||
+		snapshot.PrimaryUsedPercent > 0 ||
+		snapshot.SecondaryUsedPercent > 0
 }
 
 func max(a, b float64) float64 {

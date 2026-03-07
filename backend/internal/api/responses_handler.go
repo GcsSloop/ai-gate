@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -650,10 +651,12 @@ func (h *ResponsesHandler) executeResponsesRequest(ctx context.Context, account 
 	}
 
 	body, err := json.Marshal(map[string]any{
-		"model":    req.Model,
-		"stream":   false,
-		"messages": buildChatMessages(messages),
+		"model": req.Model,
 	})
+	if err != nil {
+		return responsesExecutionResult{}, err
+	}
+	body, err = json.Marshal(buildChatCompletionsBody(req, messages, false))
 	if err != nil {
 		return responsesExecutionResult{}, err
 	}
@@ -702,13 +705,7 @@ func (h *ResponsesHandler) executeResponsesStreamRequest(ctx context.Context, ac
 			return responsesExecutionResult{}, err
 		}
 		instructions := effectiveCodexInstructions(req.Instructions)
-		body, err := json.Marshal(map[string]any{
-			"model":        req.Model,
-			"stream":       true,
-			"store":        false,
-			"instructions": instructions,
-			"input":        buildResponsesInput(messages),
-		})
+		body, err := json.Marshal(buildOfficialResponsesBody(req, messages, true, instructions))
 		if err != nil {
 			return responsesExecutionResult{}, err
 		}
@@ -736,11 +733,7 @@ func (h *ResponsesHandler) executeResponsesStreamRequest(ctx context.Context, ac
 		}, err
 	}
 
-	body, err := json.Marshal(map[string]any{
-		"model":    req.Model,
-		"stream":   true,
-		"messages": buildChatMessages(messages),
-	})
+	body, err := json.Marshal(buildChatCompletionsBody(req, messages, true))
 	if err != nil {
 		return responsesExecutionResult{}, err
 	}
@@ -762,10 +755,10 @@ func (h *ResponsesHandler) executeResponsesStreamRequest(ctx context.Context, ac
 	if resp.StatusCode >= 400 {
 		return responsesExecutionResult{}, classifyHTTPError(resp)
 	}
-	outputItem, err := consumeChatCompletionsStream(resp.Body, emit)
+	outputItems, snapshot, err := consumeChatCompletionsStream(resp.Body, emit, account.ID)
 	return responsesExecutionResult{
-		Snapshot:    emptyResponsesUsageSnapshot(),
-		OutputItems: wrapOutputItems(outputItem),
+		Snapshot:    snapshot,
+		OutputItems: outputItems,
 	}, err
 }
 
@@ -789,19 +782,134 @@ func buildResponsesInput(messages []conversations.Message) []map[string]any {
 	return items
 }
 
-func buildChatMessages(messages []conversations.Message) []map[string]string {
-	items := make([]map[string]string, 0, len(messages))
+func buildOfficialResponsesBody(req gatewayopenai.ResponsesRequest, messages []conversations.Message, stream bool, instructions string) map[string]any {
+	body := map[string]any{
+		"model":        req.Model,
+		"stream":       stream,
+		"store":        false,
+		"instructions": instructions,
+		"input":        buildResponsesInput(messages),
+	}
+	if value, ok := decodeRawJSON(req.Tools); ok {
+		body["tools"] = value
+	}
+	if value, ok := decodeRawJSON(req.ToolChoice); ok {
+		body["tool_choice"] = value
+	}
+	if req.ParallelToolCalls != nil {
+		body["parallel_tool_calls"] = *req.ParallelToolCalls
+	}
+	if value, ok := decodeRawJSON(req.Reasoning); ok {
+		body["reasoning"] = value
+	}
+	if value, ok := decodeRawJSON(req.Include); ok {
+		body["include"] = value
+	}
+	if value, ok := decodeRawJSON(req.Metadata); ok {
+		body["metadata"] = value
+	}
+	if req.MaxOutputTokens != nil {
+		body["max_output_tokens"] = *req.MaxOutputTokens
+	}
+	return body
+}
+
+func buildChatCompletionsBody(req gatewayopenai.ResponsesRequest, messages []conversations.Message, stream bool) map[string]any {
+	body := map[string]any{
+		"model":    req.Model,
+		"stream":   stream,
+		"messages": buildChatMessages(messages),
+	}
+	if stream {
+		body["stream_options"] = map[string]any{
+			"include_usage": true,
+		}
+	}
+	if value, ok := decodeRawJSON(req.Tools); ok {
+		body["tools"] = value
+	}
+	if value, ok := decodeRawJSON(req.ToolChoice); ok {
+		body["tool_choice"] = value
+	}
+	if req.ParallelToolCalls != nil {
+		body["parallel_tool_calls"] = *req.ParallelToolCalls
+	}
+	if req.MaxOutputTokens != nil {
+		body["max_completion_tokens"] = *req.MaxOutputTokens
+	}
+	if value, ok := decodeRawJSON(req.Metadata); ok {
+		body["metadata"] = value
+	}
+	return body
+}
+
+func buildChatMessages(messages []conversations.Message) []map[string]any {
+	items := make([]map[string]any, 0, len(messages))
 	for _, message := range messages {
-		if message.ItemType != "" && message.ItemType != "message" {
-			continue
+		rawItem, hasRawItem := unmarshalRawItem(message.RawItemJSON)
+		switch resolvedItemType(message, rawItem, hasRawItem) {
+		case "message":
+			content := strings.TrimSpace(message.Content)
+			if hasRawItem {
+				content = strings.TrimSpace(extractChatMessageContent(rawItem))
+			}
+			if content == "" {
+				continue
+			}
+			role := message.Role
+			if hasRawItem {
+				if rawRole, _ := rawItem["role"].(string); strings.TrimSpace(rawRole) != "" {
+					role = rawRole
+				}
+			}
+			items = append(items, map[string]any{
+				"role":    normalizeChatRole(role),
+				"content": content,
+			})
+		case "function_call":
+			callID := ""
+			name := ""
+			arguments := ""
+			if hasRawItem {
+				callID, _ = rawItem["call_id"].(string)
+				name, _ = rawItem["name"].(string)
+				arguments, _ = rawItem["arguments"].(string)
+			}
+			if strings.TrimSpace(name) == "" {
+				continue
+			}
+			items = append(items, map[string]any{
+				"role":    "assistant",
+				"content": "",
+				"tool_calls": []map[string]any{
+					{
+						"id":   callID,
+						"type": "function",
+						"function": map[string]any{
+							"name":      name,
+							"arguments": arguments,
+						},
+					},
+				},
+			})
+		case "function_call_output":
+			callID := ""
+			output := strings.TrimSpace(message.Content)
+			if hasRawItem {
+				callID, _ = rawItem["call_id"].(string)
+				if rawOutput, _ := rawItem["output"].(string); strings.TrimSpace(rawOutput) != "" {
+					output = rawOutput
+				}
+			}
+			if strings.TrimSpace(output) == "" {
+				continue
+			}
+			items = append(items, map[string]any{
+				"role":         "tool",
+				"tool_call_id": callID,
+				"content":      output,
+			})
 		}
-		if strings.TrimSpace(message.Content) == "" {
-			continue
-		}
-		items = append(items, map[string]string{
-			"role":    message.Role,
-			"content": message.Content,
-		})
 	}
 	return items
 }
@@ -939,9 +1047,11 @@ func classifyHTTPError(resp *http.Response) error {
 	return nil
 }
 
-func consumeChatCompletionsStream(body io.Reader, emit func(string) error) (map[string]any, error) {
+func consumeChatCompletionsStream(body io.Reader, emit func(string) error, accountID int64) ([]map[string]any, usage.Snapshot, error) {
 	scanner := bufio.NewScanner(body)
-	collector := &chatCompletionsStreamCollector{}
+	collector := newChatCompletionsStreamCollector()
+	snapshot := emptyResponsesUsageSnapshot()
+	snapshot.AccountID = accountID
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data: ") {
@@ -949,36 +1059,47 @@ func consumeChatCompletionsStream(body io.Reader, emit func(string) error) (map[
 		}
 		payload := strings.TrimPrefix(line, "data: ")
 		if payload == "[DONE]" {
-			return collector.outputItem(), nil
+			return collector.outputItems(), snapshot, nil
 		}
-		var frame struct {
-			Choices []struct {
-				Delta map[string]any `json:"delta"`
-			} `json:"choices"`
-		}
+		var frame map[string]any
 		if err := json.Unmarshal([]byte(payload), &frame); err != nil {
-			return nil, err
+			return nil, snapshot, err
 		}
-		if len(frame.Choices) == 0 {
+		applyChatCompletionsUsageFrame(&snapshot, frame)
+		choices, _ := frame["choices"].([]any)
+		if len(choices) == 0 {
 			continue
 		}
-		if delta, ok := frame.Choices[0].Delta["content"].(string); ok && delta != "" {
-			if err := emit(delta); err != nil {
-				return nil, err
+		firstChoice, _ := choices[0].(map[string]any)
+		delta, _ := firstChoice["delta"].(map[string]any)
+		if chunk, ok := delta["content"].(string); ok && chunk != "" {
+			if err := emit(chunk); err != nil {
+				return nil, snapshot, err
 			}
 		}
-		collector.observe(frame.Choices[0].Delta)
+		collector.observe(delta)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, snapshot, err
 	}
-	return collector.outputItem(), nil
+	return collector.outputItems(), snapshot, nil
 }
 
 type chatCompletionsStreamCollector struct {
+	calls map[int]*streamToolCall
+}
+
+type streamToolCall struct {
+	index     int
 	callID    string
 	name      string
 	arguments strings.Builder
+}
+
+func newChatCompletionsStreamCollector() *chatCompletionsStreamCollector {
+	return &chatCompletionsStreamCollector{
+		calls: map[int]*streamToolCall{},
+	}
 }
 
 func (c *chatCompletionsStreamCollector) observe(delta map[string]any) {
@@ -991,34 +1112,53 @@ func (c *chatCompletionsStreamCollector) observe(delta map[string]any) {
 		if !ok {
 			continue
 		}
-		if c.callID == "" {
-			c.callID, _ = call["id"].(string)
+		index := asInt(call["index"])
+		current := c.calls[index]
+		if current == nil {
+			current = &streamToolCall{index: index}
+			c.calls[index] = current
+		}
+		if current.callID == "" {
+			current.callID, _ = call["id"].(string)
 		}
 		functionPayload, ok := call["function"].(map[string]any)
 		if !ok {
 			continue
 		}
-		if c.name == "" {
-			c.name, _ = functionPayload["name"].(string)
+		if current.name == "" {
+			current.name, _ = functionPayload["name"].(string)
 		}
 		if arguments, ok := functionPayload["arguments"].(string); ok {
-			c.arguments.WriteString(arguments)
+			current.arguments.WriteString(arguments)
 		}
 	}
 }
 
-func (c *chatCompletionsStreamCollector) outputItem() map[string]any {
-	if strings.TrimSpace(c.name) == "" {
+func (c *chatCompletionsStreamCollector) outputItems() []map[string]any {
+	if len(c.calls) == 0 {
 		return nil
 	}
-	return map[string]any{
-		"id":        newResponseItemID(),
-		"type":      "function_call",
-		"call_id":   c.callID,
-		"name":      c.name,
-		"arguments": c.arguments.String(),
-		"status":    "completed",
+	indexes := make([]int, 0, len(c.calls))
+	for index := range c.calls {
+		indexes = append(indexes, index)
 	}
+	sort.Ints(indexes)
+	items := make([]map[string]any, 0, len(indexes))
+	for _, index := range indexes {
+		call := c.calls[index]
+		if call == nil || strings.TrimSpace(call.name) == "" {
+			continue
+		}
+		items = append(items, map[string]any{
+			"id":        newResponseItemID(),
+			"type":      "function_call",
+			"call_id":   call.callID,
+			"name":      call.name,
+			"arguments": call.arguments.String(),
+			"status":    "completed",
+		})
+	}
+	return items
 }
 
 func consumeResponsesStream(body io.Reader, emit func(string) error, observe func(map[string]any)) error {
@@ -1074,10 +1214,87 @@ func parseChatCompletionsUsage(raw []byte, accountID int64) usage.Snapshot {
 
 func listModels() []map[string]any {
 	return []map[string]any{
-		{"id": "gpt-5.4", "object": "model", "owned_by": "codex-router"},
-		{"id": "gpt-5.2-codex", "object": "model", "owned_by": "codex-router"},
-		{"id": "gpt-5.1-codex-max", "object": "model", "owned_by": "codex-router"},
-		{"id": "gpt-4.1", "object": "model", "owned_by": "codex-router"},
+		buildModel("gpt-5.4", 272000, 32000),
+		buildModel("gpt-5.2-codex", 272000, 32000),
+		buildModel("gpt-5.1-codex-max", 272000, 32000),
+		buildModel("gpt-4.1", 128000, 16000),
+	}
+}
+
+func buildModel(id string, contextWindow int, maxOutputTokens int) map[string]any {
+	return map[string]any{
+		"id":                 id,
+		"object":             "model",
+		"owned_by":           "codex-router",
+		"context_window":     contextWindow,
+		"max_output_tokens":  maxOutputTokens,
+		"supports_responses": true,
+		"supports_streaming": true,
+		"supports_tools":     true,
+		"supports_reasoning": true,
+		"supports_vision":    false,
+		"default_endpoint":   "/v1/responses",
+	}
+}
+
+func decodeRawJSON(raw json.RawMessage) (any, bool) {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "" || strings.TrimSpace(string(raw)) == "null" {
+		return nil, false
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, false
+	}
+	return value, true
+}
+
+func resolvedItemType(message conversations.Message, rawItem map[string]any, hasRawItem bool) string {
+	if hasRawItem {
+		if itemType, _ := rawItem["type"].(string); strings.TrimSpace(itemType) != "" {
+			return itemType
+		}
+	}
+	if strings.TrimSpace(message.ItemType) != "" {
+		return message.ItemType
+	}
+	return "message"
+}
+
+func extractChatMessageContent(rawItem map[string]any) string {
+	if text, _ := rawItem["text"].(string); strings.TrimSpace(text) != "" {
+		return text
+	}
+	content, ok := rawItem["content"].([]any)
+	if !ok {
+		return ""
+	}
+	parts := make([]string, 0, len(content))
+	for _, rawPart := range content {
+		part, ok := rawPart.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text, _ := part["text"].(string); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+			continue
+		}
+		if textPayload, ok := part["text"].(map[string]any); ok {
+			if value, _ := textPayload["value"].(string); strings.TrimSpace(value) != "" {
+				parts = append(parts, value)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func normalizeChatRole(role string) string {
+	switch role {
+	case "system", "assistant", "user", "tool":
+		return role
+	case "developer":
+		return "system"
+	default:
+		return "user"
 	}
 }
 
@@ -1261,13 +1478,6 @@ func firstOutputItem(items []map[string]any) map[string]any {
 	return items[0]
 }
 
-func wrapOutputItems(item map[string]any) []map[string]any {
-	if len(item) == 0 {
-		return nil
-	}
-	return []map[string]any{item}
-}
-
 func outputItemText(item map[string]any) string {
 	content, ok := item["content"].([]any)
 	if !ok {
@@ -1422,13 +1632,51 @@ func (h *ResponsesHandler) latestConversationUsage(messages []conversations.Mess
 	if err != nil {
 		return usage.Snapshot{}, err
 	}
+	var latest usage.Snapshot
+	found := false
 	for _, account := range accountList {
 		snapshot, err := h.usage.GetLatest(account.ID)
-		if err == nil && snapshot.LastTotalTokens > 0 {
-			return snapshot, nil
+		if err != nil || snapshot.LastTotalTokens <= 0 {
+			continue
+		}
+		if !found || snapshot.CheckedAt.After(latest.CheckedAt) {
+			latest = snapshot
+			found = true
 		}
 	}
+	if found {
+		return latest, nil
+	}
 	return emptyResponsesUsageSnapshot(), nil
+}
+
+func applyChatCompletionsUsageFrame(snapshot *usage.Snapshot, frame map[string]any) {
+	if snapshot == nil {
+		return
+	}
+	usagePayload, ok := frame["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	snapshot.LastInputTokens = asFloat(usagePayload["prompt_tokens"])
+	snapshot.LastOutputTokens = asFloat(usagePayload["completion_tokens"])
+	snapshot.LastTotalTokens = asFloat(usagePayload["total_tokens"])
+}
+
+func asInt(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		if parsed, err := typed.Int64(); err == nil {
+			return int(parsed)
+		}
+	}
+	return 0
 }
 
 func buildResponseItemID(responseID string) string {

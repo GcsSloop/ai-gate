@@ -2,6 +2,7 @@ package routing_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/routing"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
@@ -80,6 +81,26 @@ func TestIsFeasible(t *testing.T) {
 			},
 			want: false,
 		},
+		{
+			name: "official window based limits stay feasible when percentages remain",
+			budget: routing.TokenBudget{
+				ProjectedInputTokens:  3000,
+				ProjectedOutputTokens: 2000,
+				SafetyFactor:          1.2,
+				EstimatedCost:         0.01,
+			},
+			snapshot: usage.Snapshot{
+				Balance:              0,
+				QuotaRemaining:       0,
+				RPMRemaining:         69,
+				TPMRemaining:         25,
+				PrimaryUsedPercent:   31,
+				SecondaryUsedPercent: 75,
+				PrimaryResetsAt:      timePtr("2026-03-07T20:06:00Z"),
+				SecondaryResetsAt:    timePtr("2026-03-12T16:20:30Z"),
+			},
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -93,4 +114,12 @@ func TestIsFeasible(t *testing.T) {
 			}
 		})
 	}
+}
+
+func timePtr(value string) *time.Time {
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		panic(err)
+	}
+	return &parsed
 }

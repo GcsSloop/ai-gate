@@ -13,6 +13,13 @@ type ResponsesRequest struct {
 	Input              json.RawMessage `json:"input"`
 	PreviousResponseID string          `json:"previous_response_id"`
 	Instructions       string          `json:"instructions"`
+	Tools              json.RawMessage `json:"tools"`
+	ToolChoice         json.RawMessage `json:"tool_choice"`
+	ParallelToolCalls  *bool           `json:"parallel_tool_calls"`
+	Reasoning          json.RawMessage `json:"reasoning"`
+	Include            json.RawMessage `json:"include"`
+	Metadata           json.RawMessage `json:"metadata"`
+	MaxOutputTokens    *int            `json:"max_output_tokens"`
 }
 
 type ResponsesInputItem struct {
