@@ -69,6 +69,11 @@ body {
   padding: 32px;
 }
 
+.page-grid {
+  display: grid;
+  gap: 20px;
+}
+
 .panel {
   max-width: 720px;
   padding: 24px;
@@ -80,5 +85,69 @@ body {
 
 .panel h2 {
   margin-top: 0;
+  font-size: 28px;
+}
+
+.stack {
+  display: grid;
+  gap: 12px;
+}
+
+.stack label {
+  display: grid;
+  gap: 6px;
+  color: #cfd8ea;
+}
+
+.stack input,
+.account-card input,
+.stack button,
+.panel button {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+}
+
+.panel button,
+.stack button {
+  width: fit-content;
+  background: linear-gradient(135deg, #2e74ff, #1bc498);
+  color: white;
+  cursor: pointer;
+}
+
+.account-list {
+  list-style: none;
+  padding: 0;
+  margin: 20px 0 0;
+  display: grid;
+  gap: 12px;
+}
+
+.account-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.metric-card {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.metric-card strong {
   font-size: 28px;
 }

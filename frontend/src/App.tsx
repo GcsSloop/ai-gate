@@ -1,5 +1,9 @@
 import { NavLink, Outlet, Route, Routes } from "react-router-dom";
 
+import { AccountsPage } from "./features/accounts/AccountsPage";
+import { ConversationsPage } from "./features/conversations/ConversationsPage";
+import { MonitoringPage } from "./features/monitoring/MonitoringPage";
+import { PolicyPage } from "./features/policy/PolicyPage";
 import "./styles.css";
 
 function Shell() {
@@ -35,26 +39,11 @@ export function App() {
   return (
     <Routes>
       <Route element={<Shell />}>
-        <Route
-          path="/"
-          element={<Placeholder title="Accounts" description="Manage official auth and third-party API credentials." />}
-        />
-        <Route
-          path="/accounts"
-          element={<Placeholder title="Accounts" description="Manage official auth and third-party API credentials." />}
-        />
-        <Route
-          path="/policies"
-          element={<Placeholder title="Policies" description="Adjust routing order, cooldown rules, and safety budgets." />}
-        />
-        <Route
-          path="/monitoring"
-          element={<Placeholder title="Monitoring" description="Inspect balance, quota, cooldown, and routing health." />}
-        />
-        <Route
-          path="/conversations"
-          element={<Placeholder title="Conversations" description="Review active sessions and account failover chains." />}
-        />
+        <Route path="/" element={<AccountsPage />} />
+        <Route path="/accounts" element={<AccountsPage />} />
+        <Route path="/policies" element={<PolicyPage />} />
+        <Route path="/monitoring" element={<MonitoringPage />} />
+        <Route path="/conversations" element={<ConversationsPage />} />
       </Route>
     </Routes>
   );
