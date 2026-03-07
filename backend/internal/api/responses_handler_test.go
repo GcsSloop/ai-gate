@@ -523,6 +523,98 @@ func TestResponsesHandlerRetrievesMultipleOfficialOutputItems(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerDoesNotMixFinalTextIntoFunctionCallOutputItem(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"final-answer\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"grep\",\"arguments\":\"{\\\"pattern\\\":\\\"TODO\\\"}\",\"status\":\"completed\"},{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"final-answer\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":12,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":3,\"total_tokens\":15},\"store\":false}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"run grep"
+	}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", createRec.Code, http.StatusOK)
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/responses/"+created.ID, nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/responses/{id} status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+
+	var payload struct {
+		OutputText string `json:"output_text"`
+		Output     []struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(getRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if payload.OutputText != "final-answer" {
+		t.Fatalf("output_text = %q, want %q", payload.OutputText, "final-answer")
+	}
+	if len(payload.Output) != 2 {
+		t.Fatalf("len(output) = %d, want 2", len(payload.Output))
+	}
+	if payload.Output[0].Type != "function_call" {
+		t.Fatalf("output[0].type = %q, want function_call", payload.Output[0].Type)
+	}
+	if len(payload.Output[0].Content) != 0 {
+		t.Fatalf("output[0].content = %+v, want empty for function_call", payload.Output[0].Content)
+	}
+	if payload.Output[1].Type != "message" {
+		t.Fatalf("output[1].type = %q, want message", payload.Output[1].Type)
+	}
+}
+
 func TestResponsesHandlerMapsChatCompletionsToolCallsToResponsesOutput(t *testing.T) {
 	t.Parallel()
 

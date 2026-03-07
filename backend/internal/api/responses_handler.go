@@ -189,7 +189,7 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 	assistantMessage := conversations.Message{
 		ConversationID: conversationID,
 		Role:           "assistant",
-		Content:        result.Text,
+		Content:        "",
 		ItemType:       responseOutputItemType(firstOutputItem(result.OutputItems)),
 		SequenceNo:     sequence,
 	}
@@ -204,8 +204,9 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 	} else {
 		for index, outputItem := range result.OutputItems {
 			message := assistantMessage
-			if index > 0 {
-				message.Content = outputItemText(outputItem)
+			message.Content = outputItemText(outputItem)
+			if strings.TrimSpace(message.Content) == "" && index == 0 && responseOutputItemType(outputItem) == "message" {
+				message.Content = result.Text
 			}
 			message.ItemType = responseOutputItemType(outputItem)
 			if rawJSON, ok := marshalRawItem(outputItem); ok {
@@ -459,14 +460,15 @@ func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseW
 			assistantMessage := conversations.Message{
 				ConversationID: conversationID,
 				Role:           "assistant",
-				Content:        assistant.String(),
+				Content:        "",
 				ItemType:       responseOutputItemType(outputItem),
 				SequenceNo:     sequence,
 			}
 			for index, currentOutput := range outputItems {
 				message := assistantMessage
-				if index > 0 {
-					message.Content = outputItemText(currentOutput)
+				message.Content = outputItemText(currentOutput)
+				if strings.TrimSpace(message.Content) == "" && index == 0 && responseOutputItemType(currentOutput) == "message" {
+					message.Content = assistant.String()
 				}
 				message.ItemType = responseOutputItemType(currentOutput)
 				if rawJSON, ok := marshalRawItem(currentOutput); ok {
@@ -1511,7 +1513,7 @@ func (h *ResponsesHandler) buildStoredResponse(responseID string) (map[string]an
 		if rawItem, ok := unmarshalRawItem(target.RawItemJSON); ok {
 			outputItems = append(outputItems, rawItem)
 		}
-		if strings.TrimSpace(target.Content) != "" {
+		if shouldAggregateFinalOutputText(target) && strings.TrimSpace(target.Content) != "" {
 			textParts = append(textParts, target.Content)
 		}
 	}
@@ -1617,6 +1619,14 @@ func responseOutputItemType(raw map[string]any) string {
 		return "message"
 	}
 	return itemType
+}
+
+func shouldAggregateFinalOutputText(message conversations.Message) bool {
+	itemType := strings.TrimSpace(message.ItemType)
+	if itemType == "" {
+		return true
+	}
+	return itemType == "message"
 }
 
 func isFunctionCallOutputItem(item map[string]any) bool {
