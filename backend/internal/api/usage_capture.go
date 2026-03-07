@@ -72,6 +72,10 @@ func (c *responsesUsageCollector) outputItems() []map[string]any {
 	return items
 }
 
+func (c *responsesUsageCollector) outputText() string {
+	return outputItemsText(c.outputs)
+}
+
 func (c *responsesUsageCollector) observeTokenCount(payload map[string]any) {
 	c.hasData = true
 

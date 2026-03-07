@@ -70,6 +70,8 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && (r.URL.Path == "/v1/responses" || r.URL.Path == "/responses"):
 		h.handleResponses(w, r)
+	case r.Method == http.MethodPost && isResponsesCompactPath(r.URL.Path):
+		h.handleResponsesCompact(w, r)
 	case r.Method == http.MethodPost && isResponsesInputTokensPath(r.URL.Path):
 		h.handleResponsesInputTokens(w, r)
 	case r.Method == http.MethodGet && (r.URL.Path == "/v1/models" || r.URL.Path == "/models"):
@@ -95,6 +97,7 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	w.Header().Set("OpenAI-Model", req.Model)
 
 	inputItems, err := gatewayopenai.ExtractResponsesInputItems(req.Input)
 	if err != nil {
@@ -308,8 +311,33 @@ func (h *ResponsesHandler) handleResponsesInputTokens(w http.ResponseWriter, r *
 	})
 }
 
+func (h *ResponsesHandler) handleResponsesCompact(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rawItems, ok := body["input"].([]any)
+	if !ok || len(rawItems) == 0 {
+		http.Error(w, "input must be a list", http.StatusBadRequest)
+		return
+	}
+
+	// Minimal compaction: pass-through the provided history so Codex can proceed
+	// even when upstream does not implement `/responses/compact`.
+	output := make([]any, 0, len(rawItems))
+	for _, item := range rawItems {
+		output = append(output, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"output": output,
+	})
+}
+
 func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseWriter, req gatewayopenai.ResponsesRequest, candidates []routing.Candidate, conversationID int64, responseID string, messages []conversations.Message, sequence int) {
 	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("OpenAI-Model", req.Model)
+	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	itemID := newResponseItemID()
 	sequenceNumber := 0
@@ -400,6 +428,20 @@ func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseW
 				outputItems = []map[string]any{buildOutputItem(itemID, assistant.String(), "completed")}
 			}
 			outputItem := firstOutputItem(outputItems)
+			if assistant.Len() == 0 {
+				if syntheticText := strings.TrimSpace(outputItemText(outputItem)); syntheticText != "" && !isFunctionCallOutputItem(outputItem) {
+					if err := ensureTextItemStarted(); err == nil {
+						assistant.WriteString(syntheticText)
+						_ = writeEvent(map[string]any{
+							"type":          "response.output_text.delta",
+							"delta":         syntheticText,
+							"item_id":       itemID,
+							"output_index":  0,
+							"content_index": 0,
+						})
+					}
+				}
+			}
 			finalItemID := itemID
 			if currentItemID, _ := outputItem["id"].(string); strings.TrimSpace(currentItemID) != "" {
 				finalItemID = currentItemID
@@ -557,6 +599,19 @@ func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseW
 			"message": "no candidate succeeded",
 		},
 	})
+	terminal := buildResponsesResponse(responseID, req.Model, assistant.String(), "failed", itemID, resultSnapshot, nil)
+	terminal["error"] = map[string]any{
+		"type":    "server_error",
+		"code":    "upstream_error",
+		"message": "no candidate succeeded",
+	}
+	terminal["incomplete_details"] = map[string]any{
+		"reason": "upstream_error",
+	}
+	_ = writeEvent(map[string]any{
+		"type":     "response.completed",
+		"response": terminal,
+	})
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 }
 
@@ -643,8 +698,12 @@ func (h *ResponsesHandler) executeResponsesRequest(ctx context.Context, account 
 			return responsesExecutionResult{}, err
 		}
 		collector.Save(h.usage)
+		text := builder.String()
+		if strings.TrimSpace(text) == "" {
+			text = collector.outputText()
+		}
 		return responsesExecutionResult{
-			Text:        builder.String(),
+			Text:        text,
 			Snapshot:    collector.snapshotOrDefault(),
 			OutputItems: collector.outputItems(),
 		}, nil
@@ -918,6 +977,9 @@ func buildResponsesResponse(id string, model string, text string, status string,
 	if len(outputItems) == 0 {
 		outputItems = []map[string]any{buildOutputItem(itemID, text, status)}
 	}
+	if strings.TrimSpace(text) == "" {
+		text = outputItemsText(outputItems)
+	}
 	return map[string]any{
 		"id":                 id,
 		"object":             "response",
@@ -1162,35 +1224,93 @@ func (c *chatCompletionsStreamCollector) outputItems() []map[string]any {
 }
 
 func consumeResponsesStream(body io.Reader, emit func(string) error, observe func(map[string]any)) error {
-	scanner := bufio.NewScanner(body)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || !strings.HasPrefix(line, "data: ") {
-			continue
+	// Parse SSE per spec: events are separated by a blank line; multiple `data:` lines
+	// are concatenated with '\n'. Codex (codex-rs) treats EOF before `response.completed`
+	// as an error ("stream closed before response.completed").
+	reader := bufio.NewReader(body)
+
+	var (
+		dataLines    []string
+		sawCompleted bool
+	)
+
+	flush := func() (bool, error) {
+		if len(dataLines) == 0 {
+			return false, nil
 		}
-		payload := strings.TrimPrefix(line, "data: ")
+		payload := strings.Join(dataLines, "\n")
+		dataLines = dataLines[:0]
+		payload = strings.TrimSpace(payload)
+		if payload == "" {
+			return false, nil
+		}
 		if payload == "[DONE]" {
-			return nil
+			sawCompleted = true
+			return true, nil
 		}
+
 		var frame map[string]any
 		if err := json.Unmarshal([]byte(payload), &frame); err != nil {
-			return err
+			// Upstreams sometimes send non-JSON keepalives; ignore parse errors to
+			// match codex-rs behavior (it logs and continues).
+			return false, nil
 		}
 		if observe != nil {
 			observe(frame)
 		}
+
 		switch frame["type"] {
 		case "response.output_text.delta":
 			if delta, ok := frame["delta"].(string); ok {
 				if err := emit(delta); err != nil {
-					return err
+					return false, err
 				}
 			}
+		case "response.failed", "error":
+			// Fail fast so the router can rotate to the next candidate.
+			return false, errors.New("response.failed event received")
 		case "response.completed":
-			return nil
+			sawCompleted = true
+			return true, nil
+		}
+		return false, nil
+	}
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		line = strings.TrimRight(line, "\r\n")
+
+		if line == "" {
+			done, flushErr := flush()
+			if flushErr != nil {
+				return flushErr
+			}
+			if done {
+				return nil
+			}
+		} else if strings.HasPrefix(line, "data:") {
+			payload := strings.TrimPrefix(line, "data:")
+			if strings.HasPrefix(payload, " ") {
+				payload = payload[1:]
+			}
+			dataLines = append(dataLines, payload)
+		}
+
+		if errors.Is(err, io.EOF) {
+			// EOF: flush any buffered event without a trailing blank line.
+			done, flushErr := flush()
+			if flushErr != nil {
+				return flushErr
+			}
+			if done || sawCompleted {
+				return nil
+			}
+			return errors.New("stream closed before response.completed")
 		}
 	}
-	return scanner.Err()
 }
 
 func parseChatCompletionsUsage(raw []byte, accountID int64) usage.Snapshot {
@@ -1300,6 +1420,10 @@ func normalizeChatRole(role string) string {
 
 func isResponseDetailPath(path string) bool {
 	return strings.HasPrefix(path, "/v1/responses/") || strings.HasPrefix(path, "/responses/")
+}
+
+func isResponsesCompactPath(path string) bool {
+	return path == "/v1/responses/compact" || path == "/responses/compact"
 }
 
 func isResponseInputItemsPath(path string) bool {
@@ -1490,6 +1614,16 @@ func outputItemText(item map[string]any) string {
 			continue
 		}
 		if text, _ := part["text"].(string); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func outputItemsText(items []map[string]any) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		if text := strings.TrimSpace(outputItemText(item)); text != "" {
 			parts = append(parts, text)
 		}
 	}

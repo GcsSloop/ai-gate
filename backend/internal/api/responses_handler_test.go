@@ -243,6 +243,68 @@ func TestResponsesHandlerProxiesLocalImportedOfficialAccount(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerProxiesLocalImportedOfficialAccountFromCompletedOutputOnly(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"official-pong\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":54,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":5,\"total_tokens\":59},\"store\":false}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "official-pong") {
+		t.Fatalf("response body = %s, want official-pong from completed output", rec.Body.String())
+	}
+}
+
 func TestResponsesHandlerPreservesOfficialCompletedOutputItems(t *testing.T) {
 	t.Parallel()
 
@@ -625,6 +687,9 @@ func TestResponsesHandlerStreamsOfficialStyleLifecycleEvents(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /v1/responses stream status = %d, want %d", rec.Code, http.StatusOK)
 	}
+	if got := rec.Header().Get("OpenAI-Model"); got != "gpt-5.4" {
+		t.Fatalf("OpenAI-Model header = %q, want %q", got, "gpt-5.4")
+	}
 
 	body := rec.Body.String()
 	expected := []string{
@@ -655,6 +720,64 @@ func TestResponsesHandlerStreamsOfficialStyleLifecycleEvents(t *testing.T) {
 	}
 	if !strings.Contains(body, `"usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}`) {
 		t.Fatalf("stream body missing completed usage payload: %s", body)
+	}
+}
+
+func TestResponsesHandlerStreamsOfficialCompletedOutputWithoutDelta(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"official-pong\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":54,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":5,\"total_tokens\":59},\"store\":false}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses stream status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"response.output_text.delta"`) || !strings.Contains(body, `"delta":"official-pong"`) {
+		t.Fatalf("stream body = %s, want synthetic output_text.delta from completed output", body)
+	}
+	if !strings.Contains(body, `"output_text":"official-pong"`) {
+		t.Fatalf("stream body = %s, want completed response output_text", body)
 	}
 }
 
@@ -716,6 +839,9 @@ func TestResponsesHandlerStreamFailureUsesErrorEvent(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `"type":"error"`) {
 		t.Fatalf("stream body missing error event: %s", body)
+	}
+	if !strings.Contains(body, `"type":"response.completed"`) {
+		t.Fatalf("stream body missing response.completed terminal event: %s", body)
 	}
 	if strings.Contains(body, `"type":"response.failed"`) {
 		t.Fatalf("stream body unexpectedly contains response.failed: %s", body)
