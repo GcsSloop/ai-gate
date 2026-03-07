@@ -1,0 +1,40 @@
+package accounts
+
+import "time"
+
+type ProviderType string
+
+const (
+	ProviderOpenAIOfficial   ProviderType = "openai-official"
+	ProviderOpenAICompatible ProviderType = "openai-compatible"
+)
+
+type AuthMode string
+
+const (
+	AuthModeOAuth  AuthMode = "oauth"
+	AuthModeAPIKey AuthMode = "api_key"
+)
+
+type Status string
+
+const (
+	StatusActive   Status = "active"
+	StatusCooldown Status = "cooldown"
+	StatusDegraded Status = "degraded"
+	StatusInvalid  Status = "invalid"
+	StatusDisabled Status = "disabled"
+)
+
+type Account struct {
+	ID            int64
+	ProviderType  ProviderType
+	AccountName   string
+	AuthMode      AuthMode
+	CredentialRef string
+	BaseURL       string
+	Status        Status
+	Priority      int
+	CooldownUntil *time.Time
+	CreatedAt     time.Time
+}
