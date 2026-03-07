@@ -45,3 +45,17 @@ export async function startOfficialAuth(): Promise<void> {
     throw new Error("failed to start official auth");
   }
 }
+
+export async function importLocalCodexAuth(path?: string): Promise<void> {
+  const response = await fetch("/accounts/import-local", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      path,
+      account_name: "local-codex",
+    }),
+  });
+  if (!response.ok) {
+    throw new Error("failed to import local codex auth");
+  }
+}

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,8 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.listAccounts(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts/auth/authorize":
 		h.createAuthSession(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/accounts/import-local":
+		h.importLocalAuth(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/disable"):
 		h.disableAccount(w, r)
 	default:
@@ -43,6 +47,11 @@ type createAccountRequest struct {
 	AuthMode      accounts.AuthMode     `json:"auth_mode"`
 	BaseURL       string                `json:"base_url"`
 	CredentialRef string                `json:"credential_ref"`
+}
+
+type importLocalAuthRequest struct {
+	Path        string `json:"path"`
+	AccountName string `json:"account_name"`
 }
 
 func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +133,44 @@ func (h *AccountsHandler) createAuthSession(w http.ResponseWriter, _ *http.Reque
 		"authorization_url": authURL,
 		"state":             state,
 	})
+}
+
+func (h *AccountsHandler) importLocalAuth(w http.ResponseWriter, r *http.Request) {
+	var req importLocalAuthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	path := req.Path
+	if path == "" {
+		path = filepath.Join(os.Getenv("HOME"), ".codex", "auth.json")
+	}
+
+	_, raw, err := auth.LoadLocalAuthFile(path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	accountName := req.AccountName
+	if accountName == "" {
+		accountName = "local-codex"
+	}
+
+	err = h.repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAIOfficial,
+		AccountName:   accountName,
+		AuthMode:      accounts.AuthModeLocalImport,
+		CredentialRef: string(raw),
+		Status:        accounts.StatusActive,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
 }
 
 func (h *AccountsHandler) disableAccount(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -93,5 +94,50 @@ func TestAccountsHandler(t *testing.T) {
 	handler.ServeHTTP(disableRec, disableReq)
 	if disableRec.Code != http.StatusNoContent {
 		t.Fatalf("POST /accounts/1/disable status = %d, want %d", disableRec.Code, http.StatusNoContent)
+	}
+}
+
+func TestAccountsHandlerImportLocalCodexAuth(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	connector := auth.NewOAuthConnector(auth.Config{})
+	handler := api.NewAccountsHandler(repo, connector, auth.NewStateStore(5*time.Minute))
+
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{
+		"auth_mode":"chatgpt",
+		"tokens":{"access_token":"token-1"}
+	}`), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/import-local", bytes.NewBufferString(`{
+		"path":"`+authPath+`",
+		"account_name":"local-codex"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /accounts/import-local status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	listed, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("List returned %d accounts, want 1", len(listed))
+	}
+	if listed[0].AuthMode != accounts.AuthModeLocalImport {
+		t.Fatalf("AuthMode = %q, want %q", listed[0].AuthMode, accounts.AuthModeLocalImport)
 	}
 }

@@ -27,6 +27,11 @@ describe("AccountsPage", () => {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 201,
+        }),
       );
 
     vi.stubGlobal("fetch", fetchMock);
@@ -61,6 +66,13 @@ describe("AccountsPage", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
       "/accounts/auth/authorize",
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Import local Codex credentials" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/accounts/import-local",
       expect.objectContaining({ method: "POST" }),
     );
   });

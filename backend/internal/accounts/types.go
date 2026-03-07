@@ -12,8 +12,9 @@ const (
 type AuthMode string
 
 const (
-	AuthModeOAuth  AuthMode = "oauth"
-	AuthModeAPIKey AuthMode = "api_key"
+	AuthModeOAuth       AuthMode = "oauth"
+	AuthModeAPIKey      AuthMode = "api_key"
+	AuthModeLocalImport AuthMode = "codex_local_import"
 )
 
 type Status string

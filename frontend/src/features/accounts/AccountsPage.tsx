@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 
-import { createAccount, listAccounts, startOfficialAuth, type AccountRecord } from "../../lib/api";
+import { createAccount, importLocalCodexAuth, listAccounts, startOfficialAuth, type AccountRecord } from "../../lib/api";
 
 const defaultBaseURL = "https://code.ppchat.vip/v1";
 
@@ -29,6 +29,10 @@ export function AccountsPage() {
     await startOfficialAuth();
   }
 
+  async function handleLocalImport() {
+    await importLocalCodexAuth();
+  }
+
   return (
     <div className="page-grid">
       <section className="panel">
@@ -36,6 +40,9 @@ export function AccountsPage() {
         <p>Manage official authorization and OpenAI-compatible third-party endpoints.</p>
         <button type="button" onClick={handleOfficialAuth}>
           Connect official account
+        </button>
+        <button type="button" onClick={handleLocalImport}>
+          Import local Codex credentials
         </button>
         <ul className="account-list">
           {accounts.map((account) => (
