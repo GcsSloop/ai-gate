@@ -10,6 +10,7 @@ type Repository interface {
 	Create(account Account) error
 	List() ([]Account, error)
 	UpdateStatus(id int64, status Status) error
+	UpdateCooldown(id int64, until *time.Time) error
 }
 
 type SQLiteRepository struct {
@@ -89,6 +90,14 @@ func (r *SQLiteRepository) UpdateStatus(id int64, status Status) error {
 	_, err := r.db.Exec(`UPDATE accounts SET status = ? WHERE id = ?`, status, id)
 	if err != nil {
 		return fmt.Errorf("update account status: %w", err)
+	}
+	return nil
+}
+
+func (r *SQLiteRepository) UpdateCooldown(id int64, until *time.Time) error {
+	_, err := r.db.Exec(`UPDATE accounts SET cooldown_until = ? WHERE id = ?`, nullTime(until), id)
+	if err != nil {
+		return fmt.Errorf("update account cooldown: %w", err)
 	}
 	return nil
 }
