@@ -15,6 +15,7 @@ var schemaStatements = []string{
 		base_url TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT 'active',
 		priority INTEGER NOT NULL DEFAULT 0,
+		is_active INTEGER NOT NULL DEFAULT 0,
 		cooldown_until DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,
@@ -68,6 +69,7 @@ var schemaStatements = []string{
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		conversation_id INTEGER NOT NULL,
 		account_id INTEGER,
+		model TEXT NOT NULL DEFAULT '',
 		fallback_from_run_id INTEGER,
 		stream_offset INTEGER NOT NULL DEFAULT 0,
 		status TEXT NOT NULL,

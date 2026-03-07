@@ -51,11 +51,11 @@ func TestSQLiteRepositoryConversationMessageAndRunPersistence(t *testing.T) {
 	}
 
 	_, err = repo.CreateRun(conversations.Run{
-		ConversationID:   conversationID,
-		AccountID:        2,
+		ConversationID:    conversationID,
+		AccountID:         2,
 		FallbackFromRunID: &firstRunID,
-		Status:           "completed",
-		StreamOffset:     42,
+		Status:            "completed",
+		StreamOffset:      42,
 	})
 	if err != nil {
 		t.Fatalf("CreateRun(second) returned error: %v", err)
@@ -121,5 +121,72 @@ func TestSQLiteRepositoryListConversations(t *testing.T) {
 	}
 	if got[0].ID != 2 {
 		t.Fatalf("first returned conversation id = %d, want 2", got[0].ID)
+	}
+}
+
+func TestSQLiteRepositoryListAccountCallStats(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := conversations.NewSQLiteRepository(store.DB())
+
+	conversationA, err := repo.CreateConversation(conversations.Conversation{
+		ClientID:             "client-a",
+		TargetProviderFamily: "openai",
+		DefaultModel:         "gpt-5.4",
+		State:                "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateConversation(A) returned error: %v", err)
+	}
+	conversationB, err := repo.CreateConversation(conversations.Conversation{
+		ClientID:             "client-b",
+		TargetProviderFamily: "openai",
+		DefaultModel:         "gpt-4.1",
+		State:                "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateConversation(B) returned error: %v", err)
+	}
+
+	for _, run := range []conversations.Run{
+		{ConversationID: conversationA, AccountID: 1, Model: "gpt-5.4", Status: "completed"},
+		{ConversationID: conversationA, AccountID: 1, Model: "gpt-4.1", Status: "soft_failed"},
+		{ConversationID: conversationB, AccountID: 1, Model: "gpt-4.1", Status: "completed"},
+		{ConversationID: conversationA, AccountID: 2, Model: "gpt-5.4", Status: "rate_limited"},
+	} {
+		if _, err := repo.CreateRun(run); err != nil {
+			t.Fatalf("CreateRun returned error: %v", err)
+		}
+	}
+
+	stats, err := repo.ListAccountCallStats()
+	if err != nil {
+		t.Fatalf("ListAccountCallStats returned error: %v", err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("ListAccountCallStats returned %d rows, want 2", len(stats))
+	}
+
+	if stats[0].AccountID != 1 || stats[0].TotalCalls != 3 {
+		t.Fatalf("stats[0] = %+v, want account 1 with 3 calls", stats[0])
+	}
+	if stats[0].ModelCalls["gpt-5.4"] != 1 {
+		t.Fatalf("account 1 gpt-5.4 = %d, want 1", stats[0].ModelCalls["gpt-5.4"])
+	}
+	if stats[0].ModelCalls["gpt-4.1"] != 2 {
+		t.Fatalf("account 1 gpt-4.1 = %d, want 2", stats[0].ModelCalls["gpt-4.1"])
+	}
+
+	if stats[1].AccountID != 2 || stats[1].TotalCalls != 1 {
+		t.Fatalf("stats[1] = %+v, want account 2 with 1 call", stats[1])
+	}
+	if stats[1].ModelCalls["gpt-5.4"] != 1 {
+		t.Fatalf("account 2 gpt-5.4 = %d, want 1", stats[1].ModelCalls["gpt-5.4"])
 	}
 }

@@ -89,10 +89,11 @@ func (r *SQLiteRepository) AppendMessage(message Message) error {
 
 func (r *SQLiteRepository) CreateRun(run Run) (int64, error) {
 	result, err := r.db.Exec(
-		`INSERT INTO runs (conversation_id, account_id, fallback_from_run_id, stream_offset, status)
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO runs (conversation_id, account_id, model, fallback_from_run_id, stream_offset, status)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
 		run.ConversationID,
 		run.AccountID,
+		run.Model,
 		nullInt64(run.FallbackFromRunID),
 		run.StreamOffset,
 		run.Status,
@@ -140,7 +141,7 @@ func (r *SQLiteRepository) ListMessages(conversationID int64) ([]Message, error)
 
 func (r *SQLiteRepository) ListRuns(conversationID int64) ([]Run, error) {
 	rows, err := r.db.Query(
-		`SELECT id, conversation_id, account_id, fallback_from_run_id, status, stream_offset, started_at
+		`SELECT id, conversation_id, account_id, model, fallback_from_run_id, status, stream_offset, started_at
 		 FROM runs WHERE conversation_id = ? ORDER BY id ASC`,
 		conversationID,
 	)
@@ -153,7 +154,7 @@ func (r *SQLiteRepository) ListRuns(conversationID int64) ([]Run, error) {
 	for rows.Next() {
 		var run Run
 		var fallback sql.NullInt64
-		if err := rows.Scan(&run.ID, &run.ConversationID, &run.AccountID, &fallback, &run.Status, &run.StreamOffset, &run.StartedAt); err != nil {
+		if err := rows.Scan(&run.ID, &run.ConversationID, &run.AccountID, &run.Model, &fallback, &run.Status, &run.StreamOffset, &run.StartedAt); err != nil {
 			return nil, fmt.Errorf("scan run: %w", err)
 		}
 		if fallback.Valid {
@@ -182,6 +183,54 @@ func (r *SQLiteRepository) CountRuns() (int, error) {
 
 func (r *SQLiteRepository) CountFailoverRuns() (int, error) {
 	return r.count(`SELECT COUNT(*) FROM runs WHERE fallback_from_run_id IS NOT NULL`)
+}
+
+func (r *SQLiteRepository) ListAccountCallStats() ([]AccountCallStats, error) {
+	rows, err := r.db.Query(
+		`SELECT r.account_id, COALESCE(NULLIF(r.model, ''), c.default_model, ''), COUNT(*)
+		 FROM runs r
+		 LEFT JOIN conversations c ON c.id = r.conversation_id
+		 WHERE r.account_id IS NOT NULL
+		 GROUP BY r.account_id, COALESCE(NULLIF(r.model, ''), c.default_model, '')
+		 ORDER BY r.account_id ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query account call stats: %w", err)
+	}
+	defer rows.Close()
+
+	statsByAccount := map[int64]*AccountCallStats{}
+	order := make([]int64, 0)
+	for rows.Next() {
+		var accountID int64
+		var model string
+		var count int
+		if err := rows.Scan(&accountID, &model, &count); err != nil {
+			return nil, fmt.Errorf("scan account call stats: %w", err)
+		}
+		stat, ok := statsByAccount[accountID]
+		if !ok {
+			stat = &AccountCallStats{
+				AccountID:  accountID,
+				ModelCalls: map[string]int{},
+			}
+			statsByAccount[accountID] = stat
+			order = append(order, accountID)
+		}
+		stat.TotalCalls += count
+		if model != "" {
+			stat.ModelCalls[model] += count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate account call stats: %w", err)
+	}
+
+	result := make([]AccountCallStats, 0, len(order))
+	for _, accountID := range order {
+		result = append(result, *statsByAccount[accountID])
+	}
+	return result, nil
 }
 
 func (r *SQLiteRepository) count(query string) (int, error) {

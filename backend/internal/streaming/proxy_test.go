@@ -38,7 +38,7 @@ func TestProxyExecuteContinuesAfterMidStreamFailure(t *testing.T) {
 		}
 	})
 
-	output, err := proxy.Execute(context.Background(), 55, []routing.Candidate{
+	output, err := proxy.Execute(context.Background(), 55, "gpt-5.4", []routing.Candidate{
 		{
 			Account: accounts.Account{ID: 1, Status: accounts.StatusActive, Priority: 100},
 			Snapshot: usage.Snapshot{
@@ -93,7 +93,7 @@ func TestProxyExecuteReturnsErrorWhenNoCandidateSucceeds(t *testing.T) {
 		return errors.New("boom")
 	})
 
-	_, err := proxy.Execute(context.Background(), 66, []routing.Candidate{
+	_, err := proxy.Execute(context.Background(), 66, "gpt-5.4", []routing.Candidate{
 		{
 			Account: accounts.Account{ID: 1, Status: accounts.StatusActive, Priority: 100},
 			Snapshot: usage.Snapshot{

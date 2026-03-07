@@ -67,7 +67,7 @@ func NewProxy(recorder RunRecorder, attempt AttemptFunc) *Proxy {
 	return &Proxy{recorder: recorder, attempt: attempt}
 }
 
-func (p *Proxy) Execute(ctx context.Context, conversationID int64, candidates []routing.Candidate, budget routing.TokenBudget) (string, error) {
+func (p *Proxy) Execute(ctx context.Context, conversationID int64, model string, candidates []routing.Candidate, budget routing.TokenBudget) (string, error) {
 	scored := routing.ScoreCandidates(candidates)
 	accumulated := ""
 	var previousRunID *int64
@@ -98,6 +98,7 @@ func (p *Proxy) Execute(ctx context.Context, conversationID int64, candidates []
 		runID, recordErr := p.recorder.CreateRun(conversations.Run{
 			ConversationID:    conversationID,
 			AccountID:         candidate.Account.ID,
+			Model:             model,
 			FallbackFromRunID: previousRunID,
 			Status:            status,
 			StreamOffset:      len(accumulated),

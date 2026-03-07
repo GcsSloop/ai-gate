@@ -25,9 +25,9 @@ func TestExecuteNonStreamRetriesSoftFailureThenSucceeds(t *testing.T) {
 		return nil
 	})
 
-	err := executor.ExecuteNonStream(context.Background(), 99, []routing.Candidate{
+	err := executor.ExecuteNonStream(context.Background(), 99, "gpt-5.4", []routing.Candidate{
 		{
-			Account: accounts.Account{ID: 1, AccountName: "primary", Status: accounts.StatusActive, Priority: 100},
+			Account:  accounts.Account{ID: 1, AccountName: "primary", Status: accounts.StatusActive, Priority: 100},
 			Snapshot: usage.Snapshot{HealthScore: 0.9, RPMRemaining: 10, TPMRemaining: 10000, Balance: 10, QuotaRemaining: 10000},
 		},
 	}, routing.TokenBudget{ProjectedInputTokens: 100, ProjectedOutputTokens: 100, SafetyFactor: 1.2, EstimatedCost: 1})
@@ -57,13 +57,13 @@ func TestExecuteNonStreamFailsOverOnCapacityFailure(t *testing.T) {
 		return nil
 	})
 
-	err := executor.ExecuteNonStream(context.Background(), 88, []routing.Candidate{
+	err := executor.ExecuteNonStream(context.Background(), 88, "gpt-5.4", []routing.Candidate{
 		{
-			Account: accounts.Account{ID: 1, AccountName: "quota-exhausted", Status: accounts.StatusActive, Priority: 100},
+			Account:  accounts.Account{ID: 1, AccountName: "quota-exhausted", Status: accounts.StatusActive, Priority: 100},
 			Snapshot: usage.Snapshot{HealthScore: 0.95, RPMRemaining: 10, TPMRemaining: 10000, Balance: 10, QuotaRemaining: 10000},
 		},
 		{
-			Account: accounts.Account{ID: 2, AccountName: "fallback", Status: accounts.StatusActive, Priority: 90},
+			Account:  accounts.Account{ID: 2, AccountName: "fallback", Status: accounts.StatusActive, Priority: 90},
 			Snapshot: usage.Snapshot{HealthScore: 0.9, RPMRemaining: 10, TPMRemaining: 10000, Balance: 10, QuotaRemaining: 10000},
 		},
 	}, routing.TokenBudget{ProjectedInputTokens: 100, ProjectedOutputTokens: 100, SafetyFactor: 1.2, EstimatedCost: 1})
@@ -90,9 +90,9 @@ func TestExecuteNonStreamReturnsErrorWhenNoCandidateCanSucceed(t *testing.T) {
 		return errors.New("boom")
 	})
 
-	err := executor.ExecuteNonStream(context.Background(), 77, []routing.Candidate{
+	err := executor.ExecuteNonStream(context.Background(), 77, "gpt-5.4", []routing.Candidate{
 		{
-			Account: accounts.Account{ID: 1, AccountName: "only", Status: accounts.StatusActive, Priority: 100},
+			Account:  accounts.Account{ID: 1, AccountName: "only", Status: accounts.StatusActive, Priority: 100},
 			Snapshot: usage.Snapshot{HealthScore: 0.9, RPMRemaining: 10, TPMRemaining: 10000, Balance: 10, QuotaRemaining: 10000},
 		},
 	}, routing.TokenBudget{ProjectedInputTokens: 100, ProjectedOutputTokens: 100, SafetyFactor: 1.2, EstimatedCost: 1})

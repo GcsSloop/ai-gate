@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -97,6 +98,7 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Printf("responses: received request path=%s model=%q stream=%t remote=%q", r.URL.Path, req.Model, req.Stream, r.RemoteAddr)
 	w.Header().Set("OpenAI-Model", req.Model)
 
 	inputItems, err := gatewayopenai.ExtractResponsesInputItems(req.Input)
@@ -133,6 +135,7 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
+	log.Printf("responses: using conversation conversation_id=%d model=%q", conversationID, req.Model)
 
 	allMessages := append([]conversations.Message{}, existingMessages...)
 	sequence := len(existingMessages)
@@ -171,13 +174,14 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 		return nil
 	})
 
-	err = executor.ExecuteNonStream(r.Context(), conversationID, candidates, routing.TokenBudget{
+	err = executor.ExecuteNonStream(r.Context(), conversationID, req.Model, candidates, routing.TokenBudget{
 		ProjectedInputTokens:  float64(len(allMessages) * 500),
 		ProjectedOutputTokens: 1500,
 		SafetyFactor:          1.3,
 		EstimatedCost:         0.01,
 	})
 	if err != nil {
+		log.Printf("responses: request failed conversation_id=%d model=%q err=%v", conversationID, req.Model, err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -449,6 +453,7 @@ func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseW
 			_, _ = h.conversations.CreateRun(conversations.Run{
 				ConversationID: conversationID,
 				AccountID:      candidate.Account.ID,
+				Model:          req.Model,
 				Status:         "completed",
 			})
 			assistantMessage := conversations.Message{
@@ -587,6 +592,7 @@ func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseW
 		_, _ = h.conversations.CreateRun(conversations.Run{
 			ConversationID: conversationID,
 			AccountID:      candidate.Account.ID,
+			Model:          req.Model,
 			Status:         "soft_failed",
 		})
 	}
@@ -652,11 +658,15 @@ func (h *ResponsesHandler) resolveConversation(r *http.Request, req gatewayopena
 }
 
 func (h *ResponsesHandler) executeResponsesRequest(ctx context.Context, account accounts.Account, req gatewayopenai.ResponsesRequest, messages []conversations.Message) (responsesExecutionResult, error) {
+	log.Printf("responses: forwarding request model=%q stream=false account_id=%d account_name=%q base_url=%q auth_mode=%q",
+		req.Model, account.ID, account.AccountName, account.BaseURL, account.AuthMode)
 	if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
+		log.Printf("responses: forward failed account_id=%d err=%v", account.ID, err)
 		return responsesExecutionResult{}, err
 	}
 	credential, err := resolveCredential(account)
 	if err != nil {
+		log.Printf("responses: forward failed account_id=%d err=%v", account.ID, err)
 		return responsesExecutionResult{}, err
 	}
 
@@ -679,14 +689,17 @@ func (h *ResponsesHandler) executeResponsesRequest(ctx context.Context, account 
 		adapter := providercodex.NewAdapter(resolveAccountBaseURL(account))
 		httpReq, err := adapter.BuildResponsesRequest(ctx, credential, accountID, body, true)
 		if err != nil {
+			log.Printf("responses: forward failed account_id=%d err=%v", account.ID, err)
 			return responsesExecutionResult{}, err
 		}
 		resp, err := h.client.Do(httpReq)
 		if err != nil {
+			log.Printf("responses: forward failed account_id=%d err=%v", account.ID, err)
 			return responsesExecutionResult{}, err
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode >= 400 {
+			log.Printf("responses: upstream error account_id=%d status=%d", account.ID, resp.StatusCode)
 			return responsesExecutionResult{}, classifyHTTPError(resp)
 		}
 		var builder strings.Builder
@@ -713,6 +726,7 @@ func (h *ResponsesHandler) executeResponsesRequest(ctx context.Context, account 
 		"model": req.Model,
 	})
 	if err != nil {
+		log.Printf("responses: forward failed account_id=%d err=%v", account.ID, err)
 		return responsesExecutionResult{}, err
 	}
 	body, err = json.Marshal(buildChatCompletionsBody(req, messages, false))
@@ -727,18 +741,22 @@ func (h *ResponsesHandler) executeResponsesRequest(ctx context.Context, account 
 		Body:   body,
 	})
 	if err != nil {
+		log.Printf("responses: forward failed account_id=%d err=%v", account.ID, err)
 		return responsesExecutionResult{}, err
 	}
 	resp, err := h.client.Do(httpReq)
 	if err != nil {
+		log.Printf("responses: forward failed account_id=%d err=%v", account.ID, err)
 		return responsesExecutionResult{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
+		log.Printf("responses: upstream error account_id=%d status=%d", account.ID, resp.StatusCode)
 		return responsesExecutionResult{}, classifyHTTPError(resp)
 	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("responses: read upstream failed account_id=%d err=%v", account.ID, err)
 		return responsesExecutionResult{}, err
 	}
 	text, outputItems := parseChatCompletionsResponse(raw)
@@ -750,11 +768,15 @@ func (h *ResponsesHandler) executeResponsesRequest(ctx context.Context, account 
 }
 
 func (h *ResponsesHandler) executeResponsesStreamRequest(ctx context.Context, account accounts.Account, req gatewayopenai.ResponsesRequest, messages []conversations.Message, emit func(string) error) (responsesExecutionResult, error) {
+	log.Printf("responses: forwarding request model=%q stream=true account_id=%d account_name=%q base_url=%q auth_mode=%q",
+		req.Model, account.ID, account.AccountName, account.BaseURL, account.AuthMode)
 	if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
+		log.Printf("responses: stream forward failed account_id=%d err=%v", account.ID, err)
 		return responsesExecutionResult{}, err
 	}
 	credential, err := resolveCredential(account)
 	if err != nil {
+		log.Printf("responses: stream forward failed account_id=%d err=%v", account.ID, err)
 		return responsesExecutionResult{}, err
 	}
 
@@ -771,14 +793,17 @@ func (h *ResponsesHandler) executeResponsesStreamRequest(ctx context.Context, ac
 		adapter := providercodex.NewAdapter(resolveAccountBaseURL(account))
 		httpReq, err := adapter.BuildResponsesRequest(ctx, credential, accountID, body, true)
 		if err != nil {
+			log.Printf("responses: stream forward failed account_id=%d err=%v", account.ID, err)
 			return responsesExecutionResult{}, err
 		}
 		resp, err := h.client.Do(httpReq)
 		if err != nil {
+			log.Printf("responses: stream forward failed account_id=%d err=%v", account.ID, err)
 			return responsesExecutionResult{}, err
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode >= 400 {
+			log.Printf("responses: stream upstream error account_id=%d status=%d", account.ID, resp.StatusCode)
 			return responsesExecutionResult{}, classifyHTTPError(resp)
 		}
 		collector := newResponsesUsageCollector(account.ID)
@@ -794,6 +819,7 @@ func (h *ResponsesHandler) executeResponsesStreamRequest(ctx context.Context, ac
 
 	body, err := json.Marshal(buildChatCompletionsBody(req, messages, true))
 	if err != nil {
+		log.Printf("responses: stream forward failed account_id=%d err=%v", account.ID, err)
 		return responsesExecutionResult{}, err
 	}
 	adapter := provideropenai.NewAdapter(resolveAccountBaseURL(account))
@@ -804,14 +830,17 @@ func (h *ResponsesHandler) executeResponsesStreamRequest(ctx context.Context, ac
 		Body:   body,
 	})
 	if err != nil {
+		log.Printf("responses: stream forward failed account_id=%d err=%v", account.ID, err)
 		return responsesExecutionResult{}, err
 	}
 	resp, err := h.client.Do(httpReq)
 	if err != nil {
+		log.Printf("responses: stream forward failed account_id=%d err=%v", account.ID, err)
 		return responsesExecutionResult{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
+		log.Printf("responses: stream upstream error account_id=%d status=%d", account.ID, resp.StatusCode)
 		return responsesExecutionResult{}, classifyHTTPError(resp)
 	}
 	outputItems, snapshot, err := consumeChatCompletionsStream(resp.Body, emit, account.ID)

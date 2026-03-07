@@ -24,7 +24,7 @@ func NewExecutor(recorder RunRecorder, attempt AttemptFunc) *Executor {
 	return &Executor{recorder: recorder, attempt: attempt}
 }
 
-func (e *Executor) ExecuteNonStream(ctx context.Context, conversationID int64, candidates []Candidate, budget TokenBudget) error {
+func (e *Executor) ExecuteNonStream(ctx context.Context, conversationID int64, model string, candidates []Candidate, budget TokenBudget) error {
 	scored := ScoreCandidates(candidates)
 
 	for _, candidate := range scored {
@@ -32,7 +32,7 @@ func (e *Executor) ExecuteNonStream(ctx context.Context, conversationID int64, c
 			continue
 		}
 
-		err := e.tryCandidate(ctx, conversationID, candidate)
+		err := e.tryCandidate(ctx, conversationID, model, candidate)
 		if err == nil {
 			return nil
 		}
@@ -50,12 +50,13 @@ func (e *Executor) ExecuteNonStream(ctx context.Context, conversationID int64, c
 	return errors.New("no candidate succeeded")
 }
 
-func (e *Executor) tryCandidate(ctx context.Context, conversationID int64, candidate Candidate) error {
+func (e *Executor) tryCandidate(ctx context.Context, conversationID int64, model string, candidate Candidate) error {
 	err := e.attempt(ctx, candidate)
 	if err == nil {
 		_, recordErr := e.recorder.CreateRun(conversations.Run{
 			ConversationID: conversationID,
 			AccountID:      candidate.Account.ID,
+			Model:          model,
 			Status:         "completed",
 		})
 		return recordErr
@@ -66,6 +67,7 @@ func (e *Executor) tryCandidate(ctx context.Context, conversationID int64, candi
 	if _, recordErr := e.recorder.CreateRun(conversations.Run{
 		ConversationID: conversationID,
 		AccountID:      candidate.Account.ID,
+		Model:          model,
 		Status:         status,
 	}); recordErr != nil {
 		return recordErr
@@ -80,6 +82,7 @@ func (e *Executor) tryCandidate(ctx context.Context, conversationID int64, candi
 		if _, recordErr := e.recorder.CreateRun(conversations.Run{
 			ConversationID: conversationID,
 			AccountID:      candidate.Account.ID,
+			Model:          model,
 			Status:         retryStatus,
 		}); recordErr != nil {
 			return recordErr
