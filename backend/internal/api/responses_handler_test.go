@@ -1103,6 +1103,192 @@ func TestResponsesHandlerStreamsToolCallOutputItem(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerStreamFailoverFromOfficialToThirdPartyDedupesOutput(t *testing.T) {
+	t.Parallel()
+
+	official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.failed\",\"error\":{\"message\":\"upstream failed\"}}\n\n"))
+	}))
+	defer official.Close()
+
+	thirdParty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello world\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer thirdParty.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      official.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create official returned error: %v", err)
+	}
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "fallback",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       thirdParty.URL + "/v1",
+		CredentialRef: "sk-third",
+		Status:        accounts.StatusActive,
+		Priority:      90,
+	}); err != nil {
+		t.Fatalf("Create fallback returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for id := int64(1); id <= 2; id++ {
+		if err := usageRepo.Save(usage.Snapshot{
+			AccountID:      id,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.9,
+		}); err != nil {
+			t.Fatalf("Save snapshot %d returned error: %v", id, err)
+		}
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses stream status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"output_text":"Hello world"`) {
+		t.Fatalf("stream body = %s, want final output_text Hello world", body)
+	}
+	if strings.Contains(body, `"output_text":"HelloHello world"`) {
+		t.Fatalf("stream body = %s, got duplicated output text", body)
+	}
+
+	runs, err := conversationRepo.ListRuns(1)
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("len(runs) = %d, want 2", len(runs))
+	}
+	if runs[0].Status != "soft_failed" {
+		t.Fatalf("runs[0].status = %q, want soft_failed", runs[0].Status)
+	}
+	if runs[1].Status != "completed" {
+		t.Fatalf("runs[1].status = %q, want completed", runs[1].Status)
+	}
+}
+
+func TestResponsesHandlerStreamFailoverRecordsCapacityFailedStatusOn429(t *testing.T) {
+	t.Parallel()
+
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer first.Close()
+
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer second.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for index, baseURL := range []string{first.URL + "/v1", second.URL + "/v1"} {
+		if err := accountRepo.Create(accounts.Account{
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "acc",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       baseURL,
+			CredentialRef: "sk",
+			Status:        accounts.StatusActive,
+			Priority:      100 - index,
+		}); err != nil {
+			t.Fatalf("Create account %d returned error: %v", index, err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for id := int64(1); id <= 2; id++ {
+		if err := usageRepo.Save(usage.Snapshot{
+			AccountID:      id,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.9,
+		}); err != nil {
+			t.Fatalf("Save snapshot %d returned error: %v", id, err)
+		}
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses stream status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	runs, err := conversationRepo.ListRuns(1)
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("len(runs) = %d, want 2", len(runs))
+	}
+	if runs[0].Status != "capacity_failed" {
+		t.Fatalf("runs[0].status = %q, want capacity_failed", runs[0].Status)
+	}
+	if runs[1].Status != "completed" {
+		t.Fatalf("runs[1].status = %q, want completed", runs[1].Status)
+	}
+}
+
 func TestResponsesHandlerRetrievesStoredResponseAndInputItems(t *testing.T) {
 	t.Parallel()
 

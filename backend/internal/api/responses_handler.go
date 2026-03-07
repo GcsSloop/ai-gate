@@ -413,14 +413,28 @@ func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseW
 		}, candidate.Snapshot) {
 			continue
 		}
+		existingOutput := assistant.String()
+		candidateRaw := ""
+		emittedLen := 0
 		result, err := h.executeResponsesStreamRequest(ctx, candidate.Account, req, messages, func(delta string) error {
+			candidateRaw += delta
+			deduped := dedupePrefix(candidateRaw, existingOutput)
+			if len(deduped) <= emittedLen {
+				return nil
+			}
+			increment := deduped[emittedLen:]
+			emittedLen = len(deduped)
+			if strings.TrimSpace(increment) == "" {
+				assistant.WriteString(increment)
+				return nil
+			}
 			if err := ensureTextItemStarted(); err != nil {
 				return err
 			}
-			assistant.WriteString(delta)
+			assistant.WriteString(increment)
 			return writeEvent(map[string]any{
 				"type":          "response.output_text.delta",
-				"delta":         delta,
+				"delta":         increment,
 				"item_id":       itemID,
 				"output_index":  0,
 				"content_index": 0,
@@ -595,7 +609,7 @@ func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseW
 			ConversationID: conversationID,
 			AccountID:      candidate.Account.ID,
 			Model:          req.Model,
-			Status:         "soft_failed",
+			Status:         runStatusForErrorClass(classifyRunError(err)),
 		})
 	}
 
@@ -1138,6 +1152,51 @@ func classifyHTTPError(resp *http.Response) error {
 		return providers.HTTPError{StatusCode: resp.StatusCode}
 	}
 	return nil
+}
+
+func classifyRunError(err error) providers.ErrorClass {
+	switch {
+	case errors.Is(err, providers.ErrInsufficientQuota):
+		return providers.ErrorClassCapacity
+	default:
+		var httpErr providers.HTTPError
+		if errors.As(err, &httpErr) {
+			switch {
+			case httpErr.StatusCode == http.StatusTooManyRequests:
+				return providers.ErrorClassRateLimit
+			case httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden:
+				return providers.ErrorClassHard
+			default:
+				return providers.ErrorClassSoft
+			}
+		}
+		return providers.ErrorClassSoft
+	}
+}
+
+func runStatusForErrorClass(class providers.ErrorClass) string {
+	switch class {
+	case providers.ErrorClassCapacity:
+		return "capacity_failed"
+	case providers.ErrorClassRateLimit:
+		return "rate_limited"
+	case providers.ErrorClassHard:
+		return "hard_failed"
+	case providers.ErrorClassSoft:
+		return "soft_failed"
+	default:
+		return fmt.Sprintf("failed:%s", class)
+	}
+}
+
+func dedupePrefix(next, existing string) string {
+	if next == "" {
+		return ""
+	}
+	if strings.HasPrefix(next, existing) {
+		return strings.TrimPrefix(next, existing)
+	}
+	return next
 }
 
 func consumeChatCompletionsStream(body io.Reader, emit func(string) error, accountID int64) ([]map[string]any, usage.Snapshot, error) {
