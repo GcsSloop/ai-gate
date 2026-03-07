@@ -20,16 +20,25 @@ func LoadLocalAuthFile(path string) (LocalAuthFile, []byte, error) {
 		return LocalAuthFile{}, nil, fmt.Errorf("read local auth file: %w", err)
 	}
 
-	var file LocalAuthFile
-	if err := json.Unmarshal(raw, &file); err != nil {
-		return LocalAuthFile{}, nil, fmt.Errorf("decode local auth file: %w", err)
-	}
-	if file.AuthMode == "" {
-		return LocalAuthFile{}, nil, fmt.Errorf("local auth file missing auth_mode")
-	}
-	if file.Tokens.AccessToken == "" && file.Tokens.IDToken == "" {
-		return LocalAuthFile{}, nil, fmt.Errorf("local auth file missing tokens")
+	file, err := LoadLocalAuthFileContent(raw)
+	if err != nil {
+		return LocalAuthFile{}, nil, err
 	}
 
 	return file, raw, nil
+}
+
+func LoadLocalAuthFileContent(raw []byte) (LocalAuthFile, error) {
+	var file LocalAuthFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return LocalAuthFile{}, fmt.Errorf("decode local auth file: %w", err)
+	}
+	if file.AuthMode == "" {
+		return LocalAuthFile{}, fmt.Errorf("local auth file missing auth_mode")
+	}
+	if file.Tokens.AccessToken == "" && file.Tokens.IDToken == "" {
+		return LocalAuthFile{}, fmt.Errorf("local auth file missing tokens")
+	}
+
+	return file, nil
 }

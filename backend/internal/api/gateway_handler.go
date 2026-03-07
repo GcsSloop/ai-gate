@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/auth"
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
 	gatewayopenai "github.com/gcssloop/codex-router/backend/internal/gateway/openai"
 	"github.com/gcssloop/codex-router/backend/internal/providers"
@@ -108,11 +109,16 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var upstreamResponse []byte
 	executor := routing.NewExecutor(h.conversations, func(ctx context.Context, candidate routing.Candidate) error {
+		credential, err := resolveCredential(candidate.Account)
+		if err != nil {
+			return err
+		}
+
 		adapter := provideropenai.NewAdapter(candidate.Account.BaseURL)
 		upstreamReq, err := adapter.BuildRequest(ctx, providers.Request{
 			Path:   "/chat/completions",
 			Method: http.MethodPost,
-			APIKey: candidate.Account.CredentialRef,
+			APIKey: credential,
 			Body:   body,
 		})
 		if err != nil {
@@ -174,11 +180,16 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 	}
 
 	proxy := streamproxy.NewProxy(h.conversations, func(ctx context.Context, attempt streamproxy.Attempt) error {
+		credential, err := resolveCredential(attempt.Candidate.Account)
+		if err != nil {
+			return err
+		}
+
 		adapter := provideropenai.NewAdapter(attempt.Candidate.Account.BaseURL)
 		upstreamReq, err := adapter.BuildRequest(ctx, providers.Request{
 			Path:   "/chat/completions",
 			Method: http.MethodPost,
-			APIKey: attempt.Candidate.Account.CredentialRef,
+			APIKey: credential,
 			Body:   body,
 		})
 		if err != nil {
@@ -245,4 +256,19 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 	if flusher != nil {
 		flusher.Flush()
 	}
+}
+
+func resolveCredential(account accounts.Account) (string, error) {
+	if account.AuthMode != accounts.AuthModeLocalImport {
+		return account.CredentialRef, nil
+	}
+
+	file, err := auth.LoadLocalAuthFileContent([]byte(account.CredentialRef))
+	if err != nil {
+		return "", err
+	}
+	if file.Tokens.AccessToken != "" {
+		return file.Tokens.AccessToken, nil
+	}
+	return file.Tokens.IDToken, nil
 }
