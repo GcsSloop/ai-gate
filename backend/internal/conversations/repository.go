@@ -73,10 +73,12 @@ func (r *SQLiteRepository) ListConversations(offset, limit int) ([]Conversation,
 
 func (r *SQLiteRepository) AppendMessage(message Message) error {
 	_, err := r.db.Exec(
-		`INSERT INTO messages (conversation_id, role, content, sequence_no) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO messages (conversation_id, role, content, item_type, raw_item_json, sequence_no) VALUES (?, ?, ?, ?, ?, ?)`,
 		message.ConversationID,
 		message.Role,
 		message.Content,
+		message.ItemType,
+		message.RawItemJSON,
 		message.SequenceNo,
 	)
 	if err != nil {
@@ -104,7 +106,7 @@ func (r *SQLiteRepository) CreateRun(run Run) (int64, error) {
 
 func (r *SQLiteRepository) ListMessages(conversationID int64) ([]Message, error) {
 	rows, err := r.db.Query(
-		`SELECT id, conversation_id, role, content, sequence_no, created_at
+		`SELECT id, conversation_id, role, content, item_type, raw_item_json, sequence_no, created_at
 		 FROM messages WHERE conversation_id = ? ORDER BY sequence_no ASC, id ASC`,
 		conversationID,
 	)
@@ -116,7 +118,16 @@ func (r *SQLiteRepository) ListMessages(conversationID int64) ([]Message, error)
 	var messages []Message
 	for rows.Next() {
 		var message Message
-		if err := rows.Scan(&message.ID, &message.ConversationID, &message.Role, &message.Content, &message.SequenceNo, &message.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&message.ID,
+			&message.ConversationID,
+			&message.Role,
+			&message.Content,
+			&message.ItemType,
+			&message.RawItemJSON,
+			&message.SequenceNo,
+			&message.CreatedAt,
+		); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		messages = append(messages, message)
@@ -155,6 +166,30 @@ func (r *SQLiteRepository) ListRuns(conversationID int64) ([]Run, error) {
 		return nil, fmt.Errorf("iterate runs: %w", err)
 	}
 	return runs, nil
+}
+
+func (r *SQLiteRepository) CountConversations() (int, error) {
+	return r.count(`SELECT COUNT(*) FROM conversations`)
+}
+
+func (r *SQLiteRepository) CountActiveConversations() (int, error) {
+	return r.count(`SELECT COUNT(*) FROM conversations WHERE state = 'active'`)
+}
+
+func (r *SQLiteRepository) CountRuns() (int, error) {
+	return r.count(`SELECT COUNT(*) FROM runs`)
+}
+
+func (r *SQLiteRepository) CountFailoverRuns() (int, error) {
+	return r.count(`SELECT COUNT(*) FROM runs WHERE fallback_from_run_id IS NOT NULL`)
+}
+
+func (r *SQLiteRepository) count(query string) (int, error) {
+	var total int
+	if err := r.db.QueryRow(query).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count rows: %w", err)
+	}
+	return total, nil
 }
 
 func nullInt64(value *int64) sql.NullInt64 {

@@ -1,8 +1,8 @@
 package api
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +23,7 @@ import (
 
 type GatewayAccounts interface {
 	List() ([]accounts.Account, error)
+	Update(account accounts.Account) error
 }
 
 type GatewayUsage interface {
@@ -51,7 +52,7 @@ func NewGatewayHandler(accounts GatewayAccounts, usage GatewayUsage, conversatio
 }
 
 func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+	if r.Method != http.MethodPost || (r.URL.Path != "/v1/chat/completions" && r.URL.Path != "/chat/completions") {
 		http.NotFound(w, r)
 		return
 	}
@@ -109,12 +110,16 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var upstreamResponse []byte
 	executor := routing.NewExecutor(h.conversations, func(ctx context.Context, candidate routing.Candidate) error {
-		credential, err := resolveCredential(candidate.Account)
+		account := candidate.Account
+		if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
+			return err
+		}
+		credential, err := resolveCredential(account)
 		if err != nil {
 			return err
 		}
 
-		adapter := provideropenai.NewAdapter(candidate.Account.BaseURL)
+		adapter := provideropenai.NewAdapter(resolveAccountBaseURL(account))
 		upstreamReq, err := adapter.BuildRequest(ctx, providers.Request{
 			Path:   "/chat/completions",
 			Method: http.MethodPost,
@@ -180,12 +185,16 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 	}
 
 	proxy := streamproxy.NewProxy(h.conversations, func(ctx context.Context, attempt streamproxy.Attempt) error {
-		credential, err := resolveCredential(attempt.Candidate.Account)
+		account := attempt.Candidate.Account
+		if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
+			return err
+		}
+		credential, err := resolveCredential(account)
 		if err != nil {
 			return err
 		}
 
-		adapter := provideropenai.NewAdapter(attempt.Candidate.Account.BaseURL)
+		adapter := provideropenai.NewAdapter(resolveAccountBaseURL(account))
 		upstreamReq, err := adapter.BuildRequest(ctx, providers.Request{
 			Path:   "/chat/completions",
 			Method: http.MethodPost,
@@ -271,4 +280,19 @@ func resolveCredential(account accounts.Account) (string, error) {
 		return file.Tokens.AccessToken, nil
 	}
 	return file.Tokens.IDToken, nil
+}
+
+func resolveLocalAccountID(account accounts.Account) (string, error) {
+	if account.AuthMode != accounts.AuthModeLocalImport {
+		return "", nil
+	}
+
+	file, err := auth.LoadLocalAuthFileContent([]byte(account.CredentialRef))
+	if err != nil {
+		return "", err
+	}
+	if file.Tokens.AccountID != "" {
+		return file.Tokens.AccountID, nil
+	}
+	return "", errors.New("local auth file missing account_id")
 }

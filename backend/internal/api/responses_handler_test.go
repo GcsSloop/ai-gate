@@ -1,0 +1,1145 @@
+package api_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/api"
+	"github.com/gcssloop/codex-router/backend/internal/conversations"
+	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
+	"github.com/gcssloop/codex-router/backend/internal/usage"
+)
+
+func TestResponsesHandlerProxiesOpenAICompatibleAccount(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-third-party" {
+			t.Fatalf("authorization = %q, want Bearer sk-third-party", got)
+		}
+
+		var payload struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if payload.Model != "gpt-5.4" {
+			t.Fatalf("model = %q, want gpt-5.4", payload.Model)
+		}
+		if len(payload.Messages) != 1 || payload.Messages[0].Content != "ping" {
+			t.Fatalf("messages = %+v, want single ping message", payload.Messages)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "pong"}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-third-party",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload struct {
+		ID         string `json:"id"`
+		OutputText string `json:"output_text"`
+		Output     []struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if !strings.HasPrefix(payload.ID, "resp_") {
+		t.Fatalf("id = %q, want resp_ prefix", payload.ID)
+	}
+	if payload.OutputText != "pong" {
+		t.Fatalf("output_text = %q, want pong", payload.OutputText)
+	}
+	if len(payload.Output) == 0 || len(payload.Output[0].Content) == 0 || payload.Output[0].Content[0].Text != "pong" {
+		t.Fatalf("output content = %+v, want pong", payload.Output)
+	}
+}
+
+func TestResponsesHandlerProxiesLocalImportedOfficialAccount(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("upstream path = %q, want /backend-api/codex/responses", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token-1" {
+			t.Fatalf("authorization = %q, want Bearer token-1", got)
+		}
+		if got := r.Header.Get("ChatGPT-Account-Id"); got != "acct-1" {
+			t.Fatalf("ChatGPT-Account-Id = %q, want acct-1", got)
+		}
+
+		var payload struct {
+			Model        string `json:"model"`
+			Stream       bool   `json:"stream"`
+			Instructions string `json:"instructions"`
+			Input        []struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if payload.Model != "gpt-5.4" {
+			t.Fatalf("model = %q, want gpt-5.4", payload.Model)
+		}
+		if !payload.Stream {
+			t.Fatal("stream = false, want true for official codex backend")
+		}
+		if strings.TrimSpace(payload.Instructions) == "" {
+			t.Fatal("instructions is empty, want default codex instructions")
+		}
+		if len(payload.Input) != 1 || len(payload.Input[0].Content) != 1 || payload.Input[0].Content[0].Text != "ping" {
+			t.Fatalf("input = %+v, want single ping item", payload.Input)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"official-pong\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":54,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":5,\"total_tokens\":59},\"store\":false}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	if !strings.Contains(rec.Body.String(), "official-pong") {
+		t.Fatalf("response body = %s, want official-pong", rec.Body.String())
+	}
+
+	snapshot, err := usageRepo.GetLatest(1)
+	if err != nil {
+		t.Fatalf("GetLatest returned error: %v", err)
+	}
+	if snapshot.LastTotalTokens != 59 {
+		t.Fatalf("LastTotalTokens = %v, want 59", snapshot.LastTotalTokens)
+	}
+	if snapshot.LastInputTokens != 54 {
+		t.Fatalf("LastInputTokens = %v, want 54", snapshot.LastInputTokens)
+	}
+	if snapshot.LastOutputTokens != 5 {
+		t.Fatalf("LastOutputTokens = %v, want 5", snapshot.LastOutputTokens)
+	}
+}
+
+func TestResponsesHandlerPreservesOfficialCompletedOutputItems(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"grep\",\"arguments\":\"{\\\"pattern\\\":\\\"TODO\\\"}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":12,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":3,\"total_tokens\":15},\"store\":false}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"run grep"
+	}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", createRec.Code, http.StatusOK)
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/responses/"+created.ID, nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/responses/{id} status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+	body := getRec.Body.String()
+	if !strings.Contains(body, `"type":"function_call"`) || !strings.Contains(body, `"call_id":"call_1"`) || !strings.Contains(body, `"name":"grep"`) {
+		t.Fatalf("retrieved body = %s, want preserved function_call output", body)
+	}
+}
+
+func TestResponsesHandlerRetrievesMultipleOfficialOutputItems(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\",\"annotations\":[]}]},{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"grep\",\"arguments\":\"{\\\"pattern\\\":\\\"TODO\\\"}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":12,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":3,\"total_tokens\":15},\"store\":false}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"run grep"
+	}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", createRec.Code, http.StatusOK)
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/responses/"+created.ID, nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/responses/{id} status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+	body := getRec.Body.String()
+	if !strings.Contains(body, `"type":"message"`) || !strings.Contains(body, `"text":"done"`) {
+		t.Fatalf("retrieved body = %s, want preserved message output", body)
+	}
+	if !strings.Contains(body, `"type":"function_call"`) || !strings.Contains(body, `"call_id":"call_1"`) {
+		t.Fatalf("retrieved body = %s, want preserved function_call output", body)
+	}
+}
+
+func TestResponsesHandlerMapsChatCompletionsToolCallsToResponsesOutput(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]any{
+							{
+								"id":   "call_42",
+								"type": "function",
+								"function": map[string]any{
+									"name":      "grep",
+									"arguments": "{\"pattern\":\"TODO\"}",
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-third-party",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"run grep"
+	}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", createRec.Code, http.StatusOK)
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/responses/"+created.ID, nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/responses/{id} status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+	body := getRec.Body.String()
+	if !strings.Contains(body, `"type":"function_call"`) || !strings.Contains(body, `"call_id":"call_42"`) || !strings.Contains(body, `"name":"grep"`) {
+		t.Fatalf("retrieved body = %s, want mapped function_call output", body)
+	}
+}
+
+func TestResponsesHandlerUsesPreviousResponseIDForConversationReplay(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var payload struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if callCount == 2 {
+			if len(payload.Messages) != 3 {
+				t.Fatalf("second request messages = %+v, want 3 replayed messages", payload.Messages)
+			}
+			if payload.Messages[0].Content != "first question" || payload.Messages[1].Content != "first answer" || payload.Messages[2].Content != "second question" {
+				t.Fatalf("second request messages = %+v, want replayed conversation", payload.Messages)
+			}
+		}
+
+		reply := "first answer"
+		if callCount == 2 {
+			reply = "second answer"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": reply}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-third-party",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"first question"
+	}`))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("first POST /v1/responses status = %d, want %d", firstRec.Code, http.StatusOK)
+	}
+
+	var firstPayload struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(firstRec.Body.Bytes(), &firstPayload); err != nil {
+		t.Fatalf("Unmarshal first returned error: %v", err)
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"previous_response_id":"`+firstPayload.ID+`",
+		"input":"second question"
+	}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondRec := httptest.NewRecorder()
+	handler.ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("second POST /v1/responses status = %d, want %d", secondRec.Code, http.StatusOK)
+	}
+}
+
+func TestResponsesHandlerStreamsOfficialStyleLifecycleEvents(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"po\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ng\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-third-party",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses stream status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	expected := []string{
+		`"type":"response.created"`,
+		`"type":"response.in_progress"`,
+		`"type":"response.output_item.added"`,
+		`"type":"response.content_part.added"`,
+		`"type":"response.output_text.delta"`,
+		`"type":"response.output_text.done"`,
+		`"type":"response.content_part.done"`,
+		`"type":"response.output_item.done"`,
+		`"type":"response.completed"`,
+		`data: [DONE]`,
+	}
+	start := 0
+	for _, marker := range expected {
+		index := strings.Index(body[start:], marker)
+		if index < 0 {
+			t.Fatalf("stream body missing marker %q in %s", marker, body)
+		}
+		start += index + len(marker)
+	}
+	if strings.Contains(body, `"type":"response.failed"`) {
+		t.Fatalf("stream body unexpectedly contains response.failed: %s", body)
+	}
+	if !strings.Contains(body, `"response_id":"resp_`) || !strings.Contains(body, `"sequence_number":`) {
+		t.Fatalf("stream body missing response_id or sequence_number metadata: %s", body)
+	}
+	if !strings.Contains(body, `"usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}`) {
+		t.Fatalf("stream body missing completed usage payload: %s", body)
+	}
+}
+
+func TestResponsesHandlerStreamFailureUsesErrorEvent(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream boom", http.StatusBadGateway)
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-third-party",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses stream status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"error"`) {
+		t.Fatalf("stream body missing error event: %s", body)
+	}
+	if strings.Contains(body, `"type":"response.failed"`) {
+		t.Fatalf("stream body unexpectedly contains response.failed: %s", body)
+	}
+	errorDetailRE := regexp.MustCompile(`"message":"[^"]+"`)
+	if !errorDetailRE.MatchString(body) {
+		t.Fatalf("stream error event missing message: %s", body)
+	}
+}
+
+func TestResponsesHandlerStreamsToolCallOutputItem(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_7\",\"type\":\"function\",\"function\":{\"name\":\"grep\",\"arguments\":\"{\\\"pattern\\\":\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"TODO\\\"}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-third-party",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"run grep",
+		"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses stream status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"response.function_call_arguments.delta"`) {
+		t.Fatalf("stream body missing function_call_arguments.delta: %s", body)
+	}
+	if !strings.Contains(body, `"type":"response.function_call_arguments.done"`) {
+		t.Fatalf("stream body missing function_call_arguments.done: %s", body)
+	}
+	if !strings.Contains(body, `"type":"response.output_item.done"`) {
+		t.Fatalf("stream body missing output_item.done: %s", body)
+	}
+	if !strings.Contains(body, `"type":"response.output_item.added"`) {
+		t.Fatalf("stream body missing output_item.added: %s", body)
+	}
+	if !strings.Contains(body, `"type":"function_call"`) || !strings.Contains(body, `"call_id":"call_7"`) || !strings.Contains(body, `"name":"grep"`) {
+		t.Fatalf("stream body = %s, want function_call output item", body)
+	}
+	if !strings.Contains(body, `"arguments":"{\"pattern\":\"TODO\"}"`) {
+		t.Fatalf("stream body = %s, want merged function arguments", body)
+	}
+}
+
+func TestResponsesHandlerRetrievesStoredResponseAndInputItems(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{
+					"message": map[string]any{"role": "assistant", "content": "pong"},
+				},
+			},
+			"usage": map[string]any{
+				"prompt_tokens":     12,
+				"completion_tokens": 4,
+				"total_tokens":      16,
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-third-party",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping"
+	}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", createRec.Code, http.StatusOK)
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("Unmarshal created returned error: %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/responses/"+created.ID, nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/responses/{id} status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+	if !strings.Contains(getRec.Body.String(), `"output_text":"pong"`) {
+		t.Fatalf("retrieved body = %s, want pong output_text", getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), `"total_tokens":16`) {
+		t.Fatalf("retrieved body = %s, want usage total_tokens", getRec.Body.String())
+	}
+
+	inputReq := httptest.NewRequest(http.MethodGet, "/v1/responses/"+created.ID+"/input_items", nil)
+	inputRec := httptest.NewRecorder()
+	handler.ServeHTTP(inputRec, inputReq)
+	if inputRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/responses/{id}/input_items status = %d, want %d", inputRec.Code, http.StatusOK)
+	}
+	if !strings.Contains(inputRec.Body.String(), `"text":"ping"`) {
+		t.Fatalf("input items body = %s, want ping input", inputRec.Body.String())
+	}
+	if strings.Contains(inputRec.Body.String(), `"text":"pong"`) {
+		t.Fatalf("input items body = %s, should not include assistant output", inputRec.Body.String())
+	}
+}
+
+func TestResponsesHandlerInputItemsPreserveRawFunctionCallOutput(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "pong"}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-third-party",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":[
+			{"type":"function_call_output","call_id":"call_123","output":"tool result"},
+			{"role":"user","content":[{"type":"input_text","text":"ping"}]}
+		]
+	}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", createRec.Code, http.StatusOK)
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	inputReq := httptest.NewRequest(http.MethodGet, "/v1/responses/"+created.ID+"/input_items", nil)
+	inputRec := httptest.NewRecorder()
+	handler.ServeHTTP(inputRec, inputReq)
+	if inputRec.Code != http.StatusOK {
+		t.Fatalf("GET input_items status = %d, want %d", inputRec.Code, http.StatusOK)
+	}
+	body := inputRec.Body.String()
+	if !strings.Contains(body, `"type":"function_call_output"`) || !strings.Contains(body, `"call_id":"call_123"`) {
+		t.Fatalf("input items body = %s, want preserved function_call_output", body)
+	}
+}
+
+func TestResponsesHandlerInputItemsSupportPaginationMetadata(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "pong"}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-third-party",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":[
+			{"role":"user","content":[{"type":"input_text","text":"first"}]},
+			{"role":"user","content":[{"type":"input_text","text":"second"}]},
+			{"role":"user","content":[{"type":"input_text","text":"third"}]}
+		]
+	}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", createRec.Code, http.StatusOK)
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	inputReq := httptest.NewRequest(http.MethodGet, "/v1/responses/"+created.ID+"/input_items?limit=2&order=desc", nil)
+	inputRec := httptest.NewRecorder()
+	handler.ServeHTTP(inputRec, inputReq)
+	if inputRec.Code != http.StatusOK {
+		t.Fatalf("GET input_items status = %d, want %d", inputRec.Code, http.StatusOK)
+	}
+	body := inputRec.Body.String()
+	if !strings.Contains(body, `"has_more":true`) {
+		t.Fatalf("input items body = %s, want has_more true", body)
+	}
+	if !strings.Contains(body, `"first_id":"msg_input_1_2"`) || !strings.Contains(body, `"last_id":"msg_input_1_1"`) {
+		t.Fatalf("input items body = %s, want descending first/last ids", body)
+	}
+}
+
+func TestResponsesHandlerDeletesResponse(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	handler := api.NewResponsesHandler(accounts.NewSQLiteRepository(store.DB()), usage.NewSQLiteRepository(store.DB()), conversations.NewSQLiteRepository(store.DB()))
+	req := httptest.NewRequest(http.MethodDelete, "/v1/responses/resp_1_seq_2_123", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE /v1/responses/{id} status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `"deleted":true`) {
+		t.Fatalf("delete body = %s, want deleted true", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerCancelsResponse(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	handler := api.NewResponsesHandler(accounts.NewSQLiteRepository(store.DB()), usage.NewSQLiteRepository(store.DB()), conversations.NewSQLiteRepository(store.DB()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_1_seq_2_123/cancel", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses/{id}/cancel status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"cancelled"`) {
+		t.Fatalf("cancel body = %s, want cancelled status", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerEstimatesInputTokens(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	handler := api.NewResponsesHandler(accounts.NewSQLiteRepository(store.DB()), usage.NewSQLiteRepository(store.DB()), conversations.NewSQLiteRepository(store.DB()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/input_tokens", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":[{"role":"user","content":[{"type":"input_text","text":"hello world"}]}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses/input_tokens status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	inputTokens, ok := payload["input_tokens"].(float64)
+	if !ok || inputTokens <= 0 {
+		t.Fatalf("input_tokens = %v, want positive number", payload["input_tokens"])
+	}
+}
+
+func TestResponsesHandlerRetrievesModelByID(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	handler := api.NewResponsesHandler(accounts.NewSQLiteRepository(store.DB()), usage.NewSQLiteRepository(store.DB()), conversations.NewSQLiteRepository(store.DB()))
+	req := httptest.NewRequest(http.MethodGet, "/v1/models/gpt-5.4", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/models/{id} status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"gpt-5.4"`) {
+		t.Fatalf("model body = %s, want gpt-5.4", rec.Body.String())
+	}
+}

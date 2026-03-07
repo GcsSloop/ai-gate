@@ -33,6 +33,8 @@ func TestSQLiteRepositoryConversationMessageAndRunPersistence(t *testing.T) {
 		ConversationID: conversationID,
 		Role:           "user",
 		Content:        "hello",
+		ItemType:       "function_call_output",
+		RawItemJSON:    `{"type":"function_call_output","call_id":"call_123","output":"hello"}`,
 		SequenceNo:     1,
 	}); err != nil {
 		t.Fatalf("AppendMessage returned error: %v", err)
@@ -65,6 +67,12 @@ func TestSQLiteRepositoryConversationMessageAndRunPersistence(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0].Content != "hello" {
 		t.Fatalf("ListMessages returned %+v, want one persisted message", messages)
+	}
+	if messages[0].ItemType != "function_call_output" {
+		t.Fatalf("ItemType = %q, want function_call_output", messages[0].ItemType)
+	}
+	if messages[0].RawItemJSON == "" {
+		t.Fatal("RawItemJSON is empty, want persisted raw item")
 	}
 
 	runs, err := repo.ListRuns(conversationID)

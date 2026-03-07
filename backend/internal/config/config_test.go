@@ -15,8 +15,8 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("Load returned error: %v", err)
 	}
 
-	if cfg.ListenAddr != "127.0.0.1:8080" {
-		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, "127.0.0.1:8080")
+	if cfg.ListenAddr != "127.0.0.1:6789" {
+		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, "127.0.0.1:6789")
 	}
 	if cfg.DatabasePath != "data/codex-router.sqlite" {
 		t.Fatalf("DatabasePath = %q, want %q", cfg.DatabasePath, "data/codex-router.sqlite")

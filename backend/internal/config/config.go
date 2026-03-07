@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	defaultListenAddr        = "127.0.0.1:8080"
+	defaultListenAddr        = "127.0.0.1:6789"
 	defaultDatabasePath      = "data/codex-router.sqlite"
 	defaultSchedulerInterval = 5 * time.Minute
 )

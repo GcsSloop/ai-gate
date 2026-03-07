@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gcssloop/codex-router/backend/internal/usage"
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
+	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
 
 func TestSQLiteRepositorySaveAndGetLatest(t *testing.T) {
@@ -24,14 +24,21 @@ func TestSQLiteRepositorySaveAndGetLatest(t *testing.T) {
 	checkedAt := time.Now().UTC().Truncate(time.Second)
 
 	err = repo.Save(usage.Snapshot{
-		AccountID:       7,
-		Balance:         19.25,
-		QuotaRemaining:  120000,
-		RPMRemaining:    100,
-		TPMRemaining:    80000,
-		RecentErrorRate: 0.02,
-		AvgLatencyMS:    320,
-		CheckedAt:       checkedAt,
+		AccountID:            7,
+		Balance:              19.25,
+		QuotaRemaining:       120000,
+		RPMRemaining:         100,
+		TPMRemaining:         80000,
+		HealthScore:          0.82,
+		RecentErrorRate:      0.02,
+		AvgLatencyMS:         320,
+		LastTotalTokens:      2048,
+		LastInputTokens:      1800,
+		LastOutputTokens:     248,
+		ModelContextWindow:   258400,
+		PrimaryUsedPercent:   18,
+		SecondaryUsedPercent: 44,
+		CheckedAt:            checkedAt,
 	})
 	if err != nil {
 		t.Fatalf("Save returned error: %v", err)
@@ -54,11 +61,23 @@ func TestSQLiteRepositorySaveAndGetLatest(t *testing.T) {
 	if got.TPMRemaining != 80000 {
 		t.Fatalf("TPMRemaining = %v, want %v", got.TPMRemaining, 80000)
 	}
+	if got.HealthScore != 0.82 {
+		t.Fatalf("HealthScore = %v, want %v", got.HealthScore, 0.82)
+	}
 	if got.RecentErrorRate != 0.02 {
 		t.Fatalf("RecentErrorRate = %v, want %v", got.RecentErrorRate, 0.02)
 	}
 	if got.AvgLatencyMS != 320 {
 		t.Fatalf("AvgLatencyMS = %v, want %v", got.AvgLatencyMS, 320)
+	}
+	if got.LastTotalTokens != 2048 {
+		t.Fatalf("LastTotalTokens = %v, want 2048", got.LastTotalTokens)
+	}
+	if got.ModelContextWindow != 258400 {
+		t.Fatalf("ModelContextWindow = %v, want 258400", got.ModelContextWindow)
+	}
+	if got.PrimaryUsedPercent != 18 {
+		t.Fatalf("PrimaryUsedPercent = %v, want 18", got.PrimaryUsedPercent)
 	}
 	if !got.CheckedAt.Equal(checkedAt) {
 		t.Fatalf("CheckedAt = %v, want %v", got.CheckedAt, checkedAt)

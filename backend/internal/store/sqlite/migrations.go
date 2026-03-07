@@ -25,8 +25,18 @@ var schemaStatements = []string{
 		quota_remaining REAL,
 		rpm_remaining REAL,
 		tpm_remaining REAL,
+		health_score REAL,
 		recent_error_rate REAL,
 		avg_latency_ms REAL,
+		throttled_recently INTEGER NOT NULL DEFAULT 0,
+		last_total_tokens REAL,
+		last_input_tokens REAL,
+		last_output_tokens REAL,
+		model_context_window REAL,
+		primary_used_percent REAL,
+		secondary_used_percent REAL,
+		primary_resets_at DATETIME,
+		secondary_resets_at DATETIME,
 		checked_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,
 	`CREATE TABLE IF NOT EXISTS routing_policies (
@@ -49,6 +59,8 @@ var schemaStatements = []string{
 		conversation_id INTEGER NOT NULL,
 		role TEXT NOT NULL,
 		content TEXT NOT NULL,
+		item_type TEXT NOT NULL DEFAULT 'message',
+		raw_item_json TEXT NOT NULL DEFAULT '',
 		sequence_no INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,

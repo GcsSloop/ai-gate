@@ -2,14 +2,27 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  plugins: [react()],
+  base: "/ai-router/webui/",
+  plugins: [
+    react(),
+    {
+      name: "ai-router-root-redirect",
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          if (req.url === "/") {
+            res.statusCode = 302;
+            res.setHeader("Location", "/ai-router/webui/");
+            res.end();
+            return;
+          }
+          next();
+        });
+      },
+    },
+  ],
   server: {
     proxy: {
-      "/accounts": "http://127.0.0.1:8080",
-      "/policy": "http://127.0.0.1:8080",
-      "/monitoring": "http://127.0.0.1:8080",
-      "/conversations": "http://127.0.0.1:8080",
-      "/v1": "http://127.0.0.1:8080",
+      "/ai-router/api": "http://127.0.0.1:6789",
     },
   },
   test: {

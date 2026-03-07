@@ -1,0 +1,1484 @@
+package api
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/conversations"
+	gatewayopenai "github.com/gcssloop/codex-router/backend/internal/gateway/openai"
+	"github.com/gcssloop/codex-router/backend/internal/providers"
+	providercodex "github.com/gcssloop/codex-router/backend/internal/providers/codex"
+	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
+	"github.com/gcssloop/codex-router/backend/internal/routing"
+	"github.com/gcssloop/codex-router/backend/internal/usage"
+)
+
+const officialCodexBaseURL = "https://chatgpt.com/backend-api/codex"
+const defaultCodexInstructions = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals. Be pragmatic, concise, and focus on completing the user's task."
+
+type ResponsesAccounts interface {
+	List() ([]accounts.Account, error)
+	Update(account accounts.Account) error
+}
+
+type ResponsesUsage interface {
+	GetLatest(accountID int64) (usage.Snapshot, error)
+	Save(snapshot usage.Snapshot) error
+}
+
+type ResponsesRuns interface {
+	CreateConversation(conversation conversations.Conversation) (int64, error)
+	CreateRun(run conversations.Run) (int64, error)
+	AppendMessage(message conversations.Message) error
+	ListMessages(conversationID int64) ([]conversations.Message, error)
+}
+
+type ResponsesHandler struct {
+	accounts      ResponsesAccounts
+	usage         ResponsesUsage
+	conversations ResponsesRuns
+	client        *http.Client
+}
+
+type responsesExecutionResult struct {
+	Text        string
+	Snapshot    usage.Snapshot
+	OutputItems []map[string]any
+}
+
+func NewResponsesHandler(accounts ResponsesAccounts, usage ResponsesUsage, conversations ResponsesRuns) *ResponsesHandler {
+	return &ResponsesHandler{
+		accounts:      accounts,
+		usage:         usage,
+		conversations: conversations,
+		client:        http.DefaultClient,
+	}
+}
+
+func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodPost && (r.URL.Path == "/v1/responses" || r.URL.Path == "/responses"):
+		h.handleResponses(w, r)
+	case r.Method == http.MethodPost && isResponsesInputTokensPath(r.URL.Path):
+		h.handleResponsesInputTokens(w, r)
+	case r.Method == http.MethodGet && (r.URL.Path == "/v1/models" || r.URL.Path == "/models"):
+		h.handleModels(w, r)
+	case r.Method == http.MethodGet && isResponseInputItemsPath(r.URL.Path):
+		h.handleResponseInputItems(w, r)
+	case r.Method == http.MethodGet && isResponseDetailPath(r.URL.Path):
+		h.handleResponseDetail(w, r)
+	case r.Method == http.MethodPost && isResponseCancelPath(r.URL.Path):
+		h.handleCancelResponse(w, r)
+	case r.Method == http.MethodDelete && isResponseDetailPath(r.URL.Path):
+		h.handleDeleteResponse(w, r)
+	case r.Method == http.MethodGet && isModelDetailPath(r.URL.Path):
+		h.handleModelDetail(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Request) {
+	req, err := gatewayopenai.ParseResponsesRequest(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	inputItems, err := gatewayopenai.ExtractResponsesInputItems(req.Input)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(inputItems) == 0 {
+		http.Error(w, "input is required", http.StatusBadRequest)
+		return
+	}
+
+	accountList, err := h.accounts.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	candidates := h.buildCandidates(accountList)
+
+	conversationID, existingMessages, err := h.resolveConversation(r, req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if conversationID == 0 {
+		conversationID, err = h.conversations.CreateConversation(conversations.Conversation{
+			ClientID:             r.RemoteAddr,
+			TargetProviderFamily: "codex-router",
+			DefaultModel:         req.Model,
+			State:                "active",
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	allMessages := append([]conversations.Message{}, existingMessages...)
+	sequence := len(existingMessages)
+	for _, item := range inputItems {
+		message := conversations.Message{
+			ConversationID: conversationID,
+			Role:           normalizeRole(item.Role),
+			Content:        item.Content,
+			ItemType:       responseInputItemType(item.Raw),
+			SequenceNo:     sequence,
+		}
+		if rawJSON, ok := marshalRawItem(item.Raw); ok {
+			message.RawItemJSON = rawJSON
+		}
+		if err := h.conversations.AppendMessage(message); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		allMessages = append(allMessages, message)
+		sequence++
+	}
+
+	responseID := newRouterResponseIDForSequence(conversationID, sequence)
+	if req.Stream {
+		h.streamResponses(r.Context(), w, req, candidates, conversationID, responseID, allMessages, sequence)
+		return
+	}
+
+	result := responsesExecutionResult{Snapshot: emptyResponsesUsageSnapshot()}
+	executor := routing.NewExecutor(h.conversations, func(ctx context.Context, candidate routing.Candidate) error {
+		executionResult, err := h.executeResponsesRequest(ctx, candidate.Account, req, allMessages)
+		if err != nil {
+			return err
+		}
+		result = executionResult
+		return nil
+	})
+
+	err = executor.ExecuteNonStream(r.Context(), conversationID, candidates, routing.TokenBudget{
+		ProjectedInputTokens:  float64(len(allMessages) * 500),
+		ProjectedOutputTokens: 1500,
+		SafetyFactor:          1.3,
+		EstimatedCost:         0.01,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	assistantMessage := conversations.Message{
+		ConversationID: conversationID,
+		Role:           "assistant",
+		Content:        result.Text,
+		ItemType:       responseOutputItemType(firstOutputItem(result.OutputItems)),
+		SequenceNo:     sequence,
+	}
+	if rawJSON, ok := marshalRawItem(firstOutputItem(result.OutputItems)); ok {
+		assistantMessage.RawItemJSON = rawJSON
+	}
+	if len(result.OutputItems) <= 1 {
+		if err := h.conversations.AppendMessage(assistantMessage); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		for index, outputItem := range result.OutputItems {
+			message := assistantMessage
+			if index > 0 {
+				message.Content = outputItemText(outputItem)
+			}
+			message.ItemType = responseOutputItemType(outputItem)
+			if rawJSON, ok := marshalRawItem(outputItem); ok {
+				message.RawItemJSON = rawJSON
+			}
+			if err := h.conversations.AppendMessage(message); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	if result.Snapshot.AccountID != 0 || result.Snapshot.LastTotalTokens > 0 {
+		result.Snapshot = h.mergeUsageSnapshot(result.Snapshot)
+		_ = h.usage.Save(result.Snapshot)
+	}
+
+	writeJSON(w, http.StatusOK, buildResponsesResponse(responseID, req.Model, result.Text, "completed", newResponseItemID(), result.Snapshot, result.OutputItems))
+}
+
+func (h *ResponsesHandler) handleModels(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object": "list",
+		"data":   listModels(),
+	})
+}
+
+func (h *ResponsesHandler) handleModelDetail(w http.ResponseWriter, r *http.Request) {
+	modelID := pathBase(r.URL.Path)
+	for _, model := range listModels() {
+		if model["id"] == modelID {
+			writeJSON(w, http.StatusOK, model)
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
+func (h *ResponsesHandler) handleResponseDetail(w http.ResponseWriter, r *http.Request) {
+	responseID := pathBase(r.URL.Path)
+	responsePayload, err := h.buildStoredResponse(responseID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, responsePayload)
+}
+
+func (h *ResponsesHandler) handleResponseInputItems(w http.ResponseWriter, r *http.Request) {
+	responseID := pathBase(pathDir(r.URL.Path))
+	items, err := h.buildStoredInputItems(responseID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	page := paginateInputItems(items, r.URL.Query())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object":   "list",
+		"data":     page.Items,
+		"first_id": page.FirstID,
+		"last_id":  page.LastID,
+		"has_more": page.HasMore,
+	})
+}
+
+func (h *ResponsesHandler) handleDeleteResponse(w http.ResponseWriter, r *http.Request) {
+	responseID := pathBase(r.URL.Path)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":      responseID,
+		"object":  "response.deleted",
+		"deleted": true,
+	})
+}
+
+func (h *ResponsesHandler) handleCancelResponse(w http.ResponseWriter, r *http.Request) {
+	responseID := pathBase(pathDir(r.URL.Path))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":                 responseID,
+		"object":             "response",
+		"status":             "cancelled",
+		"error":              nil,
+		"incomplete_details": nil,
+	})
+}
+
+func (h *ResponsesHandler) handleResponsesInputTokens(w http.ResponseWriter, r *http.Request) {
+	req, err := gatewayopenai.ParseResponsesRequest(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	inputItems, err := gatewayopenai.ExtractResponsesInputItems(req.Input)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	totalChars := 0
+	for _, item := range inputItems {
+		totalChars += len([]rune(item.Content))
+	}
+	estimated := totalChars/4 + len(inputItems)*4
+	if estimated <= 0 {
+		estimated = 1
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"input_tokens": estimated,
+		"model":        req.Model,
+	})
+}
+
+func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseWriter, req gatewayopenai.ResponsesRequest, candidates []routing.Candidate, conversationID int64, responseID string, messages []conversations.Message, sequence int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	itemID := newResponseItemID()
+	sequenceNumber := 0
+
+	flusher, _ := w.(http.Flusher)
+	writeEvent := func(event any) error {
+		payload, ok := event.(map[string]any)
+		if ok {
+			if _, exists := payload["response_id"]; !exists {
+				payload["response_id"] = responseID
+			}
+			if _, exists := payload["sequence_number"]; !exists {
+				payload["sequence_number"] = sequenceNumber
+			}
+			sequenceNumber++
+		}
+		data, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
+	}
+
+	_ = writeEvent(map[string]any{
+		"type":     "response.created",
+		"response": buildResponsesResponse(responseID, req.Model, "", "in_progress", itemID, emptyResponsesUsageSnapshot(), nil),
+	})
+	_ = writeEvent(map[string]any{
+		"type":     "response.in_progress",
+		"response": buildResponsesResponse(responseID, req.Model, "", "in_progress", itemID, emptyResponsesUsageSnapshot(), nil),
+	})
+
+	var assistant strings.Builder
+	resultSnapshot := emptyResponsesUsageSnapshot()
+	textItemStarted := false
+	ensureTextItemStarted := func() error {
+		if textItemStarted {
+			return nil
+		}
+		textItemStarted = true
+		if err := writeEvent(map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": 0,
+			"item":         buildOutputItem(itemID, "", "in_progress"),
+		}); err != nil {
+			return err
+		}
+		return writeEvent(map[string]any{
+			"type":          "response.content_part.added",
+			"item_id":       itemID,
+			"output_index":  0,
+			"content_index": 0,
+			"part":          buildOutputTextPart(""),
+		})
+	}
+	for _, candidate := range routing.ScoreCandidates(candidates) {
+		if !routing.IsFeasible(routing.TokenBudget{
+			ProjectedInputTokens:  float64(len(messages) * 500),
+			ProjectedOutputTokens: 1500,
+			SafetyFactor:          1.3,
+			EstimatedCost:         0.01,
+		}, candidate.Snapshot) {
+			continue
+		}
+		result, err := h.executeResponsesStreamRequest(ctx, candidate.Account, req, messages, func(delta string) error {
+			if err := ensureTextItemStarted(); err != nil {
+				return err
+			}
+			assistant.WriteString(delta)
+			return writeEvent(map[string]any{
+				"type":          "response.output_text.delta",
+				"delta":         delta,
+				"item_id":       itemID,
+				"output_index":  0,
+				"content_index": 0,
+			})
+		})
+		if err == nil {
+			resultSnapshot = result.Snapshot
+			outputItems := result.OutputItems
+			if len(outputItems) == 0 {
+				outputItems = []map[string]any{buildOutputItem(itemID, assistant.String(), "completed")}
+			}
+			outputItem := firstOutputItem(outputItems)
+			finalItemID := itemID
+			if currentItemID, _ := outputItem["id"].(string); strings.TrimSpace(currentItemID) != "" {
+				finalItemID = currentItemID
+			}
+			_, _ = h.conversations.CreateRun(conversations.Run{
+				ConversationID: conversationID,
+				AccountID:      candidate.Account.ID,
+				Status:         "completed",
+			})
+			assistantMessage := conversations.Message{
+				ConversationID: conversationID,
+				Role:           "assistant",
+				Content:        assistant.String(),
+				ItemType:       responseOutputItemType(outputItem),
+				SequenceNo:     sequence,
+			}
+			for index, currentOutput := range outputItems {
+				message := assistantMessage
+				if index > 0 {
+					message.Content = outputItemText(currentOutput)
+				}
+				message.ItemType = responseOutputItemType(currentOutput)
+				if rawJSON, ok := marshalRawItem(currentOutput); ok {
+					message.RawItemJSON = rawJSON
+				}
+				_ = h.conversations.AppendMessage(message)
+			}
+			if !isFunctionCallOutputItem(outputItem) {
+				if err := ensureTextItemStarted(); err != nil {
+					break
+				}
+				_ = writeEvent(map[string]any{
+					"type":          "response.output_text.done",
+					"text":          assistant.String(),
+					"item_id":       finalItemID,
+					"output_index":  0,
+					"content_index": 0,
+				})
+				_ = writeEvent(map[string]any{
+					"type":          "response.content_part.done",
+					"item_id":       finalItemID,
+					"output_index":  0,
+					"content_index": 0,
+					"part":          buildOutputTextPart(assistant.String()),
+				})
+			} else {
+				_ = writeEvent(map[string]any{
+					"type":         "response.output_item.added",
+					"output_index": 0,
+					"item":         cloneOutputItemWithStatus(outputItem, "in_progress"),
+				})
+				if arguments, _ := outputItem["arguments"].(string); arguments != "" {
+					_ = writeEvent(map[string]any{
+						"type":         "response.function_call_arguments.delta",
+						"item_id":      finalItemID,
+						"output_index": 0,
+						"delta":        arguments,
+					})
+				}
+				_ = writeEvent(map[string]any{
+					"type":         "response.function_call_arguments.done",
+					"item_id":      finalItemID,
+					"output_index": 0,
+					"arguments":    outputItem["arguments"],
+					"name":         outputItem["name"],
+					"call_id":      outputItem["call_id"],
+				})
+			}
+			_ = writeEvent(map[string]any{
+				"type":         "response.output_item.done",
+				"output_index": 0,
+				"item":         outputItem,
+			})
+			for outputIndex := 1; outputIndex < len(outputItems); outputIndex++ {
+				currentOutput := outputItems[outputIndex]
+				currentItemID, _ := currentOutput["id"].(string)
+				if strings.TrimSpace(currentItemID) == "" {
+					currentItemID = newResponseItemID()
+					currentOutput["id"] = currentItemID
+				}
+				_ = writeEvent(map[string]any{
+					"type":         "response.output_item.added",
+					"output_index": outputIndex,
+					"item":         cloneOutputItemWithStatus(currentOutput, "in_progress"),
+				})
+				if isFunctionCallOutputItem(currentOutput) {
+					if arguments, _ := currentOutput["arguments"].(string); arguments != "" {
+						_ = writeEvent(map[string]any{
+							"type":         "response.function_call_arguments.delta",
+							"item_id":      currentItemID,
+							"output_index": outputIndex,
+							"delta":        arguments,
+						})
+					}
+					_ = writeEvent(map[string]any{
+						"type":         "response.function_call_arguments.done",
+						"item_id":      currentItemID,
+						"output_index": outputIndex,
+						"arguments":    currentOutput["arguments"],
+						"name":         currentOutput["name"],
+						"call_id":      currentOutput["call_id"],
+					})
+				} else {
+					text := outputItemText(currentOutput)
+					_ = writeEvent(map[string]any{
+						"type":          "response.content_part.added",
+						"item_id":       currentItemID,
+						"output_index":  outputIndex,
+						"content_index": 0,
+						"part":          buildOutputTextPart(text),
+					})
+					_ = writeEvent(map[string]any{
+						"type":          "response.output_text.done",
+						"text":          text,
+						"item_id":       currentItemID,
+						"output_index":  outputIndex,
+						"content_index": 0,
+					})
+					_ = writeEvent(map[string]any{
+						"type":          "response.content_part.done",
+						"item_id":       currentItemID,
+						"output_index":  outputIndex,
+						"content_index": 0,
+						"part":          buildOutputTextPart(text),
+					})
+				}
+				_ = writeEvent(map[string]any{
+					"type":         "response.output_item.done",
+					"output_index": outputIndex,
+					"item":         currentOutput,
+				})
+			}
+			_ = writeEvent(map[string]any{
+				"type":     "response.completed",
+				"response": buildResponsesResponse(responseID, req.Model, assistant.String(), "completed", itemID, resultSnapshot, outputItems),
+			})
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			return
+		}
+		_, _ = h.conversations.CreateRun(conversations.Run{
+			ConversationID: conversationID,
+			AccountID:      candidate.Account.ID,
+			Status:         "soft_failed",
+		})
+	}
+
+	_ = writeEvent(map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    "server_error",
+			"code":    "upstream_error",
+			"message": "no candidate succeeded",
+		},
+	})
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+}
+
+func (h *ResponsesHandler) buildCandidates(accountList []accounts.Account) []routing.Candidate {
+	candidates := make([]routing.Candidate, 0, len(accountList))
+	for _, account := range accountList {
+		snapshot, err := h.usage.GetLatest(account.ID)
+		if err != nil {
+			snapshot = usage.Snapshot{
+				AccountID:       account.ID,
+				Balance:         1,
+				QuotaRemaining:  1_000_000,
+				RPMRemaining:    100,
+				TPMRemaining:    1_000_000,
+				HealthScore:     0.5,
+				RecentErrorRate: 0,
+			}
+		}
+		candidates = append(candidates, routing.Candidate{Account: account, Snapshot: snapshot})
+	}
+	return candidates
+}
+
+func (h *ResponsesHandler) resolveConversation(r *http.Request, req gatewayopenai.ResponsesRequest) (int64, []conversations.Message, error) {
+	if strings.TrimSpace(req.PreviousResponseID) == "" {
+		return 0, nil, nil
+	}
+
+	conversationID, err := conversationIDFromResponseID(req.PreviousResponseID)
+	if err != nil {
+		return 0, nil, err
+	}
+	messages, err := h.conversations.ListMessages(conversationID)
+	if err != nil {
+		return 0, nil, err
+	}
+	return conversationID, messages, nil
+}
+
+func (h *ResponsesHandler) executeResponsesRequest(ctx context.Context, account accounts.Account, req gatewayopenai.ResponsesRequest, messages []conversations.Message) (responsesExecutionResult, error) {
+	if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
+		return responsesExecutionResult{}, err
+	}
+	credential, err := resolveCredential(account)
+	if err != nil {
+		return responsesExecutionResult{}, err
+	}
+
+	if usesOfficialCodexAdapter(account) {
+		accountID, err := resolveLocalAccountID(account)
+		if err != nil {
+			return responsesExecutionResult{}, err
+		}
+		instructions := effectiveCodexInstructions(req.Instructions)
+		body, err := json.Marshal(map[string]any{
+			"model":        req.Model,
+			"stream":       true,
+			"store":        false,
+			"instructions": instructions,
+			"input":        buildResponsesInput(messages),
+		})
+		if err != nil {
+			return responsesExecutionResult{}, err
+		}
+		adapter := providercodex.NewAdapter(resolveAccountBaseURL(account))
+		httpReq, err := adapter.BuildResponsesRequest(ctx, credential, accountID, body, true)
+		if err != nil {
+			return responsesExecutionResult{}, err
+		}
+		resp, err := h.client.Do(httpReq)
+		if err != nil {
+			return responsesExecutionResult{}, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			return responsesExecutionResult{}, classifyHTTPError(resp)
+		}
+		var builder strings.Builder
+		collector := newResponsesUsageCollector(account.ID)
+		if err := consumeResponsesStream(resp.Body, func(delta string) error {
+			builder.WriteString(delta)
+			return nil
+		}, collector.Observe); err != nil {
+			return responsesExecutionResult{}, err
+		}
+		collector.Save(h.usage)
+		return responsesExecutionResult{
+			Text:        builder.String(),
+			Snapshot:    collector.snapshotOrDefault(),
+			OutputItems: collector.outputItems(),
+		}, nil
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"model":    req.Model,
+		"stream":   false,
+		"messages": buildChatMessages(messages),
+	})
+	if err != nil {
+		return responsesExecutionResult{}, err
+	}
+	adapter := provideropenai.NewAdapter(resolveAccountBaseURL(account))
+	httpReq, err := adapter.BuildRequest(ctx, providers.Request{
+		Path:   "/chat/completions",
+		Method: http.MethodPost,
+		APIKey: credential,
+		Body:   body,
+	})
+	if err != nil {
+		return responsesExecutionResult{}, err
+	}
+	resp, err := h.client.Do(httpReq)
+	if err != nil {
+		return responsesExecutionResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return responsesExecutionResult{}, classifyHTTPError(resp)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return responsesExecutionResult{}, err
+	}
+	text, outputItems := parseChatCompletionsResponse(raw)
+	return responsesExecutionResult{
+		Text:        text,
+		Snapshot:    parseChatCompletionsUsage(raw, account.ID),
+		OutputItems: outputItems,
+	}, nil
+}
+
+func (h *ResponsesHandler) executeResponsesStreamRequest(ctx context.Context, account accounts.Account, req gatewayopenai.ResponsesRequest, messages []conversations.Message, emit func(string) error) (responsesExecutionResult, error) {
+	if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
+		return responsesExecutionResult{}, err
+	}
+	credential, err := resolveCredential(account)
+	if err != nil {
+		return responsesExecutionResult{}, err
+	}
+
+	if usesOfficialCodexAdapter(account) {
+		accountID, err := resolveLocalAccountID(account)
+		if err != nil {
+			return responsesExecutionResult{}, err
+		}
+		instructions := effectiveCodexInstructions(req.Instructions)
+		body, err := json.Marshal(map[string]any{
+			"model":        req.Model,
+			"stream":       true,
+			"store":        false,
+			"instructions": instructions,
+			"input":        buildResponsesInput(messages),
+		})
+		if err != nil {
+			return responsesExecutionResult{}, err
+		}
+		adapter := providercodex.NewAdapter(resolveAccountBaseURL(account))
+		httpReq, err := adapter.BuildResponsesRequest(ctx, credential, accountID, body, true)
+		if err != nil {
+			return responsesExecutionResult{}, err
+		}
+		resp, err := h.client.Do(httpReq)
+		if err != nil {
+			return responsesExecutionResult{}, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			return responsesExecutionResult{}, classifyHTTPError(resp)
+		}
+		collector := newResponsesUsageCollector(account.ID)
+		err = consumeResponsesStream(resp.Body, emit, collector.Observe)
+		if err == nil {
+			collector.Save(h.usage)
+		}
+		return responsesExecutionResult{
+			Snapshot:    collector.snapshotOrDefault(),
+			OutputItems: collector.outputItems(),
+		}, err
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"model":    req.Model,
+		"stream":   true,
+		"messages": buildChatMessages(messages),
+	})
+	if err != nil {
+		return responsesExecutionResult{}, err
+	}
+	adapter := provideropenai.NewAdapter(resolveAccountBaseURL(account))
+	httpReq, err := adapter.BuildRequest(ctx, providers.Request{
+		Path:   "/chat/completions",
+		Method: http.MethodPost,
+		APIKey: credential,
+		Body:   body,
+	})
+	if err != nil {
+		return responsesExecutionResult{}, err
+	}
+	resp, err := h.client.Do(httpReq)
+	if err != nil {
+		return responsesExecutionResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return responsesExecutionResult{}, classifyHTTPError(resp)
+	}
+	outputItem, err := consumeChatCompletionsStream(resp.Body, emit)
+	return responsesExecutionResult{
+		Snapshot:    emptyResponsesUsageSnapshot(),
+		OutputItems: wrapOutputItems(outputItem),
+	}, err
+}
+
+func buildResponsesInput(messages []conversations.Message) []map[string]any {
+	items := make([]map[string]any, 0, len(messages))
+	for _, message := range messages {
+		if rawItem, ok := unmarshalRawItem(message.RawItemJSON); ok {
+			items = append(items, rawItem)
+			continue
+		}
+		items = append(items, map[string]any{
+			"role": message.Role,
+			"content": []map[string]any{
+				{
+					"type": "input_text",
+					"text": message.Content,
+				},
+			},
+		})
+	}
+	return items
+}
+
+func buildChatMessages(messages []conversations.Message) []map[string]string {
+	items := make([]map[string]string, 0, len(messages))
+	for _, message := range messages {
+		if message.ItemType != "" && message.ItemType != "message" {
+			continue
+		}
+		if strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		items = append(items, map[string]string{
+			"role":    message.Role,
+			"content": message.Content,
+		})
+	}
+	return items
+}
+
+func buildResponsesResponse(id string, model string, text string, status string, itemID string, snapshot usage.Snapshot, outputItems []map[string]any) map[string]any {
+	if len(outputItems) == 0 {
+		outputItems = []map[string]any{buildOutputItem(itemID, text, status)}
+	}
+	return map[string]any{
+		"id":                 id,
+		"object":             "response",
+		"created_at":         time.Now().Unix(),
+		"status":             status,
+		"error":              nil,
+		"incomplete_details": nil,
+		"model":              model,
+		"output_text":        text,
+		"output":             outputItems,
+		"usage":              buildResponsesUsagePayload(snapshot),
+	}
+}
+
+func buildOutputItem(id string, text string, status string) map[string]any {
+	return map[string]any{
+		"id":     id,
+		"type":   "message",
+		"status": status,
+		"role":   "assistant",
+		"content": []map[string]any{
+			buildOutputTextPart(text),
+		},
+	}
+}
+
+func buildOutputTextPart(text string) map[string]any {
+	return map[string]any{
+		"type":        "output_text",
+		"text":        text,
+		"annotations": []any{},
+	}
+}
+
+func cloneOutputItemWithStatus(item map[string]any, status string) map[string]any {
+	cloned := cloneJSONMap(item)
+	if cloned == nil {
+		return nil
+	}
+	cloned["status"] = status
+	return cloned
+}
+
+func buildResponsesUsagePayload(snapshot usage.Snapshot) map[string]any {
+	if snapshot.AccountID == 0 && snapshot.LastTotalTokens == 0 && snapshot.LastInputTokens == 0 && snapshot.LastOutputTokens == 0 {
+		snapshot = emptyResponsesUsageSnapshot()
+	}
+	return map[string]any{
+		"input_tokens": snapshot.LastInputTokens,
+		"input_tokens_details": map[string]any{
+			"cached_tokens": 0,
+		},
+		"output_tokens": snapshot.LastOutputTokens,
+		"output_tokens_details": map[string]any{
+			"reasoning_tokens": 0,
+		},
+		"total_tokens": snapshot.LastTotalTokens,
+	}
+}
+
+func emptyResponsesUsageSnapshot() usage.Snapshot {
+	return usage.Snapshot{
+		LastInputTokens:  0,
+		LastOutputTokens: 0,
+		LastTotalTokens:  0,
+	}
+}
+
+func newResponseItemID() string {
+	return "msg_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+}
+
+func newRouterResponseID(conversationID int64) string {
+	return fmt.Sprintf("resp_%d_%d", conversationID, time.Now().UnixNano())
+}
+
+func newRouterResponseIDForSequence(conversationID int64, sequence int) string {
+	return fmt.Sprintf("resp_%d_seq_%d_%d", conversationID, sequence, time.Now().UnixNano())
+}
+
+func conversationIDFromResponseID(value string) (int64, error) {
+	parts := strings.Split(value, "_")
+	if len(parts) < 3 || parts[0] != "resp" {
+		return 0, errors.New("invalid previous_response_id")
+	}
+	return strconv.ParseInt(parts[1], 10, 64)
+}
+
+func responseSequenceFromResponseID(value string) (int, bool) {
+	parts := strings.Split(value, "_")
+	if len(parts) >= 5 && parts[0] == "resp" && parts[2] == "seq" {
+		sequence, err := strconv.Atoi(parts[3])
+		if err == nil {
+			return sequence, true
+		}
+	}
+	return 0, false
+}
+
+func normalizeRole(role string) string {
+	switch role {
+	case "assistant", "system", "developer":
+		return role
+	default:
+		return "user"
+	}
+}
+
+func effectiveCodexInstructions(value string) string {
+	if strings.TrimSpace(value) != "" {
+		return value
+	}
+	return defaultCodexInstructions
+}
+
+func usesOfficialCodexAdapter(account accounts.Account) bool {
+	return account.AuthMode == accounts.AuthModeLocalImport || account.ProviderType == accounts.ProviderOpenAIOfficial
+}
+
+func classifyHTTPError(resp *http.Response) error {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return providers.ErrInsufficientQuota
+	}
+	if resp.StatusCode >= 400 {
+		return providers.HTTPError{StatusCode: resp.StatusCode}
+	}
+	return nil
+}
+
+func consumeChatCompletionsStream(body io.Reader, emit func(string) error) (map[string]any, error) {
+	scanner := bufio.NewScanner(body)
+	collector := &chatCompletionsStreamCollector{}
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		if payload == "[DONE]" {
+			return collector.outputItem(), nil
+		}
+		var frame struct {
+			Choices []struct {
+				Delta map[string]any `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(payload), &frame); err != nil {
+			return nil, err
+		}
+		if len(frame.Choices) == 0 {
+			continue
+		}
+		if delta, ok := frame.Choices[0].Delta["content"].(string); ok && delta != "" {
+			if err := emit(delta); err != nil {
+				return nil, err
+			}
+		}
+		collector.observe(frame.Choices[0].Delta)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return collector.outputItem(), nil
+}
+
+type chatCompletionsStreamCollector struct {
+	callID    string
+	name      string
+	arguments strings.Builder
+}
+
+func (c *chatCompletionsStreamCollector) observe(delta map[string]any) {
+	toolCalls, ok := delta["tool_calls"].([]any)
+	if !ok {
+		return
+	}
+	for _, rawCall := range toolCalls {
+		call, ok := rawCall.(map[string]any)
+		if !ok {
+			continue
+		}
+		if c.callID == "" {
+			c.callID, _ = call["id"].(string)
+		}
+		functionPayload, ok := call["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if c.name == "" {
+			c.name, _ = functionPayload["name"].(string)
+		}
+		if arguments, ok := functionPayload["arguments"].(string); ok {
+			c.arguments.WriteString(arguments)
+		}
+	}
+}
+
+func (c *chatCompletionsStreamCollector) outputItem() map[string]any {
+	if strings.TrimSpace(c.name) == "" {
+		return nil
+	}
+	return map[string]any{
+		"id":        newResponseItemID(),
+		"type":      "function_call",
+		"call_id":   c.callID,
+		"name":      c.name,
+		"arguments": c.arguments.String(),
+		"status":    "completed",
+	}
+}
+
+func consumeResponsesStream(body io.Reader, emit func(string) error, observe func(map[string]any)) error {
+	scanner := bufio.NewScanner(body)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		if payload == "[DONE]" {
+			return nil
+		}
+		var frame map[string]any
+		if err := json.Unmarshal([]byte(payload), &frame); err != nil {
+			return err
+		}
+		if observe != nil {
+			observe(frame)
+		}
+		switch frame["type"] {
+		case "response.output_text.delta":
+			if delta, ok := frame["delta"].(string); ok {
+				if err := emit(delta); err != nil {
+					return err
+				}
+			}
+		case "response.completed":
+			return nil
+		}
+	}
+	return scanner.Err()
+}
+
+func parseChatCompletionsUsage(raw []byte, accountID int64) usage.Snapshot {
+	var payload struct {
+		Usage struct {
+			PromptTokens     float64 `json:"prompt_tokens"`
+			CompletionTokens float64 `json:"completion_tokens"`
+			TotalTokens      float64 `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return emptyResponsesUsageSnapshot()
+	}
+	return usage.Snapshot{
+		AccountID:        accountID,
+		LastInputTokens:  payload.Usage.PromptTokens,
+		LastOutputTokens: payload.Usage.CompletionTokens,
+		LastTotalTokens:  payload.Usage.TotalTokens,
+	}
+}
+
+func listModels() []map[string]any {
+	return []map[string]any{
+		{"id": "gpt-5.4", "object": "model", "owned_by": "codex-router"},
+		{"id": "gpt-5.2-codex", "object": "model", "owned_by": "codex-router"},
+		{"id": "gpt-5.1-codex-max", "object": "model", "owned_by": "codex-router"},
+		{"id": "gpt-4.1", "object": "model", "owned_by": "codex-router"},
+	}
+}
+
+func isResponseDetailPath(path string) bool {
+	return strings.HasPrefix(path, "/v1/responses/") || strings.HasPrefix(path, "/responses/")
+}
+
+func isResponseInputItemsPath(path string) bool {
+	return strings.HasSuffix(path, "/input_items") && isResponseDetailPath(path)
+}
+
+func isResponseCancelPath(path string) bool {
+	return strings.HasSuffix(path, "/cancel") && isResponseDetailPath(path)
+}
+
+func isResponsesInputTokensPath(path string) bool {
+	return path == "/v1/responses/input_tokens" || path == "/responses/input_tokens"
+}
+
+func isModelDetailPath(path string) bool {
+	return strings.HasPrefix(path, "/v1/models/") || strings.HasPrefix(path, "/models/")
+}
+
+func pathBase(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+func pathDir(path string) string {
+	index := strings.LastIndex(path, "/")
+	if index <= 0 {
+		return path
+	}
+	return path[:index]
+}
+
+func (h *ResponsesHandler) buildStoredResponse(responseID string) (map[string]any, error) {
+	conversationID, err := conversationIDFromResponseID(responseID)
+	if err != nil {
+		return nil, err
+	}
+	messages, err := h.conversations.ListMessages(conversationID)
+	if err != nil {
+		return nil, err
+	}
+	targets := responseOutputMessages(messages, responseID)
+	if len(targets) == 0 {
+		return nil, errors.New("response not found")
+	}
+
+	snapshot, err := h.latestConversationUsage(messages, conversationID)
+	if err != nil {
+		snapshot = emptyResponsesUsageSnapshot()
+	}
+	outputItems := make([]map[string]any, 0, len(targets))
+	textParts := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if rawItem, ok := unmarshalRawItem(target.RawItemJSON); ok {
+			outputItems = append(outputItems, rawItem)
+		}
+		if strings.TrimSpace(target.Content) != "" {
+			textParts = append(textParts, target.Content)
+		}
+	}
+	return buildResponsesResponse(responseID, "gpt-5.4", strings.Join(textParts, "\n"), "completed", buildResponseItemID(responseID), snapshot, outputItems), nil
+}
+
+func (h *ResponsesHandler) buildStoredInputItems(responseID string) ([]map[string]any, error) {
+	conversationID, err := conversationIDFromResponseID(responseID)
+	if err != nil {
+		return nil, err
+	}
+	messages, err := h.conversations.ListMessages(conversationID)
+	if err != nil {
+		return nil, err
+	}
+	targets := responseOutputMessages(messages, responseID)
+	if len(targets) == 0 {
+		return nil, errors.New("response not found")
+	}
+	targetSequence := targets[0].SequenceNo
+	items := make([]map[string]any, 0)
+	for _, message := range messages {
+		if message.SequenceNo >= targetSequence {
+			break
+		}
+		if rawItem, ok := unmarshalRawItem(message.RawItemJSON); ok {
+			items = append(items, wrapStoredInputItem(message, rawItem))
+			continue
+		}
+		items = append(items, wrapStoredInputItem(message, map[string]any{
+			"type": "message",
+			"role": message.Role,
+			"content": []map[string]any{
+				{
+					"type": "input_text",
+					"text": message.Content,
+				},
+			},
+		}))
+	}
+	return items, nil
+}
+
+func responseInputItemType(raw map[string]any) string {
+	if raw == nil {
+		return "message"
+	}
+	itemType, _ := raw["type"].(string)
+	if strings.TrimSpace(itemType) == "" {
+		return "message"
+	}
+	return itemType
+}
+
+func marshalRawItem(raw map[string]any) (string, bool) {
+	if raw == nil {
+		return "", false
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
+}
+
+func unmarshalRawItem(value string) (map[string]any, bool) {
+	if strings.TrimSpace(value) == "" {
+		return nil, false
+	}
+	var item map[string]any
+	if err := json.Unmarshal([]byte(value), &item); err != nil {
+		return nil, false
+	}
+	return item, true
+}
+
+func wrapStoredInputItem(message conversations.Message, item map[string]any) map[string]any {
+	itemType, _ := item["type"].(string)
+	if strings.TrimSpace(itemType) == "" {
+		itemType = "message"
+	}
+	role, _ := item["role"].(string)
+	if strings.TrimSpace(role) == "" {
+		role = message.Role
+	}
+	return map[string]any{
+		"id":      fmt.Sprintf("msg_input_%d_%d", message.ConversationID, message.SequenceNo),
+		"object":  "response.input_item",
+		"content": item["content"],
+		"role":    role,
+		"type":    itemType,
+		"call_id": item["call_id"],
+		"output":  item["output"],
+	}
+}
+
+func responseOutputItemType(raw map[string]any) string {
+	if raw == nil {
+		return "message"
+	}
+	itemType, _ := raw["type"].(string)
+	if strings.TrimSpace(itemType) == "" {
+		return "message"
+	}
+	return itemType
+}
+
+func isFunctionCallOutputItem(item map[string]any) bool {
+	itemType, _ := item["type"].(string)
+	return itemType == "function_call"
+}
+
+func firstOutputItem(items []map[string]any) map[string]any {
+	if len(items) == 0 {
+		return nil
+	}
+	return items[0]
+}
+
+func wrapOutputItems(item map[string]any) []map[string]any {
+	if len(item) == 0 {
+		return nil
+	}
+	return []map[string]any{item}
+}
+
+func outputItemText(item map[string]any) string {
+	content, ok := item["content"].([]any)
+	if !ok {
+		return ""
+	}
+	parts := make([]string, 0, len(content))
+	for _, rawPart := range content {
+		part, ok := rawPart.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text, _ := part["text"].(string); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+type inputItemsPage struct {
+	Items   []map[string]any
+	FirstID string
+	LastID  string
+	HasMore bool
+}
+
+func paginateInputItems(items []map[string]any, query url.Values) inputItemsPage {
+	paged := append([]map[string]any{}, items...)
+	if strings.EqualFold(query.Get("order"), "desc") {
+		reverseInputItems(paged)
+	}
+
+	after := strings.TrimSpace(query.Get("after"))
+	if after != "" {
+		index := indexOfInputItem(paged, after)
+		if index >= 0 && index+1 <= len(paged) {
+			paged = paged[index+1:]
+		}
+	}
+
+	hasMore := false
+	if limit, err := strconv.Atoi(strings.TrimSpace(query.Get("limit"))); err == nil && limit > 0 && limit < len(paged) {
+		hasMore = true
+		paged = paged[:limit]
+	}
+
+	page := inputItemsPage{
+		Items:   paged,
+		HasMore: hasMore,
+	}
+	if len(paged) > 0 {
+		page.FirstID, _ = paged[0]["id"].(string)
+		page.LastID, _ = paged[len(paged)-1]["id"].(string)
+	}
+	return page
+}
+
+func reverseInputItems(items []map[string]any) {
+	for left, right := 0, len(items)-1; left < right; left, right = left+1, right-1 {
+		items[left], items[right] = items[right], items[left]
+	}
+}
+
+func indexOfInputItem(items []map[string]any, id string) int {
+	for index, item := range items {
+		if current, _ := item["id"].(string); current == id {
+			return index
+		}
+	}
+	return -1
+}
+
+func parseChatCompletionsResponse(raw []byte) (string, []map[string]any) {
+	var payload struct {
+		Choices []struct {
+			Message map[string]any `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || len(payload.Choices) == 0 {
+		text := strings.TrimSpace(string(raw))
+		return text, []map[string]any{buildOutputItem(newResponseItemID(), text, "completed")}
+	}
+	message := payload.Choices[0].Message
+	text, _ := message["content"].(string)
+	if toolCallItems := buildFunctionCallOutputItems(message); len(toolCallItems) > 0 {
+		return text, toolCallItems
+	}
+	return text, []map[string]any{buildOutputItem(newResponseItemID(), text, "completed")}
+}
+
+func buildFunctionCallOutputItems(message map[string]any) []map[string]any {
+	toolCalls, ok := message["tool_calls"].([]any)
+	if !ok || len(toolCalls) == 0 {
+		return nil
+	}
+	items := make([]map[string]any, 0, len(toolCalls))
+	for _, rawCall := range toolCalls {
+		call, ok := rawCall.(map[string]any)
+		if !ok {
+			continue
+		}
+		functionPayload, ok := call["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := functionPayload["name"].(string)
+		arguments, _ := functionPayload["arguments"].(string)
+		callID, _ := call["id"].(string)
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		items = append(items, map[string]any{
+			"id":        newResponseItemID(),
+			"type":      "function_call",
+			"call_id":   callID,
+			"name":      name,
+			"arguments": arguments,
+			"status":    "completed",
+		})
+	}
+	return items
+}
+
+func responseOutputMessages(messages []conversations.Message, responseID string) []conversations.Message {
+	if sequence, ok := responseSequenceFromResponseID(responseID); ok {
+		items := make([]conversations.Message, 0)
+		for i := range messages {
+			if messages[i].Role == "assistant" && messages[i].SequenceNo == sequence {
+				items = append(items, messages[i])
+			}
+		}
+		if len(items) > 0 {
+			return items
+		}
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" {
+			sequence := messages[i].SequenceNo
+			items := make([]conversations.Message, 0)
+			for j := range messages {
+				if messages[j].Role == "assistant" && messages[j].SequenceNo == sequence {
+					items = append(items, messages[j])
+				}
+			}
+			return items
+		}
+	}
+	return nil
+}
+
+func (h *ResponsesHandler) latestConversationUsage(messages []conversations.Message, conversationID int64) (usage.Snapshot, error) {
+	accountList, err := h.accounts.List()
+	if err != nil {
+		return usage.Snapshot{}, err
+	}
+	for _, account := range accountList {
+		snapshot, err := h.usage.GetLatest(account.ID)
+		if err == nil && snapshot.LastTotalTokens > 0 {
+			return snapshot, nil
+		}
+	}
+	return emptyResponsesUsageSnapshot(), nil
+}
+
+func buildResponseItemID(responseID string) string {
+	return "msg_" + responseID
+}
+
+func (h *ResponsesHandler) mergeUsageSnapshot(snapshot usage.Snapshot) usage.Snapshot {
+	snapshot.CheckedAt = time.Now().UTC()
+	if snapshot.AccountID == 0 {
+		return snapshot
+	}
+	latest, err := h.usage.GetLatest(snapshot.AccountID)
+	if err != nil {
+		if snapshot.HealthScore == 0 {
+			snapshot.HealthScore = 1
+		}
+		return snapshot
+	}
+	if snapshot.Balance == 0 {
+		snapshot.Balance = latest.Balance
+	}
+	if snapshot.QuotaRemaining == 0 {
+		snapshot.QuotaRemaining = latest.QuotaRemaining
+	}
+	if snapshot.RPMRemaining == 0 {
+		snapshot.RPMRemaining = latest.RPMRemaining
+	}
+	if snapshot.TPMRemaining == 0 {
+		snapshot.TPMRemaining = latest.TPMRemaining
+	}
+	if snapshot.HealthScore == 0 {
+		snapshot.HealthScore = latest.HealthScore
+		if snapshot.HealthScore == 0 {
+			snapshot.HealthScore = 1
+		}
+	}
+	if snapshot.ModelContextWindow == 0 {
+		snapshot.ModelContextWindow = latest.ModelContextWindow
+	}
+	if snapshot.PrimaryUsedPercent == 0 {
+		snapshot.PrimaryUsedPercent = latest.PrimaryUsedPercent
+	}
+	if snapshot.SecondaryUsedPercent == 0 {
+		snapshot.SecondaryUsedPercent = latest.SecondaryUsedPercent
+	}
+	if snapshot.PrimaryResetsAt == nil {
+		snapshot.PrimaryResetsAt = latest.PrimaryResetsAt
+	}
+	if snapshot.SecondaryResetsAt == nil {
+		snapshot.SecondaryResetsAt = latest.SecondaryResetsAt
+	}
+	return snapshot
+}

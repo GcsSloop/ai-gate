@@ -27,7 +27,7 @@ describe("ConversationsPage", () => {
     render(<ConversationsPage />);
 
     expect(await screen.findByText("client-2")).toBeInTheDocument();
-    expect(await screen.findByText("capacity_failed")).toBeInTheDocument();
-    expect(screen.getByText("completed")).toBeInTheDocument();
+    expect(await screen.findByText("额度不足")).toBeInTheDocument();
+    expect(screen.getByText("已完成")).toBeInTheDocument();
   });
 });

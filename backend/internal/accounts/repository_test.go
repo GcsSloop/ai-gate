@@ -30,6 +30,7 @@ func TestSQLiteRepositoryCreateAndListAccounts(t *testing.T) {
 		AuthMode:      accounts.AuthModeOAuth,
 		Status:        accounts.StatusActive,
 		CredentialRef: "cred-1",
+		Priority:      10,
 	}
 	if err := repo.Create(official); err != nil {
 		t.Fatalf("Create(official) returned error: %v", err)
@@ -43,6 +44,7 @@ func TestSQLiteRepositoryCreateAndListAccounts(t *testing.T) {
 		BaseURL:       "https://example.test/v1",
 		CredentialRef: "cred-2",
 		CooldownUntil: &cooldownUntil,
+		Priority:      5,
 	}
 	if err := repo.Create(thirdParty); err != nil {
 		t.Fatalf("Create(thirdParty) returned error: %v", err)
@@ -65,6 +67,37 @@ func TestSQLiteRepositoryCreateAndListAccounts(t *testing.T) {
 	}
 	if got[1].CooldownUntil == nil || !got[1].CooldownUntil.Equal(cooldownUntil) {
 		t.Fatalf("got[1].CooldownUntil = %v, want %v", got[1].CooldownUntil, cooldownUntil)
+	}
+}
+
+func TestSQLiteRepositoryListOrdersByPriorityDesc(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	for _, item := range []accounts.Account{
+		{ProviderType: accounts.ProviderOpenAICompatible, AccountName: "low", AuthMode: accounts.AuthModeAPIKey, CredentialRef: "sk-low", Priority: 1, Status: accounts.StatusActive},
+		{ProviderType: accounts.ProviderOpenAICompatible, AccountName: "high", AuthMode: accounts.AuthModeAPIKey, CredentialRef: "sk-high", Priority: 9, Status: accounts.StatusActive},
+		{ProviderType: accounts.ProviderOpenAICompatible, AccountName: "mid", AuthMode: accounts.AuthModeAPIKey, CredentialRef: "sk-mid", Priority: 5, Status: accounts.StatusActive},
+	} {
+		if err := repo.Create(item); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+
+	items, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got := []string{items[0].AccountName, items[1].AccountName, items[2].AccountName}; got[0] != "high" || got[1] != "mid" || got[2] != "low" {
+		t.Fatalf("order = %v, want [high mid low]", got)
 	}
 }
 
@@ -109,5 +142,45 @@ func TestSQLiteRepositoryEncryptsCredentialRefWhenCipherConfigured(t *testing.T)
 	}
 	if len(items) != 1 || items[0].CredentialRef != "sk-secret" {
 		t.Fatalf("List returned %+v, want decrypted credential", items)
+	}
+}
+
+func TestSQLiteRepositoryReadsLegacyPlaintextCredentialRef(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if _, err := store.DB().Exec(
+		`INSERT INTO accounts (provider_type, account_name, auth_mode, credential_ref, base_url, status, priority)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		accounts.ProviderOpenAICompatible,
+		"legacy-plain",
+		accounts.AuthModeAPIKey,
+		"sk-legacy-plain",
+		"https://example.test/v1",
+		accounts.StatusActive,
+		0,
+	); err != nil {
+		t.Fatalf("Exec returned error: %v", err)
+	}
+
+	cipher, err := secrets.NewCipher("0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("NewCipher returned error: %v", err)
+	}
+
+	repo := accounts.NewSQLiteRepository(store.DB(), cipher)
+	items, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(items) != 1 || items[0].CredentialRef != "sk-legacy-plain" {
+		t.Fatalf("List returned %+v, want legacy plaintext credential", items)
 	}
 }

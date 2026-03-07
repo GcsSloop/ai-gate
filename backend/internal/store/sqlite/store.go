@@ -59,5 +59,68 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("run migration: %w", err)
 		}
 	}
+	for _, column := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{table: "messages", name: "item_type", definition: "TEXT NOT NULL DEFAULT 'message'"},
+		{table: "messages", name: "raw_item_json", definition: "TEXT NOT NULL DEFAULT ''"},
+		{table: "account_usage_snapshots", name: "health_score", definition: "REAL"},
+		{table: "account_usage_snapshots", name: "throttled_recently", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "account_usage_snapshots", name: "last_total_tokens", definition: "REAL"},
+		{table: "account_usage_snapshots", name: "last_input_tokens", definition: "REAL"},
+		{table: "account_usage_snapshots", name: "last_output_tokens", definition: "REAL"},
+		{table: "account_usage_snapshots", name: "model_context_window", definition: "REAL"},
+		{table: "account_usage_snapshots", name: "primary_used_percent", definition: "REAL"},
+		{table: "account_usage_snapshots", name: "secondary_used_percent", definition: "REAL"},
+		{table: "account_usage_snapshots", name: "primary_resets_at", definition: "DATETIME"},
+		{table: "account_usage_snapshots", name: "secondary_resets_at", definition: "DATETIME"},
+	} {
+		if err := s.addColumnIfMissing(column.table, column.name, column.definition); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (s *Store) addColumnIfMissing(table string, column string, definition string) error {
+	exists, err := s.hasColumn(table, column)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	if _, err := s.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
+func (s *Store) hasColumn(table string, column string) (bool, error) {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, fmt.Errorf("inspect table %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan table info for %s: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate table info for %s: %w", table, err)
+	}
+	return false, nil
 }

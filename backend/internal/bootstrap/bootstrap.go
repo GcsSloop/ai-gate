@@ -61,17 +61,35 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	policyRepo := policy.NewMemoryRepository()
 	authConnector := auth.NewOAuthConnector(auth.Config{})
 	stateStore := auth.NewStateStore(5 * time.Minute)
-	accountsHandler := api.NewAccountsHandler(accountRepo, authConnector, stateStore)
+	accountsHandler := api.NewAccountsHandler(accountRepo, usageRepo, authConnector, stateStore)
 	conversationsHandler := api.NewConversationsHandler(conversationRepo)
 
+	apiMux := http.NewServeMux()
+	apiMux.Handle("/accounts", accountsHandler)
+	apiMux.Handle("/accounts/", accountsHandler)
+	apiMux.Handle("/policy/", api.NewPolicyHandler(policyRepo))
+	apiMux.Handle("/monitoring/overview", api.NewMonitoringHandler(accountRepo, usageRepo))
+	apiMux.Handle("/dashboard/summary", api.NewDashboardHandler(conversationRepo))
+	apiMux.Handle("/conversations", conversationsHandler)
+	apiMux.Handle("/conversations/", conversationsHandler)
+	gatewayHandler := api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo)
+	responsesHandler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+	apiMux.Handle("/chat/completions", gatewayHandler)
+	apiMux.Handle("/v1/chat/completions", gatewayHandler)
+	apiMux.Handle("/responses", responsesHandler)
+	apiMux.Handle("/v1/responses", responsesHandler)
+	apiMux.Handle("/models", responsesHandler)
+	apiMux.Handle("/v1/models", responsesHandler)
+
 	mux := http.NewServeMux()
-	mux.Handle("/accounts", accountsHandler)
-	mux.Handle("/accounts/", accountsHandler)
-	mux.Handle("/policy/", api.NewPolicyHandler(policyRepo))
-	mux.Handle("/monitoring/overview", api.NewMonitoringHandler(accountRepo, usageRepo))
-	mux.Handle("/conversations", conversationsHandler)
-	mux.Handle("/conversations/", conversationsHandler)
-	mux.Handle("/v1/chat/completions", api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/ai-router/webui/", http.StatusTemporaryRedirect)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	mux.Handle("/ai-router/api/", http.StripPrefix("/ai-router/api", apiMux))
 
 	appCtx, cancel := context.WithCancel(context.Background())
 	app := &App{listenAddr: cfg.ListenAddr, handler: mux, store: store, cancel: cancel}

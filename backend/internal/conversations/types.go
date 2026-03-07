@@ -17,6 +17,8 @@ type Message struct {
 	ConversationID int64
 	Role           string
 	Content        string
+	ItemType       string
+	RawItemJSON    string
 	SequenceNo     int
 	CreatedAt      time.Time
 }

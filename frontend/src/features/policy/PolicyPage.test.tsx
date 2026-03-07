@@ -26,13 +26,13 @@ describe("PolicyPage", () => {
     render(<PolicyPage />);
 
     expect(await screen.findByDisplayValue("account-a,account-b")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Token budget factor"), { target: { value: "1.5" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+    fireEvent.change(screen.getByLabelText("Token 预算系数"), { target: { value: "1.5" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存策略" }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenNthCalledWith(
         2,
-        "/policy/default",
+        "/ai-router/api/policy/default",
         expect.objectContaining({ method: "PUT" }),
       );
     });

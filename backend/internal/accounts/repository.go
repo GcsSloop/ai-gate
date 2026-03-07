@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -11,6 +12,9 @@ import (
 type Repository interface {
 	Create(account Account) error
 	List() ([]Account, error)
+	GetByID(id int64) (Account, error)
+	Update(account Account) error
+	Delete(id int64) error
 	UpdateStatus(id int64, status Status) error
 	UpdateCooldown(id int64, until *time.Time) error
 }
@@ -56,7 +60,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 	records, err := r.db.Query(
 		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, cooldown_until, created_at
 		 FROM accounts
-		 ORDER BY id ASC`,
+		 ORDER BY priority DESC, id ASC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query accounts: %w", err)
@@ -102,6 +106,73 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 	return accounts, nil
 }
 
+func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
+	row := r.db.QueryRow(
+		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, cooldown_until, created_at
+		 FROM accounts WHERE id = ?`,
+		id,
+	)
+
+	var account Account
+	var cooldown sql.NullTime
+	if err := row.Scan(
+		&account.ID,
+		&account.ProviderType,
+		&account.AccountName,
+		&account.AuthMode,
+		&account.CredentialRef,
+		&account.BaseURL,
+		&account.Status,
+		&account.Priority,
+		&cooldown,
+		&account.CreatedAt,
+	); err != nil {
+		return Account{}, fmt.Errorf("select account: %w", err)
+	}
+	if cooldown.Valid {
+		value := cooldown.Time.UTC()
+		account.CooldownUntil = &value
+	}
+	var err error
+	account.CredentialRef, err = r.decrypt(account.CredentialRef)
+	if err != nil {
+		return Account{}, err
+	}
+	return account, nil
+}
+
+func (r *SQLiteRepository) Update(account Account) error {
+	credentialRef, err := r.encrypt(account.CredentialRef)
+	if err != nil {
+		return err
+	}
+
+	_, err = r.db.Exec(
+		`UPDATE accounts
+		 SET account_name = ?, base_url = ?, credential_ref = ?, status = ?, priority = ?, cooldown_until = ?
+		 WHERE id = ?`,
+		account.AccountName,
+		account.BaseURL,
+		credentialRef,
+		account.Status,
+		account.Priority,
+		nullTime(account.CooldownUntil),
+		account.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("update account: %w", err)
+	}
+	return nil
+}
+
+func (r *SQLiteRepository) Delete(id int64) error {
+	_, err := r.db.Exec(`DELETE FROM accounts WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
+	return nil
+}
+
 func (r *SQLiteRepository) encrypt(value string) (string, error) {
 	if r.cipher == nil || value == "" {
 		return value, nil
@@ -116,6 +187,13 @@ func (r *SQLiteRepository) encrypt(value string) (string, error) {
 
 func (r *SQLiteRepository) decrypt(value string) (string, error) {
 	if r.cipher == nil || value == "" {
+		return value, nil
+	}
+
+	// Backward compatibility: rows created before credential encryption was enabled
+	// still contain plaintext values. If the payload is not valid base64, treat it as
+	// legacy plaintext instead of failing the account list endpoint.
+	if _, err := base64.StdEncoding.DecodeString(value); err != nil {
 		return value, nil
 	}
 
