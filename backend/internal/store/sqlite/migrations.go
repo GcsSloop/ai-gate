@@ -38,6 +38,9 @@ var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS conversations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		client_id TEXT,
+		target_provider_family TEXT NOT NULL DEFAULT '',
+		default_model TEXT NOT NULL DEFAULT '',
+		current_account_id INTEGER,
 		state TEXT NOT NULL DEFAULT 'active',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,
@@ -46,12 +49,15 @@ var schemaStatements = []string{
 		conversation_id INTEGER NOT NULL,
 		role TEXT NOT NULL,
 		content TEXT NOT NULL,
+		sequence_no INTEGER NOT NULL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,
 	`CREATE TABLE IF NOT EXISTS runs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		conversation_id INTEGER NOT NULL,
 		account_id INTEGER,
+		fallback_from_run_id INTEGER,
+		stream_offset INTEGER NOT NULL DEFAULT 0,
 		status TEXT NOT NULL,
 		started_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,

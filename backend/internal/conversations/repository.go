@@ -1,0 +1,124 @@
+package conversations
+
+import (
+	"database/sql"
+	"fmt"
+)
+
+type SQLiteRepository struct {
+	db *sql.DB
+}
+
+func NewSQLiteRepository(db *sql.DB) *SQLiteRepository {
+	return &SQLiteRepository{db: db}
+}
+
+func (r *SQLiteRepository) CreateConversation(conversation Conversation) (int64, error) {
+	result, err := r.db.Exec(
+		`INSERT INTO conversations (client_id, target_provider_family, default_model, current_account_id, state)
+		 VALUES (?, ?, ?, ?, ?)`,
+		conversation.ClientID,
+		conversation.TargetProviderFamily,
+		conversation.DefaultModel,
+		nullInt64(conversation.CurrentAccountID),
+		conversation.State,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert conversation: %w", err)
+	}
+
+	return result.LastInsertId()
+}
+
+func (r *SQLiteRepository) AppendMessage(message Message) error {
+	_, err := r.db.Exec(
+		`INSERT INTO messages (conversation_id, role, content, sequence_no) VALUES (?, ?, ?, ?)`,
+		message.ConversationID,
+		message.Role,
+		message.Content,
+		message.SequenceNo,
+	)
+	if err != nil {
+		return fmt.Errorf("insert message: %w", err)
+	}
+	return nil
+}
+
+func (r *SQLiteRepository) CreateRun(run Run) (int64, error) {
+	result, err := r.db.Exec(
+		`INSERT INTO runs (conversation_id, account_id, fallback_from_run_id, stream_offset, status)
+		 VALUES (?, ?, ?, ?, ?)`,
+		run.ConversationID,
+		run.AccountID,
+		nullInt64(run.FallbackFromRunID),
+		run.StreamOffset,
+		run.Status,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert run: %w", err)
+	}
+
+	return result.LastInsertId()
+}
+
+func (r *SQLiteRepository) ListMessages(conversationID int64) ([]Message, error) {
+	rows, err := r.db.Query(
+		`SELECT id, conversation_id, role, content, sequence_no, created_at
+		 FROM messages WHERE conversation_id = ? ORDER BY sequence_no ASC, id ASC`,
+		conversationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query messages: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		var message Message
+		if err := rows.Scan(&message.ID, &message.ConversationID, &message.Role, &message.Content, &message.SequenceNo, &message.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate messages: %w", err)
+	}
+	return messages, nil
+}
+
+func (r *SQLiteRepository) ListRuns(conversationID int64) ([]Run, error) {
+	rows, err := r.db.Query(
+		`SELECT id, conversation_id, account_id, fallback_from_run_id, status, stream_offset, started_at
+		 FROM runs WHERE conversation_id = ? ORDER BY id ASC`,
+		conversationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query runs: %w", err)
+	}
+	defer rows.Close()
+
+	var runs []Run
+	for rows.Next() {
+		var run Run
+		var fallback sql.NullInt64
+		if err := rows.Scan(&run.ID, &run.ConversationID, &run.AccountID, &fallback, &run.Status, &run.StreamOffset, &run.StartedAt); err != nil {
+			return nil, fmt.Errorf("scan run: %w", err)
+		}
+		if fallback.Valid {
+			value := fallback.Int64
+			run.FallbackFromRunID = &value
+		}
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate runs: %w", err)
+	}
+	return runs, nil
+}
+
+func nullInt64(value *int64) sql.NullInt64 {
+	if value == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *value, Valid: true}
+}
