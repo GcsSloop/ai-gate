@@ -13,6 +13,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
 	"github.com/gcssloop/codex-router/backend/internal/policy"
 	"github.com/gcssloop/codex-router/backend/internal/scheduler"
+	"github.com/gcssloop/codex-router/backend/internal/secrets"
 	"github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
@@ -21,6 +22,7 @@ type Config struct {
 	ListenAddr        string
 	DatabasePath      string
 	SchedulerInterval time.Duration
+	EncryptionKey     string
 }
 
 type App struct {
@@ -44,7 +46,16 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		return nil, err
 	}
 
-	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	var credentialCipher *secrets.Cipher
+	if cfg.EncryptionKey != "" {
+		credentialCipher, err = secrets.NewCipher(cfg.EncryptionKey)
+		if err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+	}
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB(), credentialCipher)
 	usageRepo := usage.NewSQLiteRepository(store.DB())
 	conversationRepo := conversations.NewSQLiteRepository(store.DB())
 	policyRepo := policy.NewMemoryRepository()

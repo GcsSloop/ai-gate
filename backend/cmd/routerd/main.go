@@ -19,6 +19,7 @@ func main() {
 		ListenAddr:        cfg.ListenAddr,
 		DatabasePath:      cfg.DatabasePath,
 		SchedulerInterval: cfg.SchedulerInterval,
+		EncryptionKey:     cfg.EncryptionKey,
 	})
 	if err != nil {
 		log.Fatalf("create app: %v", err)

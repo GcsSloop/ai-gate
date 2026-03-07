@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/gcssloop/codex-router/backend/internal/secrets"
 )
 
 type Repository interface {
@@ -14,21 +16,31 @@ type Repository interface {
 }
 
 type SQLiteRepository struct {
-	db *sql.DB
+	db     *sql.DB
+	cipher *secrets.Cipher
 }
 
-func NewSQLiteRepository(db *sql.DB) *SQLiteRepository {
-	return &SQLiteRepository{db: db}
+func NewSQLiteRepository(db *sql.DB, cipher ...*secrets.Cipher) *SQLiteRepository {
+	repo := &SQLiteRepository{db: db}
+	if len(cipher) > 0 {
+		repo.cipher = cipher[0]
+	}
+	return repo
 }
 
 func (r *SQLiteRepository) Create(account Account) error {
-	_, err := r.db.Exec(
+	credentialRef, err := r.encrypt(account.CredentialRef)
+	if err != nil {
+		return err
+	}
+
+	_, err = r.db.Exec(
 		`INSERT INTO accounts (provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, cooldown_until)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		account.ProviderType,
 		account.AccountName,
 		account.AuthMode,
-		account.CredentialRef,
+		credentialRef,
 		account.BaseURL,
 		account.Status,
 		account.Priority,
@@ -75,6 +87,10 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 			value := cooldown.Time.UTC()
 			account.CooldownUntil = &value
 		}
+		account.CredentialRef, err = r.decrypt(account.CredentialRef)
+		if err != nil {
+			return nil, err
+		}
 
 		accounts = append(accounts, account)
 	}
@@ -84,6 +100,30 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 	}
 
 	return accounts, nil
+}
+
+func (r *SQLiteRepository) encrypt(value string) (string, error) {
+	if r.cipher == nil || value == "" {
+		return value, nil
+	}
+
+	encrypted, err := r.cipher.EncryptString(value)
+	if err != nil {
+		return "", fmt.Errorf("encrypt credential_ref: %w", err)
+	}
+	return encrypted, nil
+}
+
+func (r *SQLiteRepository) decrypt(value string) (string, error) {
+	if r.cipher == nil || value == "" {
+		return value, nil
+	}
+
+	decrypted, err := r.cipher.DecryptString(value)
+	if err != nil {
+		return "", fmt.Errorf("decrypt credential_ref: %w", err)
+	}
+	return decrypted, nil
 }
 
 func (r *SQLiteRepository) UpdateStatus(id int64, status Status) error {
