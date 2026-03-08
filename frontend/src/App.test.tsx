@@ -20,6 +20,6 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /添加账户/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "设置" })).toBeInTheDocument();
     expect(screen.getByText("开启代理")).toBeInTheDocument();
-    expect(screen.getByText("aigate")).toBeInTheDocument();
+    expect(screen.getByText("AI Gate")).toBeInTheDocument();
   });
 });

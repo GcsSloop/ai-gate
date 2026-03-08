@@ -21,6 +21,7 @@ import {
   createAccount,
   deleteAccount,
   importCurrentCodexAuth,
+  listAccountUsage,
   listAccounts,
   testAccount,
   updateAccount,
@@ -95,6 +96,28 @@ export function AccountsPage() {
   async function refreshAll() {
     const accountItems = await listAccounts();
     setAccounts(accountItems);
+    void refreshUsage();
+  }
+
+  async function refreshUsage() {
+    try {
+      const usageItems = await listAccountUsage();
+      const usageByAccount = new Map(usageItems.map((item) => [item.account_id, item]));
+      setAccounts((items) =>
+        items.map((item) => {
+          const usage = usageByAccount.get(item.id);
+          if (!usage) {
+            return item;
+          }
+          return {
+            ...item,
+            ...usage,
+          };
+        }),
+      );
+    } catch {
+      // Keep base account list responsive even when usage endpoint is unavailable.
+    }
   }
 
   async function handleCreateThirdParty(values: { account_name: string; base_url: string; credential_ref: string }) {

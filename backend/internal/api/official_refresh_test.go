@@ -89,11 +89,11 @@ func TestAccountsHandlerRefreshesExpiredOfficialTokenBeforeWhamUsage(t *testing.
 		t.Fatalf("Create returned error: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/accounts", bytes.NewBuffer(nil))
+	req := httptest.NewRequest(http.MethodGet, "/accounts/usage", bytes.NewBuffer(nil))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /accounts status = %d, want %d", rec.Code, http.StatusOK)
+		t.Fatalf("GET /accounts/usage status = %d, want %d", rec.Code, http.StatusOK)
 	}
 
 	account, err := repo.GetByID(1)

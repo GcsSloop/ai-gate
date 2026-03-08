@@ -104,8 +104,23 @@ func TestAccountsHandler(t *testing.T) {
 	if listed[1]["cooldown_remaining_seconds"] == nil {
 		t.Fatal("cooldown_remaining_seconds missing from cooldown account")
 	}
-	if listed[1]["balance"].(float64) != 88.5 {
-		t.Fatalf("balance = %v, want 88.5", listed[1]["balance"])
+	if listed[1]["balance"].(float64) != 0 {
+		t.Fatalf("balance = %v, want 0", listed[1]["balance"])
+	}
+
+	usageReq := httptest.NewRequest(http.MethodGet, "/accounts/usage", nil)
+	usageRec := httptest.NewRecorder()
+	handler.ServeHTTP(usageRec, usageReq)
+	if usageRec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts/usage status = %d, want %d", usageRec.Code, http.StatusOK)
+	}
+
+	var usageItems []map[string]any
+	if err := json.Unmarshal(usageRec.Body.Bytes(), &usageItems); err != nil {
+		t.Fatalf("json.Unmarshal usage returned error: %v", err)
+	}
+	if usageItems[1]["balance"].(float64) != 88.5 {
+		t.Fatalf("usage balance = %v, want 88.5", usageItems[1]["balance"])
 	}
 
 	disableReq := httptest.NewRequest(http.MethodPost, "/accounts/1/disable", nil)
@@ -356,11 +371,11 @@ func TestAccountsHandlerListAccountsFetchesOfficialWhamUsage(t *testing.T) {
 		t.Fatalf("Create returned error: %v", err)
 	}
 
-	listReq := httptest.NewRequest(http.MethodGet, "/accounts", nil)
+	listReq := httptest.NewRequest(http.MethodGet, "/accounts/usage", nil)
 	listRec := httptest.NewRecorder()
 	handler.ServeHTTP(listRec, listReq)
 	if listRec.Code != http.StatusOK {
-		t.Fatalf("GET /accounts status = %d, want %d", listRec.Code, http.StatusOK)
+		t.Fatalf("GET /accounts/usage status = %d, want %d", listRec.Code, http.StatusOK)
 	}
 
 	var listed []map[string]any

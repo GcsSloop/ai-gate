@@ -26,6 +26,24 @@ export type AccountRecord = {
   secondary_resets_at?: string;
 };
 
+export type AccountUsageRecord = {
+  account_id: number;
+  balance: number;
+  quota_remaining: number;
+  rpm_remaining: number;
+  tpm_remaining: number;
+  health_score: number;
+  recent_error_rate: number;
+  last_total_tokens: number;
+  last_input_tokens: number;
+  last_output_tokens: number;
+  model_context_window: number;
+  primary_used_percent: number;
+  secondary_used_percent: number;
+  primary_resets_at?: string;
+  secondary_resets_at?: string;
+};
+
 export type CreateAccountPayload = {
   provider_type: string;
   account_name: string;
@@ -78,6 +96,14 @@ export async function listAccounts(): Promise<AccountRecord[]> {
   const response = await fetch(apiPath("/accounts"));
   if (!response.ok) {
     throw new Error("failed to load accounts");
+  }
+  return response.json();
+}
+
+export async function listAccountUsage(): Promise<AccountUsageRecord[]> {
+  const response = await fetch(apiPath("/accounts/usage"));
+  if (!response.ok) {
+    throw new Error("failed to load account usage");
   }
   return response.json();
 }
@@ -243,8 +269,9 @@ export async function enableProxy(): Promise<ProxyStatus> {
   return response.json();
 }
 
-export async function disableProxy(): Promise<ProxyStatus> {
-  const response = await fetch(apiPath("/settings/proxy/disable"), { method: "POST" });
+export async function disableProxy(force = false): Promise<ProxyStatus> {
+  const suffix = force ? "?force=1" : "";
+  const response = await fetch(apiPath(`/settings/proxy/disable${suffix}`), { method: "POST" });
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to disable proxy");

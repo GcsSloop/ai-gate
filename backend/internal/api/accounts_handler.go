@@ -46,6 +46,8 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts":
 		h.createAccount(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/accounts/usage":
+		h.listAccountsUsage(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/accounts":
 		h.listAccounts(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts/auth/authorize":
@@ -135,7 +137,6 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	h.refreshOfficialUsage(context.Background(), accountList)
 
 	type responseItem struct {
 		ID                       int64                 `json:"id"`
@@ -164,6 +165,69 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	response := make([]responseItem, 0, len(accountList))
+	now := time.Now().UTC()
+	for _, account := range accountList {
+		item := responseItem{
+			ID:               account.ID,
+			ProviderType:     account.ProviderType,
+			AccountName:      account.AccountName,
+			AuthMode:         account.AuthMode,
+			BaseURL:          account.BaseURL,
+			Status:           account.Status,
+			Priority:         account.Priority,
+			IsActive:         account.IsActive,
+			Balance:          0,
+			QuotaRemaining:   0,
+			RPMRemaining:     0,
+			TPMRemaining:     0,
+			HealthScore:      0,
+			RecentErrorRate:  0,
+			LastTotalTokens:  0,
+			LastInputTokens:  0,
+			LastOutputTokens: 0,
+			ModelContextWindow: 0,
+			PrimaryUsedPercent: 0,
+			SecondaryUsedPercent: 0,
+		}
+		if account.CooldownUntil != nil {
+			remaining := int64(account.CooldownUntil.Sub(now).Seconds())
+			if remaining < 0 {
+				remaining = 0
+			}
+			item.CooldownRemainingSeconds = &remaining
+		}
+		response = append(response, item)
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *AccountsHandler) listAccountsUsage(w http.ResponseWriter, _ *http.Request) {
+	accountList, err := h.repo.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.refreshOfficialUsage(context.Background(), accountList)
+
+	type responseItem struct {
+		AccountID            int64      `json:"account_id"`
+		Balance              float64    `json:"balance"`
+		QuotaRemaining       float64    `json:"quota_remaining"`
+		RPMRemaining         float64    `json:"rpm_remaining"`
+		TPMRemaining         float64    `json:"tpm_remaining"`
+		HealthScore          float64    `json:"health_score"`
+		RecentErrorRate      float64    `json:"recent_error_rate"`
+		LastTotalTokens      float64    `json:"last_total_tokens"`
+		LastInputTokens      float64    `json:"last_input_tokens"`
+		LastOutputTokens     float64    `json:"last_output_tokens"`
+		ModelContextWindow   float64    `json:"model_context_window"`
+		PrimaryUsedPercent   float64    `json:"primary_used_percent"`
+		SecondaryUsedPercent float64    `json:"secondary_used_percent"`
+		PrimaryResetsAt      *time.Time `json:"primary_resets_at,omitempty"`
+		SecondaryResetsAt    *time.Time `json:"secondary_resets_at,omitempty"`
+	}
+
 	usageByAccount := map[int64]usage.Snapshot{}
 	if h.usage != nil {
 		if snapshots, err := h.usage.ListLatest(); err == nil {
@@ -172,16 +236,12 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 	}
-	now := time.Now().UTC()
+
+	response := make([]responseItem, 0, len(accountList))
 	for _, account := range accountList {
 		snapshot := usageByAccount[account.ID]
-		item := responseItem{
-			ID:                   account.ID,
-			ProviderType:         account.ProviderType,
-			AccountName:          account.AccountName,
-			AuthMode:             account.AuthMode,
-			BaseURL:              account.BaseURL,
-			Status:               account.Status,
+		response = append(response, responseItem{
+			AccountID:            account.ID,
 			Balance:              snapshot.Balance,
 			QuotaRemaining:       snapshot.QuotaRemaining,
 			RPMRemaining:         snapshot.RPMRemaining,
@@ -196,17 +256,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 			SecondaryUsedPercent: snapshot.SecondaryUsedPercent,
 			PrimaryResetsAt:      snapshot.PrimaryResetsAt,
 			SecondaryResetsAt:    snapshot.SecondaryResetsAt,
-			Priority:             account.Priority,
-			IsActive:             account.IsActive,
-		}
-		if account.CooldownUntil != nil {
-			remaining := int64(account.CooldownUntil.Sub(now).Seconds())
-			if remaining < 0 {
-				remaining = 0
-			}
-			item.CooldownRemainingSeconds = &remaining
-		}
-		response = append(response, item)
+		})
 	}
 
 	writeJSON(w, http.StatusOK, response)

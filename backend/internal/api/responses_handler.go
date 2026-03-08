@@ -692,13 +692,7 @@ func (h *ResponsesHandler) executeResponsesRequest(ctx context.Context, account 
 			return responsesExecutionResult{}, err
 		}
 		instructions := effectiveCodexInstructions(req.Instructions)
-		body, err := json.Marshal(map[string]any{
-			"model":        req.Model,
-			"stream":       true,
-			"store":        false,
-			"instructions": instructions,
-			"input":        buildResponsesInput(messages),
-		})
+		body, err := json.Marshal(buildOfficialResponsesBody(req, messages, true, instructions))
 		if err != nil {
 			return responsesExecutionResult{}, err
 		}

@@ -1,4 +1,4 @@
-import { App as AntApp, ConfigProvider, Switch } from "antd";
+import { App as AntApp, ConfigProvider, Modal, Switch, message } from "antd";
 import { useEffect, useState } from "react";
 
 import { AccountsPage } from "./features/accounts/AccountsPage";
@@ -7,6 +7,7 @@ import { disableProxy, enableProxy, getProxyStatus } from "./lib/api";
 import "./styles.css";
 
 export function App() {
+  const [messageApi, contextHolder] = message.useMessage();
   const [tab, setTab] = useState<"accounts" | "settings">("accounts");
   const [proxyEnabled, setProxyEnabled] = useState(false);
   const [lastBackupID, setLastBackupID] = useState("");
@@ -24,13 +25,39 @@ export function App() {
     })();
   }, []);
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const custom = event as CustomEvent<{ message?: string }>;
+      const details = custom.detail?.message || "当前配置已被外部修改，无法自动恢复备份。";
+      Modal.confirm({
+        title: "退出前恢复失败",
+        content: `${details} 是否强制退出？`,
+        okText: "强制退出",
+        cancelText: "取消",
+        onOk: async () => {
+          try {
+            await disableProxy(true);
+            window.close();
+          } catch (error) {
+            void messageApi.error(error instanceof Error ? error.message : "强制退出失败");
+          }
+        },
+      });
+    };
+    window.addEventListener("aigate-exit-conflict", handler as EventListener);
+    return () => {
+      window.removeEventListener("aigate-exit-conflict", handler as EventListener);
+    };
+  }, [messageApi]);
+
   async function handleToggleProxy(checked: boolean) {
     setProxyLoading(true);
     try {
       const status = checked ? await enableProxy() : await disableProxy();
       setProxyEnabled(status.enabled);
       setLastBackupID(status.last_backup_id || "");
-    } catch {
+    } catch (error) {
+      void messageApi.error(error instanceof Error ? error.message : "代理切换失败，请检查配置冲突后重试");
       setProxyEnabled(!checked);
     } finally {
       setProxyLoading(false);
@@ -50,9 +77,10 @@ export function App() {
       }}
     >
       <AntApp>
+        {contextHolder}
         <div className="app-shell">
           <header className="top-menu">
-            <div className="brand">aigate</div>
+            <div className="brand">AI Gate</div>
             <div className="top-menu-right">
               <div className="proxy-panel">
                 <span className="proxy-label">开启代理</span>

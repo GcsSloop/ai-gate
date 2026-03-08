@@ -200,6 +200,13 @@ func TestSettingsHandlerProxyDisableConflictWhenConfigChanged(t *testing.T) {
 	if disableRec.Code != http.StatusConflict {
 		t.Fatalf("disable status = %d, want %d", disableRec.Code, http.StatusConflict)
 	}
+
+	forceReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/disable?force=1", nil)
+	forceRec := httptest.NewRecorder()
+	handler.ServeHTTP(forceRec, forceReq)
+	if forceRec.Code != http.StatusOK {
+		t.Fatalf("force disable status = %d, want %d", forceRec.Code, http.StatusOK)
+	}
 }
 
 func prepareCodexFiles(t *testing.T, home string, configBody string, authBody string) {

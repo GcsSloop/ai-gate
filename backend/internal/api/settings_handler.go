@@ -78,7 +78,7 @@ func (h *SettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && r.URL.Path == "/settings/proxy/enable":
 		h.enableProxy(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/settings/proxy/disable":
-		h.disableProxy(w)
+		h.disableProxy(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -196,7 +196,7 @@ func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
 	})
 }
 
-func (h *SettingsHandler) disableProxy(w http.ResponseWriter) {
+func (h *SettingsHandler) disableProxy(w http.ResponseWriter, r *http.Request) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -214,6 +214,17 @@ func (h *SettingsHandler) disableProxy(w http.ResponseWriter) {
 		return
 	}
 	if hashBytes(raw) != session.EnabledConfigHash {
+		if isForceDisable(r.URL.Query().Get("force")) {
+			_ = os.Remove(proxySessionPath(home))
+			state, _ := readProxyState(home)
+			state.SessionID = ""
+			_ = writeProxyState(home, state)
+			writeJSON(w, http.StatusOK, proxyStatusResponse{
+				Enabled:      false,
+				LastBackupID: state.LastBackupID,
+			})
+			return
+		}
 		http.Error(w, "config.toml changed externally; skip auto-restore to avoid overwrite", http.StatusConflict)
 		return
 	}
@@ -491,6 +502,15 @@ func writeAtomic(path string, raw []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func isForceDisable(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func writeManifest(dir string, manifest codexBackupManifest) error {

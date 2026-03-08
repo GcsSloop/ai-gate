@@ -1,10 +1,10 @@
-# aigate
+# AI Gate
 
-`aigate` is a local gateway prototype focused on multi-account switching.
+`AI Gate` is a local gateway prototype focused on multi-account switching.
 
 ## Local-only policy
 
-`aigate` is local-only by design:
+`AI Gate` is local-only by design:
 
 - backend listen address is restricted to loopback (`127.0.0.1` / `localhost` / `::1`)
 - desktop bundle starts the Go sidecar locally

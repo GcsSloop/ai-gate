@@ -40,6 +40,9 @@ describe("AccountsPage", () => {
       if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
         return Promise.resolve(listResponse());
       }
+      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
       if (url === "/ai-router/api/accounts/import-current" && init?.method === "POST") {
         return Promise.resolve(new Response(null, { status: 201 }));
       }
@@ -186,6 +189,9 @@ describe("AccountsPage", () => {
       const url = String(input);
       if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
         return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
       }
       if (url === "/ai-router/api/accounts/1" && init?.method === "PUT") {
         return Promise.resolve(new Response(null, { status: 200 }));

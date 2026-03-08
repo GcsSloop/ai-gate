@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "aigate",
+  "productName": "AI Gate",
   "version": "0.1.0",
   "identifier": "com.aigate.desktop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "aigate",
+        "title": "AI Gate",
         "width": 1280,
         "height": 820,
         "minWidth": 1024,
@@ -22,6 +22,10 @@
   },
   "bundle": {
     "active": true,
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.icns"
+    ],
     "targets": ["app", "dmg"],
     "resources": ["bin/routerd-universal-apple-darwin"],
     "macOS": {
