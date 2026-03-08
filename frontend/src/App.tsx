@@ -1,5 +1,6 @@
 import { App as AntApp, ConfigProvider, Modal, Switch, message } from "antd";
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 import { AccountsPage } from "./features/accounts/AccountsPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
@@ -37,9 +38,10 @@ export function App() {
         onOk: async () => {
           try {
             await disableProxy({ force: true });
-            window.close();
           } catch (error) {
-            void messageApi.error(error instanceof Error ? error.message : "强制退出失败");
+            void messageApi.warning(error instanceof Error ? `恢复失败，仍将退出：${error.message}` : "恢复失败，仍将退出");
+          } finally {
+            await invoke("force_exit_app");
           }
         },
       });

@@ -7,6 +7,7 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use tauri::image::Image;
@@ -15,6 +16,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Manager, Runtime};
 
 static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
+static ALLOW_DIRECT_EXIT: AtomicBool = AtomicBool::new(false);
 
 const BACKEND_ADDR: &str = "127.0.0.1:6789";
 const TRAY_ID: &str = "aigate-tray";
@@ -44,6 +46,7 @@ struct HttpResponse {
 
 fn main() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![force_exit_app])
         .setup(|app| {
             let sidecar_path = resolve_sidecar_path(app.handle())?;
             let home_dir = app
@@ -78,19 +81,45 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
-            tauri::RunEvent::ExitRequested { api, .. } => match try_disable_proxy_before_exit() {
-                Ok(()) => shutdown_sidecar(),
-                Err(DisableProxyExitError::Conflict(message)) => {
-                    api.prevent_exit();
-                    emit_exit_conflict(app_handle, &message);
+            tauri::RunEvent::WindowEvent { label, event, .. } => {
+                if label == "main" {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            let _ = window.hide();
+                        }
+                    }
                 }
-                Err(DisableProxyExitError::Unavailable) => shutdown_sidecar(),
-            },
+            }
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                if ALLOW_DIRECT_EXIT.load(Ordering::Relaxed) {
+                    shutdown_sidecar();
+                    return;
+                }
+                match try_disable_proxy_before_exit() {
+                    Ok(()) => shutdown_sidecar(),
+                    Err(message) => {
+                        api.prevent_exit();
+                        show_main_window(app_handle);
+                        emit_exit_conflict(app_handle, &message);
+                    }
+                }
+            }
             tauri::RunEvent::Exit => {
                 shutdown_sidecar();
             }
             _ => {}
         });
+}
+
+#[tauri::command]
+fn force_exit_app<R: Runtime>(app: AppHandle<R>) {
+    request_app_exit(&app);
+}
+
+fn request_app_exit<R: Runtime>(app: &AppHandle<R>) {
+    ALLOW_DIRECT_EXIT.store(true, Ordering::Relaxed);
+    app.exit(0);
 }
 
 fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
@@ -198,7 +227,7 @@ fn handle_tray_menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
             let _ = request_backend("POST", "/ai-router/api/settings/proxy/disable?skip_restore=1", "");
         }
         MENU_QUIT => {
-            app.exit(0);
+            request_app_exit(app);
         }
         _ => {
             if let Some(account_id) = parse_account_menu_id(id) {
@@ -223,6 +252,31 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+}
+
+fn try_disable_proxy_before_exit() -> Result<(), String> {
+    let response = request_backend("POST", "/ai-router/api/settings/proxy/disable", "")
+        .map_err(|e| format!("无法连接后端，无法自动恢复配置：{e}"))?;
+    if response.status == 200 {
+        return Ok(());
+    }
+    if response.status == 409 {
+        let body = response.body.trim().to_string();
+        if body == "proxy is not enabled" {
+            return Ok(());
+        }
+        let message = if body.is_empty() {
+            "config.toml changed externally; skip auto-restore to avoid overwrite".to_string()
+        } else {
+            body
+        };
+        return Err(message);
+    }
+    let body = response.body.trim();
+    if body.is_empty() {
+        return Err(format!("退出前关闭代理失败（HTTP {}）", response.status));
+    }
+    Err(body.to_string())
 }
 
 fn fetch_proxy_status() -> ProxyStatusSnapshot {
@@ -351,32 +405,6 @@ fn shutdown_sidecar() {
         let _ = child.wait();
     }
     *guard = None;
-}
-
-enum DisableProxyExitError {
-    Conflict(String),
-    Unavailable,
-}
-
-fn try_disable_proxy_before_exit() -> Result<(), DisableProxyExitError> {
-    let response = request_backend("POST", "/ai-router/api/settings/proxy/disable", "")
-        .map_err(|_| DisableProxyExitError::Unavailable)?;
-    if response.status == 200 {
-        return Ok(());
-    }
-    if response.status == 409 {
-        let body = response
-            .body
-            .trim()
-            .to_string();
-        let message = if body.is_empty() {
-            "config.toml changed externally; skip auto-restore to avoid overwrite".to_string()
-        } else {
-            body
-        };
-        return Err(DisableProxyExitError::Conflict(message));
-    }
-    Err(DisableProxyExitError::Unavailable)
 }
 
 fn emit_exit_conflict(app: &tauri::AppHandle, message: &str) {

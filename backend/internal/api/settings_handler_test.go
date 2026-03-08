@@ -287,6 +287,44 @@ wire_api = "responses"
 	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "http://127.0.0.1:6789/ai-router/api"`)
 }
 
+func TestSettingsHandlerEnableNormalizesDuplicateAigateProviderSections(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	prepareCodexFiles(t, home, `model_provider = "aigate"
+
+[model_providers.aigate]
+name = "aigate"
+base_url = "https://old-a.example/v1"
+wire_api = "chat_completions"
+
+[model_providers.aigate]
+name = "aigate"
+base_url = "https://old-b.example/v1"
+wire_api = "chat_completions"
+`, `{"access_token":"token-before"}`)
+
+	handler := api.NewSettingsHandler()
+	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
+	enableRec := httptest.NewRecorder()
+	handler.ServeHTTP(enableRec, enableReq)
+	if enableRec.Code != http.StatusOK {
+		t.Fatalf("enable status = %d, want %d; body=%s", enableRec.Code, http.StatusOK, enableRec.Body.String())
+	}
+
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", configPath, err)
+	}
+	body := string(raw)
+	if got := strings.Count(body, "[model_providers.aigate]"); got != 1 {
+		t.Fatalf("aigate section count = %d, want 1; config=%q", got, body)
+	}
+	assertFileContains(t, configPath, `base_url = "http://127.0.0.1:6789/ai-router/api"`)
+	assertFileContains(t, configPath, `wire_api = "responses"`)
+	assertFileContains(t, configPath, `requires_openai_auth = true`)
+}
+
 func prepareCodexFiles(t *testing.T, home string, configBody string, authBody string) {
 	t.Helper()
 	codexDir := filepath.Join(home, ".codex")

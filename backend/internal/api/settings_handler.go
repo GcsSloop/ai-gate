@@ -618,15 +618,14 @@ func isThirdPartyProvider(content string, provider string) bool {
 }
 
 func ensureAigateProvider(content string) string {
-	provider := "aigate"
-	if !hasProviderSection(content, provider) {
-		return strings.TrimSpace(content) + "\n\n" + aigateProviderBlock()
+	// Always normalize to a single canonical [model_providers.aigate] section.
+	// This avoids duplicate-section parse errors from historical/broken config files.
+	withoutAigate := removeProviderSections(content, "aigate")
+	base := strings.TrimSpace(withoutAigate)
+	if base == "" {
+		return aigateProviderBlock() + "\n"
 	}
-	updated := setProviderValue(content, provider, "name", `"aigate"`)
-	updated = setProviderValue(updated, provider, "base_url", `"http://127.0.0.1:6789/ai-router/api"`)
-	updated = setProviderValue(updated, provider, "wire_api", `"responses"`)
-	updated = setProviderValue(updated, provider, "requires_openai_auth", "true")
-	return updated
+	return base + "\n\n" + aigateProviderBlock() + "\n"
 }
 
 func hasProviderSection(content string, provider string) bool {
@@ -660,6 +659,28 @@ func getProviderValue(content string, provider string, key string) (string, bool
 		}
 	}
 	return "", false
+}
+
+func removeProviderSections(content string, provider string) string {
+	lines := strings.Split(content, "\n")
+	header := "[model_providers." + provider + "]"
+	var kept []string
+	inTarget := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if trimmed == header {
+				inTarget = true
+				continue
+			}
+			inTarget = false
+		}
+		if inTarget {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func setProviderValue(content string, provider string, key string, valueExpr string) string {
