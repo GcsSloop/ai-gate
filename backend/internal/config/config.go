@@ -2,7 +2,10 @@ package config
 
 import (
 	"errors"
+	"fmt"
+	"net"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -38,6 +41,9 @@ func Load() (Config, error) {
 	if cfg.EncryptionKey != "" && len(cfg.EncryptionKey) < 32 {
 		return Config{}, errors.New("encryption key must be at least 32 characters")
 	}
+	if err := validateLocalListenAddr(cfg.ListenAddr); err != nil {
+		return Config{}, err
+	}
 
 	return cfg, nil
 }
@@ -47,4 +53,18 @@ func readString(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func validateLocalListenAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid listen addr %q: %w", addr, err)
+	}
+	normalized := strings.TrimSpace(host)
+	switch normalized {
+	case "127.0.0.1", "localhost", "::1":
+		return nil
+	default:
+		return fmt.Errorf("listen addr %q is not local-only, use 127.0.0.1/localhost/::1", addr)
+	}
 }

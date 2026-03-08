@@ -8,6 +8,14 @@
 - `cursor`
 - `claude code`
 
+## Local-only policy
+
+`ccc-gateway` is local-only by design:
+
+- backend listen address is restricted to loopback (`127.0.0.1` / `localhost` / `::1`)
+- desktop bundle starts the Go sidecar locally
+- this project does not provide cloud/server deployment artifacts
+
 ## Local development
 
 Copy env file:
@@ -28,6 +36,13 @@ Frontend:
 
 ```bash
 make frontend
+```
+
+Desktop (Tauri shell):
+
+```bash
+npm --prefix desktop install
+npm --prefix desktop run dev
 ```
 
 Tests:
@@ -80,3 +95,32 @@ Notes:
 - Third-party accounts continue to use their configured OpenAI-compatible `base_url + api_key`.
 - Uploaded local `auth.json` accounts are treated as official Codex sessions and routed to `https://chatgpt.com/backend-api/codex`.
 - Gateway-managed `response_id` values are used to replay conversation history, so official and third-party accounts can share one conversation chain.
+
+## Tauri package for customers (GitLab CI)
+
+Local macOS build:
+
+```bash
+npm --prefix frontend ci
+npm --prefix desktop install
+bash scripts/desktop/build_sidecar_macos.sh
+npm --prefix desktop run tauri build -- --target universal-apple-darwin
+bash scripts/desktop/notarize_macos.sh
+bash scripts/desktop/collect_release_assets.sh
+```
+
+`release-assets/` will contain:
+
+- `ccc-gateway-<tag>-macOS.dmg`
+- `ccc-gateway-<tag>-macOS.zip`
+- `SHA256SUMS`
+
+GitLab CI pipeline (`.gitlab-ci.yml`) uses:
+
+- test stages for backend/frontend
+- macOS package stage on tag (`v*`)
+- optional codesign + notarize if the following variables are provided:
+  - `APPLE_SIGNING_IDENTITY`
+  - `APPLE_API_KEY_PATH`
+  - `APPLE_API_KEY_ID`
+  - `APPLE_API_ISSUER`

@@ -6,6 +6,8 @@ docs/PP Codex Cli教程.pdf
 node_modules/
 dist/
 coverage/
+release-assets/
+desktop/src-tauri/target/
 *.db
 *.sqlite
 *.sqlite3

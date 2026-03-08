@@ -1,0 +1,46 @@
+stages:
+  - test
+  - package
+
+variables:
+  GO_VERSION: "1.23"
+  NODE_VERSION: "20"
+
+backend:test:
+  stage: test
+  image: golang:${GO_VERSION}
+  script:
+    - cd backend
+    - go test ./...
+
+frontend:test:
+  stage: test
+  image: node:${NODE_VERSION}
+  script:
+    - npm --prefix frontend ci
+    - npm --prefix frontend run test
+
+package:macos:
+  stage: package
+  tags:
+    - macos
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v.*/'
+  before_script:
+    - rustc --version
+    - cargo --version
+    - node --version
+    - npm --version
+    - go version
+  script:
+    - npm --prefix frontend ci
+    - npm --prefix desktop install
+    - bash scripts/desktop/build_sidecar_macos.sh
+    - npm --prefix desktop run tauri build -- --target universal-apple-darwin
+    - bash scripts/desktop/notarize_macos.sh
+    - bash scripts/desktop/collect_release_assets.sh
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - release-assets/

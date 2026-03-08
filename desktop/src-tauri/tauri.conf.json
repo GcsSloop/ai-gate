@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ccc-gateway",
+  "version": "0.1.0",
+  "identifier": "com.cccgateway.desktop",
+  "build": {
+    "frontendDist": "../../frontend/dist",
+    "beforeBuildCommand": "npm --prefix ../../frontend run build:desktop",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm --prefix ../../frontend run dev"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ccc-gateway",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 1024,
+        "minHeight": 700
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "resources": ["bin/routerd-universal-apple-darwin"],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  }
+}

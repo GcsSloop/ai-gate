@@ -1,8 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const isDesktopBuild = process.env.DESKTOP_BUILD === "1";
+
 export default defineConfig({
-  base: "/ai-router/webui/",
+  base: isDesktopBuild ? "./" : "/ai-router/webui/",
   plugins: [
     react(),
     {

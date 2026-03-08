@@ -36,7 +36,7 @@ func TestLoadRejectsShortEncryptionKey(t *testing.T) {
 }
 
 func TestLoadParsesValuesFromEnv(t *testing.T) {
-	t.Setenv("CODEX_ROUTER_LISTEN_ADDR", "0.0.0.0:9999")
+	t.Setenv("CODEX_ROUTER_LISTEN_ADDR", "127.0.0.1:9999")
 	t.Setenv("CODEX_ROUTER_DATABASE_PATH", "/tmp/codex-router.db")
 	t.Setenv("CODEX_ROUTER_SCHEDULER_INTERVAL", "30s")
 	t.Setenv("CODEX_ROUTER_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
@@ -46,8 +46,8 @@ func TestLoadParsesValuesFromEnv(t *testing.T) {
 		t.Fatalf("Load returned error: %v", err)
 	}
 
-	if cfg.ListenAddr != "0.0.0.0:9999" {
-		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, "0.0.0.0:9999")
+	if cfg.ListenAddr != "127.0.0.1:9999" {
+		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, "127.0.0.1:9999")
 	}
 	if cfg.DatabasePath != "/tmp/codex-router.db" {
 		t.Fatalf("DatabasePath = %q, want %q", cfg.DatabasePath, "/tmp/codex-router.db")
@@ -57,5 +57,14 @@ func TestLoadParsesValuesFromEnv(t *testing.T) {
 	}
 	if cfg.EncryptionKey != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("EncryptionKey = %q, want expected value", cfg.EncryptionKey)
+	}
+}
+
+func TestLoadRejectsNonLocalListenAddr(t *testing.T) {
+	t.Setenv("CODEX_ROUTER_LISTEN_ADDR", "0.0.0.0:6789")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load returned nil error, want localhost validation error")
 	}
 }
