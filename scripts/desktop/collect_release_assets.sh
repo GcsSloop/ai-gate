@@ -12,12 +12,12 @@ APP_PATH="$(find "$SRC_DIR/macos" -maxdepth 1 -name "*.app" -type d | head -n1 |
 DMG_PATH="$(find "$SRC_DIR/dmg" -maxdepth 1 -name "*.dmg" -type f | head -n1 || true)"
 
 if [[ -n "$APP_PATH" ]]; then
-  APP_ZIP="$OUT_DIR/ccc-gateway-${VERSION}-macOS.zip"
+  APP_ZIP="$OUT_DIR/aigate-${VERSION}-macOS.zip"
   ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$APP_ZIP"
 fi
 
 if [[ -n "$DMG_PATH" ]]; then
-  cp "$DMG_PATH" "$OUT_DIR/ccc-gateway-${VERSION}-macOS.dmg"
+  cp "$DMG_PATH" "$OUT_DIR/aigate-${VERSION}-macOS.dmg"
 fi
 
 (

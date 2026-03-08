@@ -27,7 +27,7 @@ fi
 
 if [[ -z "$DMG_PATH" ]]; then
   echo "No dmg found, create zip for notarization"
-  ZIP_PATH="$ROOT_DIR/desktop/src-tauri/target/ccc-gateway-macos.zip"
+  ZIP_PATH="$ROOT_DIR/desktop/src-tauri/target/aigate-macos.zip"
   ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
   xcrun notarytool submit "$ZIP_PATH" \
     --key "$APPLE_API_KEY_PATH" \

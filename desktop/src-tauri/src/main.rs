@@ -12,14 +12,14 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             let sidecar_path = resolve_sidecar_path(app.handle())?;
-            let app_data_dir = app
+            let home_dir = app
                 .path()
-                .app_data_dir()
-                .map_err(|e| format!("resolve app_data_dir failed: {e}"))?;
-            std::fs::create_dir_all(&app_data_dir)
-                .map_err(|e| format!("create app_data_dir failed: {e}"))?;
+                .home_dir()
+                .map_err(|e| format!("resolve home_dir failed: {e}"))?;
+            let data_dir = home_dir.join(".aigate").join("data");
+            std::fs::create_dir_all(&data_dir).map_err(|e| format!("create data_dir failed: {e}"))?;
 
-            let database_path = app_data_dir.join("ccc-gateway.sqlite");
+            let database_path = data_dir.join("aigate.sqlite");
             let mut command = Command::new(&sidecar_path);
             command
                 .env("CODEX_ROUTER_LISTEN_ADDR", "127.0.0.1:6789")
@@ -40,8 +40,11 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                shutdown_sidecar();
+            match event {
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    shutdown_sidecar();
+                }
+                _ => {}
             }
         });
 }

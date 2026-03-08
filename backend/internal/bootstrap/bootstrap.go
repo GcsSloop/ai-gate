@@ -73,6 +73,14 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/dashboard/account-stats", api.NewDashboardHandler(conversationRepo))
 	apiMux.Handle("/conversations", conversationsHandler)
 	apiMux.Handle("/conversations/", conversationsHandler)
+	settingsHandler := api.NewSettingsHandler()
+	apiMux.Handle("/settings/codex/backup", settingsHandler)
+	apiMux.Handle("/settings/codex/backups", settingsHandler)
+	apiMux.Handle("/settings/codex/backups/", settingsHandler)
+	apiMux.Handle("/settings/codex/restore", settingsHandler)
+	apiMux.Handle("/settings/proxy/status", settingsHandler)
+	apiMux.Handle("/settings/proxy/enable", settingsHandler)
+	apiMux.Handle("/settings/proxy/disable", settingsHandler)
 	gatewayHandler := api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo)
 	responsesHandler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
 	apiMux.Handle("/chat/completions", gatewayHandler)
@@ -90,7 +98,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		}
 		http.NotFound(w, r)
 	})
-	mux.Handle("/ai-router/api/", http.StripPrefix("/ai-router/api", apiMux))
+	mux.Handle("/ai-router/api/", withCORS(http.StripPrefix("/ai-router/api", apiMux)))
 
 	appCtx, cancel := context.WithCancel(context.Background())
 	app := &App{listenAddr: cfg.ListenAddr, handler: mux, store: store, cancel: cancel}
@@ -118,6 +126,23 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	}()
 
 	return app, nil
+}
+
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (a *App) ListenAddr() string {

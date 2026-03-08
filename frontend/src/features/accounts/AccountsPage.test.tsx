@@ -35,37 +35,12 @@ describe("AccountsPage", () => {
         headers: { "Content-Type": "application/json" },
       });
 
-    const summaryResponse = () =>
-      new Response(
-        JSON.stringify({
-          total_conversations: 12,
-          active_conversations: 4,
-          total_runs: 28,
-          failover_runs: 3,
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
         return Promise.resolve(listResponse());
       }
-      if (url === "/ai-router/api/dashboard/summary") {
-        return Promise.resolve(summaryResponse());
-      }
-      if (url === "/ai-router/api/dashboard/account-stats") {
-        return Promise.resolve(
-          new Response(JSON.stringify([{ account_id: 1, total_calls: 3, models: { "gpt-5.4": 3 } }]), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
-      }
-      if (url === "/ai-router/api/accounts/import-local" && init?.method === "POST") {
+      if (url === "/ai-router/api/accounts/import-current" && init?.method === "POST") {
         return Promise.resolve(new Response(null, { status: 201 }));
       }
       if (url === "/ai-router/api/accounts" && init?.method === "POST") {
@@ -95,29 +70,24 @@ describe("AccountsPage", () => {
     render(<AccountsPage />);
 
     expect(await screen.findByText("mirror-east")).toBeInTheDocument();
-    expect(screen.getByText("本地 Codex 接入说明")).toBeInTheDocument();
-    expect(screen.getByText(/base_url = "http:\/\/127\.0\.0\.1:6789\/ai-router\/api"/)).toBeInTheDocument();
-    expect(screen.getByText("会话统计")).toBeInTheDocument();
-    expect(screen.getByText("账户调用详情（全量累计）")).toBeInTheDocument();
-    expect(screen.getByText("12")).toBeInTheDocument();
-    expect(screen.getByText("gpt-5.4 × 3")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "账户列表" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /添加账户/ }));
     fireEvent.click(await screen.findByText("官方账户"));
 
     const officialModal = await screen.findByRole("dialog", { name: "添加官方账户" });
-    const file = new File(['{"auth_mode":"chatgpt","tokens":{"access_token":"token-upload"}}'], "auth.json", {
-      type: "application/json",
-    });
-    fireEvent.change(within(officialModal).getByLabelText("选择 auth.json"), {
-      target: { files: [file] },
+    fireEvent.change(within(officialModal).getByLabelText("账户名称"), {
+      target: { value: "current-codex" },
     });
     fireEvent.click(within(officialModal).getByRole("button", { name: /导\s*入/ }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/ai-router/api/accounts/import-local",
-        expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
+        "/ai-router/api/accounts/import-current",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ account_name: "current-codex" }),
+        }),
       );
     });
 
@@ -212,23 +182,10 @@ describe("AccountsPage", () => {
       },
     ];
 
-    const summary = {
-      total_conversations: 1,
-      active_conversations: 1,
-      total_runs: 1,
-      failover_runs: 0,
-    };
-
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
         return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url === "/ai-router/api/dashboard/summary") {
-        return Promise.resolve(new Response(JSON.stringify(summary), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url === "/ai-router/api/dashboard/account-stats") {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
       }
       if (url === "/ai-router/api/accounts/1" && init?.method === "PUT") {
         return Promise.resolve(new Response(null, { status: 200 }));

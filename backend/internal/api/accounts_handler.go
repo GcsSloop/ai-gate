@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +52,8 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.createAuthSession(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts/import-local":
 		h.importLocalAuth(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/accounts/import-current":
+		h.importCurrentAuth(w, r)
 	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/accounts/") && countPathSegments(r.URL.Path) == 2:
 		h.updateAccount(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/accounts/") && countPathSegments(r.URL.Path) == 2:
@@ -75,6 +79,10 @@ type importLocalAuthRequest struct {
 	AccountName string `json:"account_name"`
 	Content     string `json:"content"`
 	Path        string `json:"path"`
+}
+
+type importCurrentAuthRequest struct {
+	AccountName string `json:"account_name"`
 }
 
 type updateAccountRequest struct {
@@ -273,6 +281,48 @@ func (h *AccountsHandler) importLocalAuth(w http.ResponseWriter, r *http.Request
 
 	if accountName == "" {
 		accountName = "local-codex"
+	}
+
+	err = h.repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAIOfficial,
+		AccountName:   accountName,
+		AuthMode:      accounts.AuthModeLocalImport,
+		CredentialRef: string(raw),
+		BaseURL:       officialCodexBaseURL,
+		Status:        accounts.StatusActive,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (h *AccountsHandler) importCurrentAuth(w http.ResponseWriter, r *http.Request) {
+	var req importCurrentAuthRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	accountName := strings.TrimSpace(req.AccountName)
+	if accountName == "" {
+		accountName = "local-codex"
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	authPath := filepath.Join(home, ".codex", "auth.json")
+	_, raw, err := auth.LoadLocalAuthFile(authPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	err = h.repo.Create(accounts.Account{

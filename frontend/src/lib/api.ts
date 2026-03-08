@@ -59,6 +59,21 @@ export type AccountChatTestPayload = {
   input: string;
 };
 
+export type CodexBackupItem = {
+  backup_id: string;
+  created_at: string;
+};
+
+export type CodexBackupFiles = {
+  backup_id: string;
+  files: Record<string, string>;
+};
+
+export type ProxyStatus = {
+  enabled: boolean;
+  last_backup_id?: string;
+};
+
 export async function listAccounts(): Promise<AccountRecord[]> {
   const response = await fetch(apiPath("/accounts"));
   if (!response.ok) {
@@ -158,4 +173,81 @@ export async function importLocalCodexAuth(file: File, accountName = "local-code
   if (!response.ok) {
     throw new Error("failed to import local codex auth");
   }
+}
+
+export async function importCurrentCodexAuth(accountName = "local-codex"): Promise<void> {
+  const response = await fetch(apiPath("/accounts/import-current"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ account_name: accountName }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to import current codex auth");
+  }
+}
+
+export async function listCodexBackups(): Promise<CodexBackupItem[]> {
+  const response = await fetch(apiPath("/settings/codex/backups"));
+  if (!response.ok) {
+    throw new Error("failed to list codex backups");
+  }
+  return response.json();
+}
+
+export async function createCodexBackup(): Promise<void> {
+  const response = await fetch(apiPath("/settings/codex/backup"), {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to create codex backup");
+  }
+}
+
+export async function restoreCodexBackup(backupID: string): Promise<void> {
+  const response = await fetch(apiPath("/settings/codex/restore"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ backup_id: backupID }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to restore codex backup");
+  }
+}
+
+export async function getCodexBackupFiles(backupID: string): Promise<CodexBackupFiles> {
+  const response = await fetch(apiPath(`/settings/codex/backups/${backupID}/files`));
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to fetch backup files");
+  }
+  return response.json();
+}
+
+export async function getProxyStatus(): Promise<ProxyStatus> {
+  const response = await fetch(apiPath("/settings/proxy/status"));
+  if (!response.ok) {
+    throw new Error("failed to fetch proxy status");
+  }
+  return response.json();
+}
+
+export async function enableProxy(): Promise<ProxyStatus> {
+  const response = await fetch(apiPath("/settings/proxy/enable"), { method: "POST" });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to enable proxy");
+  }
+  return response.json();
+}
+
+export async function disableProxy(): Promise<ProxyStatus> {
+  const response = await fetch(apiPath("/settings/proxy/disable"), { method: "POST" });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to disable proxy");
+  }
+  return response.json();
 }

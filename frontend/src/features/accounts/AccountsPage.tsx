@@ -2,16 +2,13 @@ import { HolderOutlined, PlusOutlined } from "@ant-design/icons";
 import {
   Button,
   Card,
-  Col,
   Descriptions,
   Dropdown,
   Form,
   Input,
   Modal,
-  Row,
   Select,
   Space,
-  Statistic,
   Table,
   Tag,
   Typography,
@@ -21,21 +18,17 @@ import type { ColumnsType } from "antd/es/table";
 import { useEffect, useRef, useState, type HTMLAttributes } from "react";
 
 import {
-  getAccountCallStats,
   createAccount,
   deleteAccount,
-  getDashboardSummary,
-  importLocalCodexAuth,
+  importCurrentCodexAuth,
   listAccounts,
   testAccount,
   updateAccount,
   type AccountRecord,
-  type AccountCallStats,
   type AccountTestResult,
-  type DashboardSummary,
 } from "../../lib/api";
 
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
 
 const defaultBaseURL = "https://code.ppchat.vip/v1";
 type AddModalMode = "official" | "third_party" | null;
@@ -84,18 +77,10 @@ function formatResetAt(value?: string) {
 export function AccountsPage() {
   const [messageApi, contextHolder] = message.useMessage();
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
-  const [summary, setSummary] = useState<DashboardSummary>({
-    total_conversations: 0,
-    active_conversations: 0,
-    total_runs: 0,
-    failover_runs: 0,
-  });
-  const [accountCallStats, setAccountCallStats] = useState<AccountCallStats[]>([]);
   const [addModalMode, setAddModalMode] = useState<AddModalMode>(null);
   const [editingAccount, setEditingAccount] = useState<AccountRecord | null>(null);
   const [testingAccount, setTestingAccount] = useState<AccountRecord | null>(null);
   const [testResult, setTestResult] = useState<AccountTestResult | null>(null);
-  const [officialFile, setOfficialFile] = useState<File | null>(null);
   const dragIndexRef = useRef<number | null>(null);
 
   const [thirdPartyForm] = Form.useForm();
@@ -108,14 +93,8 @@ export function AccountsPage() {
   }, []);
 
   async function refreshAll() {
-    const [accountItems, dashboardSummary, callStats] = await Promise.all([
-      listAccounts(),
-      getDashboardSummary(),
-      getAccountCallStats(),
-    ]);
+    const accountItems = await listAccounts();
     setAccounts(accountItems);
-    setSummary(dashboardSummary);
-    setAccountCallStats(callStats);
   }
 
   async function handleCreateThirdParty(values: { account_name: string; base_url: string; credential_ref: string }) {
@@ -133,12 +112,7 @@ export function AccountsPage() {
   }
 
   async function handleCreateOfficial(values: { account_name: string }) {
-    if (!officialFile) {
-      void messageApi.error("请先选择 auth.json 文件");
-      return;
-    }
-    await importLocalCodexAuth(officialFile, values.account_name || "local-codex");
-    setOfficialFile(null);
+    await importCurrentCodexAuth(values.account_name || "local-codex");
     officialForm.resetFields();
     setAddModalMode(null);
     await refreshAll();
@@ -347,53 +321,6 @@ export function AccountsPage() {
     },
   ];
 
-  type AccountStatsRow = {
-    id: number;
-    account_name: string;
-    total_calls: number;
-    model_stats: Record<string, number>;
-  };
-  const statsByAccount = new Map(accountCallStats.map((item) => [item.account_id, item]));
-  const accountStatsRows: AccountStatsRow[] = accounts.map((account) => {
-    const stats = statsByAccount.get(account.id);
-    return {
-      id: account.id,
-      account_name: account.account_name,
-      total_calls: stats?.total_calls ?? 0,
-      model_stats: stats?.models ?? {},
-    };
-  });
-  const accountStatsColumns: ColumnsType<AccountStatsRow> = [
-    {
-      title: "账户",
-      dataIndex: "account_name",
-    },
-    {
-      title: "调用次数",
-      dataIndex: "total_calls",
-      width: 140,
-    },
-    {
-      title: "模型统计",
-      dataIndex: "model_stats",
-      render: (value: Record<string, number>) => {
-        const entries = Object.entries(value).sort((a, b) => b[1] - a[1]);
-        if (entries.length === 0) {
-          return <Text type="secondary">暂无调用</Text>;
-        }
-        return (
-          <Space wrap>
-            {entries.map(([model, count]) => (
-              <Tag key={model}>
-                {model} × {count}
-              </Tag>
-            ))}
-          </Space>
-        );
-      },
-    },
-  ];
-
   return (
     <div className="dashboard-page">
       {contextHolder}
@@ -419,22 +346,6 @@ export function AccountsPage() {
           </Button>
         </Dropdown>
       </div>
-
-      <Card title="本地 Codex 接入说明" variant="borderless" className="summary-card">
-        <Paragraph style={{ marginBottom: 8 }}>
-          将本地 <code>~/.codex/config.toml</code> 的 provider 指向当前服务后，Codex CLI 就会通过本路由器统一访问官方账户和第三方账户。
-        </Paragraph>
-        <pre className="test-output">{`model_provider = "router"
-
-[model_providers.router]
-name = "router"
-base_url = "http://127.0.0.1:6789/ai-router/api"
-wire_api = "responses"
-requires_openai_auth = true`}</pre>
-        <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          修改完成后，重启本地 Codex CLI。Codex CLI 在该配置下会访问 <code>/ai-router/api/responses</code>。
-        </Paragraph>
-      </Card>
 
       <Card className="accounts-card" variant="borderless">
         <Table
@@ -469,27 +380,6 @@ requires_openai_auth = true`}</pre>
             },
           }}
         />
-      </Card>
-
-      <Card title="账户调用详情（全量累计）" variant="borderless" className="summary-card">
-        <Table rowKey="id" columns={accountStatsColumns} dataSource={accountStatsRows} pagination={false} />
-      </Card>
-
-      <Card title="会话统计" variant="borderless" className="summary-card">
-        <Row gutter={[16, 16]}>
-          <Col xs={24} sm={12} lg={6}>
-            <Statistic title="总会话数" value={summary.total_conversations} />
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Statistic title="活跃会话" value={summary.active_conversations} />
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Statistic title="总运行次数" value={summary.total_runs} />
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Statistic title="续切次数" value={summary.failover_runs} />
-          </Col>
-        </Row>
       </Card>
 
       <Modal
@@ -534,14 +424,7 @@ requires_openai_auth = true`}</pre>
           <Form.Item label="账户名称" name="account_name" initialValue="local-codex">
             <Input />
           </Form.Item>
-          <Form.Item label="上传 auth.json" required>
-            <input
-              aria-label="选择 auth.json"
-              type="file"
-              accept="application/json,.json"
-              onChange={(event) => setOfficialFile(event.target.files?.[0] ?? null)}
-            />
-          </Form.Item>
+          <Text type="secondary">将直接读取当前用户目录下的 <code>~/.codex/auth.json</code>。</Text>
           <div className="modal-footer">
             <Button onClick={() => setAddModalMode(null)}>取消</Button>
             <Button type="primary" htmlType="submit">

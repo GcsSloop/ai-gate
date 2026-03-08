@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
 const (
 	defaultListenAddr        = "127.0.0.1:6789"
-	defaultDatabasePath      = "data/codex-router.sqlite"
 	defaultSchedulerInterval = 5 * time.Minute
 )
 
@@ -23,6 +23,7 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	defaultDatabasePath := resolveDefaultDatabasePath()
 	cfg := Config{
 		ListenAddr:        readString("CODEX_ROUTER_LISTEN_ADDR", defaultListenAddr),
 		DatabasePath:      readString("CODEX_ROUTER_DATABASE_PATH", defaultDatabasePath),
@@ -46,6 +47,14 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func resolveDefaultDatabasePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "data/aigate.sqlite"
+	}
+	return filepath.Join(home, ".aigate", "data", "aigate.sqlite")
 }
 
 func readString(key, fallback string) string {

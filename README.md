@@ -1,16 +1,10 @@
-# ccc-gateway
+# aigate
 
-`ccc-gateway` is a local gateway prototype focused on multi-account switching.
-
-`ccc` stands for:
-
-- `codex`
-- `cursor`
-- `claude code`
+`aigate` is a local gateway prototype focused on multi-account switching.
 
 ## Local-only policy
 
-`ccc-gateway` is local-only by design:
+`aigate` is local-only by design:
 
 - backend listen address is restricted to loopback (`127.0.0.1` / `localhost` / `::1`)
 - desktop bundle starts the Go sidecar locally
@@ -111,8 +105,8 @@ bash scripts/desktop/collect_release_assets.sh
 
 `release-assets/` will contain:
 
-- `ccc-gateway-<tag>-macOS.dmg`
-- `ccc-gateway-<tag>-macOS.zip`
+- `aigate-<tag>-macOS.dmg`
+- `aigate-<tag>-macOS.zip`
 - `SHA256SUMS`
 
 GitLab CI pipeline (`.gitlab-ci.yml`) uses:

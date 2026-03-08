@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -8,8 +9,8 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
-	t.Parallel()
-
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
@@ -18,8 +19,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ListenAddr != "127.0.0.1:6789" {
 		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, "127.0.0.1:6789")
 	}
-	if cfg.DatabasePath != "data/codex-router.sqlite" {
-		t.Fatalf("DatabasePath = %q, want %q", cfg.DatabasePath, "data/codex-router.sqlite")
+	expectedDefault := filepath.Join(home, ".aigate", "data", "aigate.sqlite")
+	if cfg.DatabasePath != expectedDefault {
+		t.Fatalf("DatabasePath = %q, want %q", cfg.DatabasePath, expectedDefault)
 	}
 	if cfg.SchedulerInterval != 5*time.Minute {
 		t.Fatalf("SchedulerInterval = %s, want %s", cfg.SchedulerInterval, 5*time.Minute)

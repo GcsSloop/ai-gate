@@ -21,10 +21,84 @@ body {
     linear-gradient(180deg, #f8fbff 0%, #f4f7fb 100%);
 }
 
+.app-shell {
+  min-height: 100vh;
+}
+
+.top-menu {
+  width: min(1480px, calc(100vw - 48px));
+  margin: 0 auto;
+  padding: 24px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.brand {
+  font-size: 40px;
+  font-weight: 700;
+  color: #1266d6;
+  line-height: 1;
+}
+
+.menu-actions {
+  display: inline-flex;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 14px;
+  background: #e9eef7;
+}
+
+.top-menu-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.proxy-panel {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: #f1f5f9;
+}
+
+.proxy-label {
+  font-size: 14px;
+  color: #334155;
+}
+
+.proxy-backup {
+  font-size: 12px;
+  color: #64748b;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-button {
+  border: 0;
+  background: transparent;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  color: #475569;
+  cursor: pointer;
+}
+
+.menu-button.active {
+  background: #ffffff;
+  color: #111827;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+}
+
 .dashboard-page {
   width: min(1480px, calc(100vw - 48px));
   margin: 0 auto;
-  padding: 32px 0 48px;
+  padding: 18px 0 48px;
 }
 
 .dashboard-header {
@@ -97,6 +171,26 @@ body {
   .dashboard-page {
     width: min(100vw - 24px, 100%);
     padding: 20px 0 32px;
+  }
+
+  .top-menu {
+    width: min(100vw - 24px, 100%);
+    padding-top: 18px;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .brand {
+    font-size: 30px;
+  }
+
+  .top-menu-right {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .proxy-panel {
+    justify-content: space-between;
   }
 
   .dashboard-header {

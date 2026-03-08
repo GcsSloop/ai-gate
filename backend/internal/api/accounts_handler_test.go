@@ -593,3 +593,46 @@ func TestAccountsHandlerImportLocalCodexAuthUpload(t *testing.T) {
 		t.Fatalf("BaseURL = %q, want https://chatgpt.com/backend-api/codex", listed[0].BaseURL)
 	}
 }
+
+func TestAccountsHandlerImportCurrentCodexAuth(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(codexDir, "auth.json"), []byte(`{
+		"auth_mode":"chatgpt",
+		"tokens":{"access_token":"token-1","account_id":"acct-1"}
+	}`), 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/import-current", bytes.NewBufferString(`{"account_name":"current-codex"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /accounts/import-current status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	listed, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("List returned %d accounts, want 1", len(listed))
+	}
+	if listed[0].AccountName != "current-codex" {
+		t.Fatalf("AccountName = %q, want current-codex", listed[0].AccountName)
+	}
+}
