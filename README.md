@@ -1,6 +1,12 @@
-# codex-router
+# ccc-gateway
 
-Codex router prototype workspace.
+`ccc-gateway` is a local gateway prototype focused on multi-account switching.
+
+`ccc` stands for:
+
+- `codex`
+- `cursor`
+- `claude code`
 
 ## Local development
 
@@ -40,9 +46,9 @@ make smoke-third-party
 
 The frontend dev server proxies `/accounts`, `/policy`, `/monitoring`, `/conversations`, and `/v1` to `http://127.0.0.1:6789`.
 
-## Codex CLI via Router
+## Codex CLI via Gateway
 
-The router now exposes:
+The gateway now exposes:
 
 - `/ai-router/api/responses`
 - `/ai-router/api/models`
@@ -73,4 +79,4 @@ Notes:
 
 - Third-party accounts continue to use their configured OpenAI-compatible `base_url + api_key`.
 - Uploaded local `auth.json` accounts are treated as official Codex sessions and routed to `https://chatgpt.com/backend-api/codex`.
-- Router-managed `response_id` values are used to replay conversation history, so official and third-party accounts can share one conversation chain.
+- Gateway-managed `response_id` values are used to replay conversation history, so official and third-party accounts can share one conversation chain.
