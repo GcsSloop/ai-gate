@@ -36,7 +36,7 @@ export function App() {
         cancelText: "取消",
         onOk: async () => {
           try {
-            await disableProxy(true);
+            await disableProxy({ force: true });
             window.close();
           } catch (error) {
             void messageApi.error(error instanceof Error ? error.message : "强制退出失败");
@@ -57,6 +57,43 @@ export function App() {
       setProxyEnabled(status.enabled);
       setLastBackupID(status.last_backup_id || "");
     } catch (error) {
+      if (!checked && error instanceof Error && error.message.includes("config.toml changed externally")) {
+        Modal.confirm({
+          title: "检测到配置冲突",
+          content: "当前 config.toml 已被外部修改。请选择关闭方式：覆盖恢复后关闭，或不覆盖直接关闭代理。",
+          okText: "覆盖并关闭",
+          cancelText: "不覆盖直接关闭",
+          onOk: async () => {
+            setProxyLoading(true);
+            try {
+              const status = await disableProxy({ force: true });
+              setProxyEnabled(status.enabled);
+              setLastBackupID(status.last_backup_id || "");
+              void messageApi.success("代理已关闭并恢复备份");
+            } catch (forceError) {
+              void messageApi.error(forceError instanceof Error ? forceError.message : "覆盖恢复失败");
+              setProxyEnabled(true);
+            } finally {
+              setProxyLoading(false);
+            }
+          },
+          onCancel: async () => {
+            setProxyLoading(true);
+            try {
+              const status = await disableProxy({ skipRestore: true });
+              setProxyEnabled(status.enabled);
+              setLastBackupID(status.last_backup_id || "");
+              void messageApi.success("代理已关闭（未覆盖当前配置）");
+            } catch (cancelError) {
+              void messageApi.error(cancelError instanceof Error ? cancelError.message : "关闭代理失败");
+              setProxyEnabled(true);
+            } finally {
+              setProxyLoading(false);
+            }
+          },
+        });
+        return;
+      }
       void messageApi.error(error instanceof Error ? error.message : "代理切换失败，请检查配置冲突后重试");
       setProxyEnabled(!checked);
     } finally {
@@ -105,7 +142,12 @@ export function App() {
               </div>
             </div>
           </header>
-          {tab === "accounts" ? <AccountsPage /> : <SettingsPage />}
+          <div style={{ display: tab === "accounts" ? "block" : "none" }}>
+            <AccountsPage />
+          </div>
+          <div style={{ display: tab === "settings" ? "block" : "none" }}>
+            <SettingsPage />
+          </div>
         </div>
       </AntApp>
     </ConfigProvider>

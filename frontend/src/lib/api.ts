@@ -269,8 +269,15 @@ export async function enableProxy(): Promise<ProxyStatus> {
   return response.json();
 }
 
-export async function disableProxy(force = false): Promise<ProxyStatus> {
-  const suffix = force ? "?force=1" : "";
+export async function disableProxy(options?: { force?: boolean; skipRestore?: boolean }): Promise<ProxyStatus> {
+  const params = new URLSearchParams();
+  if (options?.force) {
+    params.set("force", "1");
+  }
+  if (options?.skipRestore) {
+    params.set("skip_restore", "1");
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
   const response = await fetch(apiPath(`/settings/proxy/disable${suffix}`), { method: "POST" });
   if (!response.ok) {
     const details = await response.text();

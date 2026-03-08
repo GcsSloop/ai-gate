@@ -7,6 +7,8 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -70,6 +72,7 @@ fn main() {
             drop(guard);
 
             setup_tray(app.handle())?;
+            start_tray_sync_task(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -125,6 +128,13 @@ fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .build(app)
         .map_err(|e| format!("build tray icon failed: {e}"))?;
     Ok(())
+}
+
+fn start_tray_sync_task<R: Runtime>(app: AppHandle<R>) {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(2));
+        refresh_tray_menu(&app);
+    });
 }
 
 fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, String> {
@@ -185,7 +195,7 @@ fn handle_tray_menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
             let _ = request_backend("POST", "/ai-router/api/settings/proxy/enable", "");
         }
         MENU_PROXY_DISABLE => {
-            let _ = request_backend("POST", "/ai-router/api/settings/proxy/disable", "");
+            let _ = request_backend("POST", "/ai-router/api/settings/proxy/disable?skip_restore=1", "");
         }
         MENU_QUIT => {
             app.exit(0);
