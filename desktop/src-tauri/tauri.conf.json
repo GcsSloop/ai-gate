@@ -5,9 +5,9 @@
   "identifier": "com.cccgateway.desktop",
   "build": {
     "frontendDist": "../../frontend/dist",
-    "beforeBuildCommand": "npm --prefix ../../frontend run build:desktop",
+    "beforeBuildCommand": "npm --prefix ../frontend run build:desktop",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm --prefix ../../frontend run dev"
+    "beforeDevCommand": "npm --prefix ../frontend run dev"
   },
   "app": {
     "windows": [
