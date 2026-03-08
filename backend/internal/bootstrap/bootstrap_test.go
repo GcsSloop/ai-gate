@@ -10,7 +10,7 @@ import (
 )
 
 func TestNewApp(t *testing.T) {
-	t.Parallel()
+	t.Setenv("HOME", t.TempDir())
 
 	app, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
 		ListenAddr:   "127.0.0.1:0",
@@ -46,7 +46,7 @@ func TestNewApp(t *testing.T) {
 	responsesReq := httptest.NewRequest(http.MethodPost, "/ai-router/api/responses", nil)
 	responsesRec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(responsesRec, responsesReq)
-	if responsesRec.Code == http.StatusNotFound {
-		t.Fatalf("POST /ai-router/api/responses status = %d, want non-404 alias route", responsesRec.Code)
+	if responsesRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST /ai-router/api/responses status = %d, want %d when proxy disabled", responsesRec.Code, http.StatusServiceUnavailable)
 	}
 }

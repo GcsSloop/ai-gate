@@ -83,12 +83,12 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/settings/proxy/disable", settingsHandler)
 	gatewayHandler := api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo)
 	responsesHandler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
-	apiMux.Handle("/chat/completions", gatewayHandler)
-	apiMux.Handle("/v1/chat/completions", gatewayHandler)
-	apiMux.Handle("/responses", responsesHandler)
-	apiMux.Handle("/v1/responses", responsesHandler)
-	apiMux.Handle("/models", responsesHandler)
-	apiMux.Handle("/v1/models", responsesHandler)
+	apiMux.Handle("/chat/completions", api.RequireProxyEnabled(gatewayHandler))
+	apiMux.Handle("/v1/chat/completions", api.RequireProxyEnabled(gatewayHandler))
+	apiMux.Handle("/responses", api.RequireProxyEnabled(responsesHandler))
+	apiMux.Handle("/v1/responses", api.RequireProxyEnabled(responsesHandler))
+	apiMux.Handle("/models", api.RequireProxyEnabled(responsesHandler))
+	apiMux.Handle("/v1/models", api.RequireProxyEnabled(responsesHandler))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

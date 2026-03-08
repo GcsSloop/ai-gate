@@ -11,10 +11,13 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 type SettingsHandler struct{}
+
+var proxyToggleMu sync.Mutex
 
 func NewSettingsHandler() *SettingsHandler {
 	return &SettingsHandler{}
@@ -52,15 +55,22 @@ type proxyState struct {
 }
 
 type proxySession struct {
-	SessionID         string `json:"session_id"`
-	BackupID          string `json:"backup_id"`
-	EnabledConfigHash string `json:"enabled_config_hash"`
-	CreatedAt         string `json:"created_at"`
+	SessionID             string `json:"session_id"`
+	BackupID              string `json:"backup_id"`
+	Mode                  string `json:"mode"`
+	TargetProvider        string `json:"target_provider,omitempty"`
+	PreviousModelProvider string `json:"previous_model_provider,omitempty"`
+	OriginalBaseURL       string `json:"original_base_url,omitempty"`
+	EnabledConfigHash     string `json:"enabled_config_hash"`
+	CreatedAt             string `json:"created_at"`
 }
 
 type proxyStatusResponse struct {
-	Enabled      bool   `json:"enabled"`
-	LastBackupID string `json:"last_backup_id,omitempty"`
+	Enabled        bool   `json:"enabled"`
+	LastBackupID   string `json:"last_backup_id,omitempty"`
+	Mode           string `json:"mode,omitempty"`
+	TargetProvider string `json:"target_provider,omitempty"`
+	ConfigConflict bool   `json:"config_conflict,omitempty"`
 }
 
 func (h *SettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +151,9 @@ func createCodexBackupSnapshot(home string, kind string) (string, string, error)
 }
 
 func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
+	proxyToggleMu.Lock()
+	defer proxyToggleMu.Unlock()
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -164,22 +177,40 @@ func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
 		return
 	}
 	content := string(raw)
-	if strings.Contains(content, "[model_providers.aigate]") {
-		http.Error(w, "config.toml already contains [model_providers.aigate]", http.StatusConflict)
-		return
+	currentProvider := currentModelProvider(content)
+	updated := content
+	mode := "created_aigate_provider"
+	targetProvider := "aigate"
+	originalBaseURL := ""
+
+	if isThirdPartyProvider(content, currentProvider) {
+		baseURL, ok := getProviderValue(content, currentProvider, "base_url")
+		if !ok {
+			http.Error(w, "current provider missing base_url; cannot patch provider", http.StatusBadRequest)
+			return
+		}
+		mode = "patched_existing_provider"
+		targetProvider = currentProvider
+		originalBaseURL = baseURL
+		updated = setProviderValue(content, currentProvider, "base_url", `"http://127.0.0.1:6789/ai-router/api"`)
+	} else {
+		updated = setModelProvider(content, "aigate")
+		updated = ensureAigateProvider(updated)
 	}
-	updated := setModelProvider(content, "aigate")
-	updated = strings.TrimSpace(updated) + "\n\n" + aigateProviderBlock()
 	if err := writeAtomic(configPath, []byte(updated), 0o600); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	session := proxySession{
-		SessionID:         time.Now().Format("20060102-150405.000"),
-		BackupID:          backupID,
-		EnabledConfigHash: hashString(updated),
-		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
+		SessionID:             time.Now().Format("20060102-150405.000"),
+		BackupID:              backupID,
+		Mode:                  mode,
+		TargetProvider:        targetProvider,
+		PreviousModelProvider: currentProvider,
+		OriginalBaseURL:       originalBaseURL,
+		EnabledConfigHash:     hashString(updated),
+		CreatedAt:             time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := writeProxySession(home, session); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -191,12 +222,17 @@ func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
 	_ = writeProxyState(home, state)
 
 	writeJSON(w, http.StatusOK, proxyStatusResponse{
-		Enabled:      true,
-		LastBackupID: backupID,
+		Enabled:        true,
+		LastBackupID:   backupID,
+		Mode:           session.Mode,
+		TargetProvider: session.TargetProvider,
 	})
 }
 
 func (h *SettingsHandler) disableProxy(w http.ResponseWriter, r *http.Request) {
+	proxyToggleMu.Lock()
+	defer proxyToggleMu.Unlock()
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -213,34 +249,28 @@ func (h *SettingsHandler) disableProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if hashBytes(raw) != session.EnabledConfigHash {
-		if isForceDisable(r.URL.Query().Get("force")) {
-			_ = os.Remove(proxySessionPath(home))
-			state, _ := readProxyState(home)
-			state.SessionID = ""
-			_ = writeProxyState(home, state)
-			writeJSON(w, http.StatusOK, proxyStatusResponse{
-				Enabled:      false,
-				LastBackupID: state.LastBackupID,
-			})
-			return
-		}
+	configChanged := hashBytes(raw) != session.EnabledConfigHash
+	disableMode := resolveDisableMode(r)
+	forcedRestore := isForceDisable(r.URL.Query().Get("force"))
+	if disableMode == "restore" && configChanged && !forcedRestore {
 		http.Error(w, "config.toml changed externally; skip auto-restore to avoid overwrite", http.StatusConflict)
 		return
 	}
-	backupDir := filepath.Join(codexBackupRoot(home), session.BackupID)
-	for _, name := range []string{"config.toml", "auth.json"} {
-		source := filepath.Join(backupDir, name)
-		target := filepath.Join(home, ".codex", name)
-		if err := copyRequiredFile(source, target); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+	if disableMode == "detach" {
+		// User chose "close without overwrite": keep current config untouched.
+	} else {
+		backupDir := filepath.Join(codexBackupRoot(home), session.BackupID)
+		for _, name := range []string{"config.toml", "auth.json"} {
+			source := filepath.Join(backupDir, name)
+			target := filepath.Join(home, ".codex", name)
+			if err := copyRequiredFile(source, target); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 	}
-	_ = os.Remove(proxySessionPath(home))
+	clearProxySession(home)
 	state, _ := readProxyState(home)
-	state.SessionID = ""
-	_ = writeProxyState(home, state)
 	writeJSON(w, http.StatusOK, proxyStatusResponse{
 		Enabled:      false,
 		LastBackupID: state.LastBackupID,
@@ -254,11 +284,29 @@ func (h *SettingsHandler) getProxyStatus(w http.ResponseWriter) {
 		return
 	}
 	state, _ := readProxyState(home)
-	_, sessionErr := readProxySession(home)
-	writeJSON(w, http.StatusOK, proxyStatusResponse{
+	session, sessionErr := readProxySession(home)
+	resp := proxyStatusResponse{
 		Enabled:      sessionErr == nil,
 		LastBackupID: state.LastBackupID,
-	})
+	}
+	if sessionErr == nil {
+		resp.Mode = session.Mode
+		resp.TargetProvider = session.TargetProvider
+		configPath := filepath.Join(home, ".codex", "config.toml")
+		if raw, err := os.ReadFile(configPath); err == nil {
+			resp.ConfigConflict = hashBytes(raw) != session.EnabledConfigHash
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func IsProxyEnabled() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	_, err = readProxySession(home)
+	return err == nil
 }
 
 func (h *SettingsHandler) listCodexBackups(w http.ResponseWriter) {
@@ -511,6 +559,156 @@ func isForceDisable(value string) bool {
 	default:
 		return false
 	}
+}
+
+func isSkipRestore(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func clearProxySession(home string) {
+	_ = os.Remove(proxySessionPath(home))
+	state, _ := readProxyState(home)
+	state.SessionID = ""
+	_ = writeProxyState(home, state)
+}
+
+func resolveDisableMode(r *http.Request) string {
+	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
+	if mode == "detach" {
+		return "detach"
+	}
+	if isSkipRestore(r.URL.Query().Get("skip_restore")) {
+		return "detach"
+	}
+	return "restore"
+}
+
+func currentModelProvider(content string) string {
+	re := regexp.MustCompile(`(?m)^model_provider\s*=\s*"([^"]+)"\s*$`)
+	match := re.FindStringSubmatch(content)
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
+}
+
+func isThirdPartyProvider(content string, provider string) bool {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return false
+	}
+	switch provider {
+	case "openai", "aigate":
+		return false
+	}
+	baseURL, ok := getProviderValue(content, provider, "base_url")
+	if !ok {
+		return false
+	}
+	lower := strings.ToLower(baseURL)
+	if strings.Contains(lower, "chatgpt.com/backend-api/codex") || strings.Contains(lower, "api.openai.com") {
+		return false
+	}
+	return true
+}
+
+func ensureAigateProvider(content string) string {
+	provider := "aigate"
+	if !hasProviderSection(content, provider) {
+		return strings.TrimSpace(content) + "\n\n" + aigateProviderBlock()
+	}
+	updated := setProviderValue(content, provider, "name", `"aigate"`)
+	updated = setProviderValue(updated, provider, "base_url", `"http://127.0.0.1:6789/ai-router/api"`)
+	updated = setProviderValue(updated, provider, "wire_api", `"responses"`)
+	updated = setProviderValue(updated, provider, "requires_openai_auth", "true")
+	return updated
+}
+
+func hasProviderSection(content string, provider string) bool {
+	header := "[model_providers." + provider + "]"
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) == header {
+			return true
+		}
+	}
+	return false
+}
+
+func getProviderValue(content string, provider string, key string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	header := "[model_providers." + provider + "]"
+	inSection := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inSection = trimmed == header
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		re := regexp.MustCompile(`^` + regexp.QuoteMeta(key) + `\s*=\s*(.+)$`)
+		if match := re.FindStringSubmatch(trimmed); len(match) == 2 {
+			value := strings.TrimSpace(match[1])
+			value = strings.Trim(value, `"`)
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func setProviderValue(content string, provider string, key string, valueExpr string) string {
+	lines := strings.Split(content, "\n")
+	header := "[model_providers." + provider + "]"
+	inSection := false
+	sectionStart := -1
+	sectionEnd := len(lines)
+	keyLine := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if inSection {
+				sectionEnd = i
+				break
+			}
+			if trimmed == header {
+				inSection = true
+				sectionStart = i
+			}
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		re := regexp.MustCompile(`^` + regexp.QuoteMeta(key) + `\s*=`)
+		if re.MatchString(trimmed) {
+			keyLine = i
+		}
+	}
+
+	assign := key + " = " + valueExpr
+	if sectionStart == -1 {
+		body := strings.TrimSpace(content)
+		if body == "" {
+			return header + "\n" + assign + "\n"
+		}
+		return body + "\n\n" + header + "\n" + assign + "\n"
+	}
+	if keyLine >= 0 {
+		lines[keyLine] = assign
+		return strings.Join(lines, "\n")
+	}
+	insertAt := sectionEnd
+	if insertAt < 0 || insertAt > len(lines) {
+		insertAt = len(lines)
+	}
+	lines = append(lines[:insertAt], append([]string{assign}, lines[insertAt:]...)...)
+	return strings.Join(lines, "\n")
 }
 
 func writeManifest(dir string, manifest codexBackupManifest) error {

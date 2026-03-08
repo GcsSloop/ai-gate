@@ -201,12 +201,90 @@ func TestSettingsHandlerProxyDisableConflictWhenConfigChanged(t *testing.T) {
 		t.Fatalf("disable status = %d, want %d", disableRec.Code, http.StatusConflict)
 	}
 
+	skipReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/disable?skip_restore=1", nil)
+	skipRec := httptest.NewRecorder()
+	handler.ServeHTTP(skipRec, skipReq)
+	if skipRec.Code != http.StatusOK {
+		t.Fatalf("skip-restore disable status = %d, want %d", skipRec.Code, http.StatusOK)
+	}
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "changed"`)
+	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
+}
+
+func TestSettingsHandlerProxyDisableForceRestoresWhenConfigChanged(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	prepareCodexFiles(t, home, "model_provider = \"openai\"\n", `{"access_token":"token-before"}`)
+
+	handler := api.NewSettingsHandler()
+
+	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
+	enableRec := httptest.NewRecorder()
+	handler.ServeHTTP(enableRec, enableReq)
+	if enableRec.Code != http.StatusOK {
+		t.Fatalf("enable status = %d, want %d", enableRec.Code, http.StatusOK)
+	}
+
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte("model_provider = \"changed\"\n"), 0o600); err != nil {
+		t.Fatalf("write config for conflict: %v", err)
+	}
+
 	forceReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/disable?force=1", nil)
 	forceRec := httptest.NewRecorder()
 	handler.ServeHTTP(forceRec, forceReq)
 	if forceRec.Code != http.StatusOK {
 		t.Fatalf("force disable status = %d, want %d", forceRec.Code, http.StatusOK)
 	}
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
+	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
+}
+
+func TestSettingsHandlerEnablePatchesThirdPartyProviderAndDetachDoesNotOverwriteConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	prepareCodexFiles(t, home, `model_provider = "ppchat"
+
+[model_providers.ppchat]
+name = "ppchat"
+base_url = "https://code.ppchat.vip/v1"
+wire_api = "responses"
+`, `{"access_token":"token-before"}`)
+
+	handler := api.NewSettingsHandler()
+
+	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
+	enableRec := httptest.NewRecorder()
+	handler.ServeHTTP(enableRec, enableReq)
+	if enableRec.Code != http.StatusOK {
+		t.Fatalf("enable status = %d, want %d", enableRec.Code, http.StatusOK)
+	}
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "ppchat"`)
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "http://127.0.0.1:6789/ai-router/api"`)
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/settings/proxy/status", nil)
+	statusRec := httptest.NewRecorder()
+	handler.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", statusRec.Code, http.StatusOK)
+	}
+	var statusPayload map[string]any
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &statusPayload); err != nil {
+		t.Fatalf("unmarshal status: %v", err)
+	}
+	if statusPayload["mode"] != "patched_existing_provider" {
+		t.Fatalf("mode = %v, want patched_existing_provider", statusPayload["mode"])
+	}
+	if statusPayload["target_provider"] != "ppchat" {
+		t.Fatalf("target_provider = %v, want ppchat", statusPayload["target_provider"])
+	}
+
+	disableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/disable?mode=detach", nil)
+	disableRec := httptest.NewRecorder()
+	handler.ServeHTTP(disableRec, disableReq)
+	if disableRec.Code != http.StatusOK {
+		t.Fatalf("detach disable status = %d, want %d", disableRec.Code, http.StatusOK)
+	}
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "http://127.0.0.1:6789/ai-router/api"`)
 }
 
 func prepareCodexFiles(t *testing.T, home string, configBody string, authBody string) {
