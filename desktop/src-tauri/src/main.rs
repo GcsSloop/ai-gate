@@ -105,6 +105,9 @@ fn main() {
                     }
                 }
             }
+            tauri::RunEvent::Reopen { .. } => {
+                show_main_window(app_handle);
+            }
             tauri::RunEvent::Exit => {
                 shutdown_sidecar();
             }
