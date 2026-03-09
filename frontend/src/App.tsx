@@ -9,6 +9,14 @@ import { loadDesktopShellContext, refreshDesktopTrayState, subscribeDesktopBacke
 import { setAPIBase } from "./lib/paths";
 import "./styles.css";
 
+const appSettingsBootstrapRetryDelays = [0, 150, 300, 600, 1_000];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 export function App() {
   const [messageApi, contextHolder] = message.useMessage();
   const [tab, setTab] = useState<"accounts" | "settings">("accounts");
@@ -35,6 +43,21 @@ export function App() {
     return settings;
   }
 
+  async function bootstrapAppSettingsState() {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < appSettingsBootstrapRetryDelays.length; attempt += 1) {
+      if (attempt > 0) {
+        await sleep(appSettingsBootstrapRetryDelays[attempt]);
+      }
+      try {
+        return await refreshAppSettingsState();
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("failed to fetch app settings");
+  }
+
   useEffect(() => {
     let disposed = false;
 
@@ -49,7 +72,7 @@ export function App() {
       }
 
       try {
-        await Promise.all([refreshProxyState(), refreshAppSettingsState()]);
+        await Promise.all([refreshProxyState(), bootstrapAppSettingsState()]);
       } catch (error) {
         if (!disposed) {
           void messageApi.error(error instanceof Error ? error.message : "初始化设置中心失败");

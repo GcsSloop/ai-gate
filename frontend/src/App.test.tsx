@@ -29,6 +29,11 @@ describe("App", () => {
     });
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
   it("hides the home proxy switch when app settings disable it", async () => {
     vi.stubGlobal(
       "fetch",
@@ -131,6 +136,61 @@ describe("App", () => {
     await waitFor(() => {
       expect(refreshDesktopTrayState).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("retries bootstrapping app settings until the backend becomes ready", async () => {
+    let appSettingsAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(
+            new Response(JSON.stringify({ enabled: false }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          appSettingsAttempts += 1;
+          if (appSettingsAttempts === 1) {
+            return Promise.resolve(new Response(null, { status: 503 }));
+          }
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    expect(screen.getByText("正在载入设置中心…")).toBeInTheDocument();
+
+    expect(await screen.findByText("accounts-sync:0")).toBeInTheDocument();
+    expect(appSettingsAttempts).toBe(2);
   });
 
   it("refreshes page state when the desktop shell reports backend changes", async () => {
