@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/auth"
@@ -63,7 +64,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	log.Printf("gateway: received request path=%s model=%q stream=%t remote=%q", r.URL.Path, req.Model, req.Stream, r.RemoteAddr)
+	logRequestSummary("gateway", r.URL.Path, r.Method, req.Model, r.RemoteAddr, summarizeChatRequestLog(req.Messages, req.Stream))
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -112,15 +113,15 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var upstreamResponse []byte
 	executor := routing.NewExecutor(h.conversations, func(ctx context.Context, candidate routing.Candidate) error {
 		account := candidate.Account
-		log.Printf("gateway: forwarding request conversation_id=%d model=%q stream=false account_id=%d account_name=%q base_url=%q auth_mode=%q",
-			conversationID, req.Model, account.ID, account.AccountName, account.BaseURL, account.AuthMode)
+		startedAt := time.Now()
+		logUpstreamSummary("gateway", conversationID, account, "/chat/completions", req.Model)
 		if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
-			log.Printf("gateway: forward failed conversation_id=%d account_id=%d err=%v", conversationID, account.ID, err)
+			logFailureSummary("gateway", conversationID, account.ID, "ensure_session", startedAt, err)
 			return err
 		}
 		credential, err := resolveCredential(account)
 		if err != nil {
-			log.Printf("gateway: forward failed conversation_id=%d account_id=%d err=%v", conversationID, account.ID, err)
+			logFailureSummary("gateway", conversationID, account.ID, "resolve_credential", startedAt, err)
 			return err
 		}
 
@@ -132,25 +133,27 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Body:   body,
 		})
 		if err != nil {
-			log.Printf("gateway: forward failed conversation_id=%d account_id=%d err=%v", conversationID, account.ID, err)
+			logFailureSummary("gateway", conversationID, account.ID, "build_request", startedAt, err)
 			return err
 		}
 
 		resp, err := h.client.Do(upstreamReq)
 		if err != nil {
-			log.Printf("gateway: forward failed conversation_id=%d account_id=%d err=%v", conversationID, account.ID, err)
+			logFailureSummary("gateway", conversationID, account.ID, "upstream_request", startedAt, err)
 			return err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
-			log.Printf("gateway: upstream error conversation_id=%d account_id=%d status=%d", conversationID, account.ID, resp.StatusCode)
+			logFailureSummary("gateway", conversationID, account.ID, "upstream_status", startedAt, providers.HTTPError{StatusCode: resp.StatusCode})
 			return providers.HTTPError{StatusCode: resp.StatusCode}
 		}
 
 		upstreamResponse, err = io.ReadAll(resp.Body)
 		if err != nil {
-			log.Printf("gateway: read upstream failed conversation_id=%d account_id=%d err=%v", conversationID, account.ID, err)
+			logFailureSummary("gateway", conversationID, account.ID, "read_response", startedAt, err)
+		} else {
+			logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, string(upstreamResponse))
 		}
 		return err
 	})
@@ -197,15 +200,15 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 
 	proxy := streamproxy.NewProxy(h.conversations, func(ctx context.Context, attempt streamproxy.Attempt) error {
 		account := attempt.Candidate.Account
-		log.Printf("gateway: forwarding request conversation_id=%d model=%q stream=true account_id=%d account_name=%q base_url=%q auth_mode=%q",
-			conversationID, req.Model, account.ID, account.AccountName, account.BaseURL, account.AuthMode)
+		startedAt := time.Now()
+		logUpstreamSummary("gateway", conversationID, account, "/chat/completions", req.Model)
 		if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
-			log.Printf("gateway: stream forward failed conversation_id=%d account_id=%d err=%v", conversationID, account.ID, err)
+			logFailureSummary("gateway", conversationID, account.ID, "ensure_session", startedAt, err)
 			return err
 		}
 		credential, err := resolveCredential(account)
 		if err != nil {
-			log.Printf("gateway: stream forward failed conversation_id=%d account_id=%d err=%v", conversationID, account.ID, err)
+			logFailureSummary("gateway", conversationID, account.ID, "resolve_credential", startedAt, err)
 			return err
 		}
 
@@ -217,19 +220,19 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 			Body:   body,
 		})
 		if err != nil {
-			log.Printf("gateway: stream forward failed conversation_id=%d account_id=%d err=%v", conversationID, account.ID, err)
+			logFailureSummary("gateway", conversationID, account.ID, "build_request", startedAt, err)
 			return err
 		}
 
 		resp, err := h.client.Do(upstreamReq)
 		if err != nil {
-			log.Printf("gateway: stream forward failed conversation_id=%d account_id=%d err=%v", conversationID, account.ID, err)
+			logFailureSummary("gateway", conversationID, account.ID, "upstream_request", startedAt, err)
 			return err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
-			log.Printf("gateway: stream upstream error conversation_id=%d account_id=%d status=%d", conversationID, account.ID, resp.StatusCode)
+			logFailureSummary("gateway", conversationID, account.ID, "upstream_status", startedAt, providers.HTTPError{StatusCode: resp.StatusCode})
 			return providers.HTTPError{StatusCode: resp.StatusCode}
 		}
 
@@ -264,7 +267,12 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 				return err
 			}
 		}
-		return scanner.Err()
+		if err := scanner.Err(); err != nil {
+			logFailureSummary("gateway", conversationID, account.ID, "read_stream", startedAt, err)
+			return err
+		}
+		logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, "")
+		return nil
 	})
 
 	output, err := proxy.Execute(ctx, conversationID, req.Model, candidates, routing.TokenBudget{
