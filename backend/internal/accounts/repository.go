@@ -34,6 +34,7 @@ func NewSQLiteRepository(db *sql.DB, cipher ...*secrets.Cipher) *SQLiteRepositor
 }
 
 func (r *SQLiteRepository) Create(account Account) error {
+	account.SupportsResponses = account.NativeResponsesCapable()
 	credentialRef, err := r.encrypt(account.CredentialRef)
 	if err != nil {
 		return err
@@ -98,6 +99,9 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 		}
 		account.IsActive = isActive == 1
 		account.SupportsResponses = supportsResponses == 1
+		if account.NativeResponsesCapable() {
+			account.SupportsResponses = true
+		}
 		account.AllowChatFallback = allowChatFallback == 1
 
 		if cooldown.Valid {
@@ -150,6 +154,9 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 	}
 	account.IsActive = isActive == 1
 	account.SupportsResponses = supportsResponses == 1
+	if account.NativeResponsesCapable() {
+		account.SupportsResponses = true
+	}
 	account.AllowChatFallback = allowChatFallback == 1
 	if cooldown.Valid {
 		value := cooldown.Time.UTC()
@@ -164,6 +171,7 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 }
 
 func (r *SQLiteRepository) Update(account Account) error {
+	account.SupportsResponses = account.NativeResponsesCapable()
 	credentialRef, err := r.encrypt(account.CredentialRef)
 	if err != nil {
 		return err

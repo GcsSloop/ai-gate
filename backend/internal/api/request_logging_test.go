@@ -202,3 +202,72 @@ func TestGatewayHandlerLogsReadableRequestAndUpstreamSummary(t *testing.T) {
 		t.Fatalf("logs = %s, should not contain API key", output)
 	}
 }
+
+func TestResponsesHandlerLogsThinGatewayCandidateSkipReason(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream should not be called")
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AccountName:       "team3",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
+		IsActive:          true,
+		SupportsResponses: false,
+	}); err != nil {
+		t.Fatalf("Create(account) returned error: %v", err)
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save(snapshot) returned error: %v", err)
+	}
+
+	handler := NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()), WithThinGatewayMode(true))
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
+	}
+	output := logs.String()
+	for _, want := range []string{
+		`responses candidate account_id=1 account=team3 active=true supports_responses=false provider=openai-compatible action=reject`,
+		`reason=active_account_missing_responses_capability`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("logs = %s, want substring %q", output, want)
+		}
+	}
+}

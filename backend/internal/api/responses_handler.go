@@ -30,7 +30,8 @@ import (
 const officialCodexBaseURL = "https://chatgpt.com/backend-api/codex"
 const defaultCodexInstructions = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals. Be pragmatic, concise, and focus on completing the user's task."
 
-var errThinGatewayRequiresOfficialAccount = errors.New("thin gateway mode requires an official OpenAI account")
+var errThinGatewayRequiresResponsesAccount = errors.New("thin gateway mode requires an account that supports /responses")
+var errThinGatewayActiveAccountUnsupported = errors.New("active account does not support /responses in thin gateway mode")
 
 type ResponsesAccounts interface {
 	List() ([]accounts.Account, error)
@@ -262,7 +263,7 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Request, req gatewayopenai.ResponsesRequest, rawBody []byte) {
 	account, err := h.selectThinGatewayAccount()
 	if err != nil {
-		if errors.Is(err, errThinGatewayRequiresOfficialAccount) {
+		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
 			writeThinGatewayUnsupported(w, err.Error())
 			return
 		}
@@ -282,17 +283,9 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
 		return
 	}
-	accountID, err := resolveLocalAccountID(account)
-	if err != nil {
-		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
-		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
-		return
-	}
-
-	adapter := providercodex.NewAdapter(resolveAccountBaseURL(account))
 	startedAt := time.Now()
 	logUpstreamSummary("responses", conversationID, account, "/responses", req.Model)
-	upstreamReq, err := adapter.BuildResponsesRequest(r.Context(), credential, accountID, rawBody, req.Stream)
+	upstreamReq, err := h.buildThinResponsesProxyRequest(r.Context(), account, credential, rawBody, req.Stream)
 	if err != nil {
 		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
 		logFailureSummary("responses", conversationID, account.ID, "build_request", startedAt, err)
@@ -347,17 +340,46 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 	_, _ = w.Write(responseBody)
 }
 
+func (h *ResponsesHandler) buildThinResponsesProxyRequest(ctx context.Context, account accounts.Account, credential string, rawBody []byte, stream bool) (*http.Request, error) {
+	if usesOfficialCodexAdapter(account) {
+		accountID, err := resolveLocalAccountID(account)
+		if err != nil {
+			return nil, err
+		}
+		return providercodex.NewAdapter(resolveAccountBaseURL(account)).BuildResponsesRequest(ctx, credential, accountID, rawBody, stream)
+	}
+	return provideropenai.NewAdapter(resolveAccountBaseURL(account)).BuildRequest(ctx, providers.Request{
+		Path:   "/responses",
+		Method: http.MethodPost,
+		APIKey: credential,
+		Body:   rawBody,
+	})
+}
+
 func (h *ResponsesHandler) selectThinGatewayAccount() (accounts.Account, error) {
 	accountList, err := h.accounts.List()
 	if err != nil {
 		return accounts.Account{}, err
 	}
+	for _, account := range accountList {
+		if !account.IsActive {
+			continue
+		}
+		if !account.NativeResponsesCapable() {
+			logThinGatewayCandidate(account, "reject", "active_account_missing_responses_capability")
+			return accounts.Account{}, errThinGatewayActiveAccountUnsupported
+		}
+		logThinGatewayCandidate(account, "select", "active_account")
+		return account, nil
+	}
 	for _, candidate := range routing.ScoreCandidates(h.buildCandidates(accountList)) {
-		if usesOfficialCodexAdapter(candidate.Account) {
+		if candidate.Account.NativeResponsesCapable() {
+			logThinGatewayCandidate(candidate.Account, "select", "scored_candidate")
 			return candidate.Account, nil
 		}
+		logThinGatewayCandidate(candidate.Account, "skip", "supports_responses=false")
 	}
-	return accounts.Account{}, errThinGatewayRequiresOfficialAccount
+	return accounts.Account{}, errThinGatewayRequiresResponsesAccount
 }
 
 func copyResponseHeaders(dst, src http.Header) {

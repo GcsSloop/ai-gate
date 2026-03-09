@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -160,8 +161,8 @@ func TestResponsesHandlerThinModeNoChatFallback(t *testing.T) {
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("POST /v1/responses status = %d, want %d; body=%s", rec.Code, http.StatusNotImplemented, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "official OpenAI account") {
-		t.Fatalf("response body = %s, want official account error", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "supports /responses") {
+		t.Fatalf("response body = %s, want supports /responses error", rec.Body.String())
 	}
 	if chatCalls != 0 {
 		t.Fatalf("chat/completions call count = %d, want 0", chatCalls)
@@ -216,6 +217,144 @@ func TestResponsesHandlerThinModeRejectsThirdPartyAccounts(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "thin gateway mode") {
 		t.Fatalf("response body = %s, want thin gateway mode error", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerThinModeUsesActiveThirdPartyResponsesAccount(t *testing.T) {
+	t.Parallel()
+
+	official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("official upstream should not be called, got %s", r.URL.Path)
+	}))
+	defer official.Close()
+
+	thirdParty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("third-party path = %q, want /v1/responses", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-third-party" {
+			t.Fatalf("authorization = %q, want Bearer sk-third-party", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_tp_1","object":"response","status":"completed","output_text":"tp-pong"}`)
+	}))
+	defer thirdParty.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, account := range []accounts.Account{
+		{
+			ProviderType:      accounts.ProviderOpenAIOfficial,
+			AccountName:       "official",
+			AuthMode:          accounts.AuthModeLocalImport,
+			BaseURL:           official.URL + "/backend-api/codex",
+			CredentialRef:     `{"auth_mode":"chatgpt","tokens":{"access_token":"token-1","account_id":"acct-1"}}`,
+			Status:            accounts.StatusActive,
+			Priority:          50,
+			SupportsResponses: true,
+		},
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "team3",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           thirdParty.URL + "/v1",
+			CredentialRef:     "sk-third-party",
+			Status:            accounts.StatusActive,
+			Priority:          10,
+			IsActive:          true,
+			SupportsResponses: true,
+		},
+	} {
+		if err := accountRepo.Create(account); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for id := int64(1); id <= 2; id++ {
+		if err := usageRepo.Save(usage.Snapshot{AccountID: id, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9}); err != nil {
+			t.Fatalf("Save returned error: %v", err)
+		}
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()), api.WithThinGatewayMode(true))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"resp_tp_1"`) {
+		t.Fatalf("response body = %s, want third-party passthrough", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerThinModeFailsWhenActiveAccountDoesNotSupportResponses(t *testing.T) {
+	t.Parallel()
+
+	official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("official upstream should not be called when active account lacks /responses")
+	}))
+	defer official.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, account := range []accounts.Account{
+		{
+			ProviderType:      accounts.ProviderOpenAIOfficial,
+			AccountName:       "official",
+			AuthMode:          accounts.AuthModeLocalImport,
+			BaseURL:           official.URL + "/backend-api/codex",
+			CredentialRef:     `{"auth_mode":"chatgpt","tokens":{"access_token":"token-1","account_id":"acct-1"}}`,
+			Status:            accounts.StatusActive,
+			Priority:          50,
+			SupportsResponses: true,
+		},
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "team3",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           "https://example.invalid/v1",
+			CredentialRef:     "sk-third-party",
+			Status:            accounts.StatusActive,
+			Priority:          10,
+			IsActive:          true,
+			SupportsResponses: false,
+		},
+	} {
+		if err := accountRepo.Create(account); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for id := int64(1); id <= 2; id++ {
+		if err := usageRepo.Save(usage.Snapshot{AccountID: id, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9}); err != nil {
+			t.Fatalf("Save returned error: %v", err)
+		}
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()), api.WithThinGatewayMode(true))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("POST /v1/responses status = %d, want %d; body=%s", rec.Code, http.StatusNotImplemented, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "does not support /responses") {
+		t.Fatalf("response body = %s, want unsupported /responses error", rec.Body.String())
 	}
 }
 

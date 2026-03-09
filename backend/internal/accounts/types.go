@@ -42,3 +42,7 @@ type Account struct {
 	CooldownUntil     *time.Time
 	CreatedAt         time.Time
 }
+
+func (a Account) NativeResponsesCapable() bool {
+	return a.SupportsResponses || a.ProviderType == ProviderOpenAIOfficial || a.AuthMode == AuthModeLocalImport
+}

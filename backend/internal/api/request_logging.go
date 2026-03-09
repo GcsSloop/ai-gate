@@ -114,6 +114,19 @@ func logFailureSummary(kind string, conversationID int64, accountID int64, stage
 	)
 }
 
+func logThinGatewayCandidate(account accounts.Account, action string, reason string) {
+	log.Printf(
+		"responses candidate account_id=%d account=%s active=%t supports_responses=%t provider=%s action=%s reason=%s",
+		account.ID,
+		account.AccountName,
+		account.IsActive,
+		account.NativeResponsesCapable(),
+		string(account.ProviderType),
+		action,
+		reason,
+	)
+}
+
 func summarizeTools(raw json.RawMessage) string {
 	decoded, ok := decodeRawJSON(raw)
 	if !ok {
