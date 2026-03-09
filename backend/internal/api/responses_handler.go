@@ -30,6 +30,8 @@ import (
 const officialCodexBaseURL = "https://chatgpt.com/backend-api/codex"
 const defaultCodexInstructions = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals. Be pragmatic, concise, and focus on completing the user's task."
 
+var errThinGatewayRequiresOfficialAccount = errors.New("thin gateway mode requires an official OpenAI account")
+
 type ResponsesAccounts interface {
 	List() ([]accounts.Account, error)
 	Update(account accounts.Account) error
@@ -259,6 +261,10 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Request, req gatewayopenai.ResponsesRequest, rawBody []byte) {
 	account, err := h.selectThinGatewayAccount()
 	if err != nil {
+		if errors.Is(err, errThinGatewayRequiresOfficialAccount) {
+			writeThinGatewayUnsupported(w, err.Error())
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -306,7 +312,7 @@ func (h *ResponsesHandler) selectThinGatewayAccount() (accounts.Account, error) 
 			return candidate.Account, nil
 		}
 	}
-	return accounts.Account{}, errors.New("thin gateway mode requires an official OpenAI account")
+	return accounts.Account{}, errThinGatewayRequiresOfficialAccount
 }
 
 func copyResponseHeaders(dst, src http.Header) {
