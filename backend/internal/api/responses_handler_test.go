@@ -314,6 +314,204 @@ func TestResponsesHandlerThinModePassthroughSSE(t *testing.T) {
 	}
 }
 
+func TestThinModeAuditStillWorks(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "resp_server_audit_1",
+			"object":      "response",
+			"status":      "completed",
+			"output_text": "official-pong",
+			"output": []map[string]any{
+				{
+					"id":     "msg_server_audit_1",
+					"type":   "message",
+					"role":   "assistant",
+					"status": "completed",
+					"content": []map[string]any{
+						{"type": "output_text", "text": "official-pong"},
+					},
+				},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo, api.WithThinGatewayMode(true))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	conversationsList, err := conversationRepo.ListConversations(0, 10)
+	if err != nil {
+		t.Fatalf("ListConversations returned error: %v", err)
+	}
+	if len(conversationsList) != 1 {
+		t.Fatalf("len(conversations) = %d, want 1", len(conversationsList))
+	}
+
+	runs, err := conversationRepo.ListRuns(conversationsList[0].ID)
+	if err != nil {
+		t.Fatalf("ListRuns returned error: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != "completed" {
+		t.Fatalf("runs = %+v, want one completed run", runs)
+	}
+
+	messages, err := conversationRepo.ListMessages(conversationsList[0].ID)
+	if err != nil {
+		t.Fatalf("ListMessages returned error: %v", err)
+	}
+	if len(messages) < 2 {
+		t.Fatalf("messages = %+v, want persisted user and assistant audit messages", messages)
+	}
+}
+
+func TestThinModeStorageNotUsedForProtocol(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var payload struct {
+			PreviousResponseID string           `json:"previous_response_id"`
+			Input              []map[string]any `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if callCount == 2 {
+			if payload.PreviousResponseID != "resp_server_audit_1" {
+				t.Fatalf("previous_response_id = %q, want resp_server_audit_1", payload.PreviousResponseID)
+			}
+			if len(payload.Input) != 1 {
+				t.Fatalf("input = %+v, want only fresh input item without audit replay", payload.Input)
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		replyID := "resp_server_audit_1"
+		if callCount == 2 {
+			replyID = "resp_server_audit_2"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          replyID,
+			"object":      "response",
+			"status":      "completed",
+			"output_text": "official-pong",
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()), api.WithThinGatewayMode(true))
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":[{"role":"user","content":[{"type":"input_text","text":"first question"}]}],
+		"stream":false
+	}`))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("first POST /v1/responses status = %d, want %d", firstRec.Code, http.StatusOK)
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"previous_response_id":"resp_server_audit_1",
+		"input":[{"role":"user","content":[{"type":"input_text","text":"second question"}]}],
+		"stream":false
+	}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondRec := httptest.NewRecorder()
+	handler.ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("second POST /v1/responses status = %d, want %d", secondRec.Code, http.StatusOK)
+	}
+}
+
 func TestResponsesHandlerProxiesLocalImportedOfficialAccount(t *testing.T) {
 	t.Parallel()
 

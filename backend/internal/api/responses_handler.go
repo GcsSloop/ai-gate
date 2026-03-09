@@ -268,17 +268,22 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	inputItems, _ := gatewayopenai.ExtractResponsesInputItems(req.Input)
+	conversationID, nextSequence := h.startThinAudit(r, req, account.ID, inputItems)
 	if err := ensureOfficialAccountSession(r.Context(), h.client, h.accounts, &account); err != nil {
+		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	credential, err := resolveCredential(account)
 	if err != nil {
+		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	accountID, err := resolveLocalAccountID(account)
 	if err != nil {
+		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -286,20 +291,44 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 	adapter := providercodex.NewAdapter(resolveAccountBaseURL(account))
 	upstreamReq, err := adapter.BuildResponsesRequest(r.Context(), credential, accountID, rawBody, req.Stream)
 	if err != nil {
+		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	resp, err := h.client.Do(upstreamReq)
 	if err != nil {
+		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
+	runStatus := "completed"
+	if resp.StatusCode >= 400 {
+		runStatus = runStatusForErrorClass(classifyRunError(providers.HTTPError{StatusCode: resp.StatusCode}))
+	}
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.Header().Set("OpenAI-Model", req.Model)
 	w.WriteHeader(resp.StatusCode)
-	copyResponseStream(w, resp.Body)
+	if isEventStreamResponse(resp.Header) {
+		if err := copyResponseStream(w, resp.Body); err != nil {
+			runStatus = runStatusForErrorClass(classifyRunError(err))
+		}
+		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatus)
+		return
+	}
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
+		return
+	}
+	if resp.StatusCode < 400 {
+		result := parseResponsesJSONResponse(responseBody, account.ID)
+		h.appendThinAuditOutput(conversationID, nextSequence, result)
+	}
+	h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatus)
+	_, _ = w.Write(responseBody)
 }
 
 func (h *ResponsesHandler) selectThinGatewayAccount() (accounts.Account, error) {
@@ -324,24 +353,102 @@ func copyResponseHeaders(dst, src http.Header) {
 	}
 }
 
-func copyResponseStream(w http.ResponseWriter, body io.Reader) {
+func copyResponseStream(w http.ResponseWriter, body io.Reader) error {
 	flusher, _ := w.(http.Flusher)
 	buffer := make([]byte, 32*1024)
 	for {
 		n, err := body.Read(buffer)
 		if n > 0 {
-			_, _ = w.Write(buffer[:n])
+			if _, writeErr := w.Write(buffer[:n]); writeErr != nil {
+				return writeErr
+			}
 			if flusher != nil {
 				flusher.Flush()
 			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return
+				return nil
 			}
-			return
+			return err
 		}
 	}
+}
+
+func isEventStreamResponse(headers http.Header) bool {
+	return strings.Contains(strings.ToLower(headers.Get("Content-Type")), "text/event-stream")
+}
+
+func (h *ResponsesHandler) startThinAudit(r *http.Request, req gatewayopenai.ResponsesRequest, accountID int64, inputItems []gatewayopenai.ResponsesInputItem) (int64, int) {
+	conversationID, err := h.conversations.CreateConversation(conversations.Conversation{
+		ClientID:             r.RemoteAddr,
+		TargetProviderFamily: "official-thin-gateway",
+		DefaultModel:         req.Model,
+		CurrentAccountID:     &accountID,
+		State:                "active",
+	})
+	if err != nil {
+		return 0, 0
+	}
+	sequence := 0
+	for _, item := range inputItems {
+		message := conversations.Message{
+			ConversationID: conversationID,
+			Role:           normalizeRole(item.Role),
+			Content:        item.Content,
+			ItemType:       responseInputItemType(item.Raw),
+			SequenceNo:     sequence,
+		}
+		if rawJSON, ok := marshalRawItem(item.Raw); ok {
+			message.RawItemJSON = rawJSON
+		}
+		if err := h.conversations.AppendMessage(message); err != nil {
+			return conversationID, sequence
+		}
+		sequence++
+	}
+	return conversationID, sequence
+}
+
+func (h *ResponsesHandler) appendThinAuditOutput(conversationID int64, sequence int, result responsesExecutionResult) {
+	if conversationID == 0 {
+		return
+	}
+	outputItems := result.OutputItems
+	if len(outputItems) == 0 && strings.TrimSpace(result.Text) != "" {
+		outputItems = []map[string]any{buildOutputItem(newResponseItemID(), result.Text, "completed")}
+	}
+	for _, outputItem := range outputItems {
+		message := conversations.Message{
+			ConversationID: conversationID,
+			Role:           "assistant",
+			Content:        outputItemText(outputItem),
+			ItemType:       responseOutputItemType(outputItem),
+			SequenceNo:     sequence,
+		}
+		if rawJSON, ok := marshalRawItem(outputItem); ok {
+			message.RawItemJSON = rawJSON
+		}
+		if strings.TrimSpace(message.Content) == "" {
+			message.Content = result.Text
+		}
+		if err := h.conversations.AppendMessage(message); err != nil {
+			return
+		}
+		sequence++
+	}
+}
+
+func (h *ResponsesHandler) recordThinAuditRun(conversationID, accountID int64, model string, status string) {
+	if conversationID == 0 {
+		return
+	}
+	_, _ = h.conversations.CreateRun(conversations.Run{
+		ConversationID: conversationID,
+		AccountID:      accountID,
+		Model:          model,
+		Status:         status,
+	})
 }
 
 func (h *ResponsesHandler) handleModels(w http.ResponseWriter, _ *http.Request) {
