@@ -221,3 +221,40 @@ func TestSQLiteRepositorySetActiveKeepsSingleActiveAccount(t *testing.T) {
 		t.Fatal("account id=1 should not be active")
 	}
 }
+
+func TestSQLiteRepositoryPersistsSupportsResponses(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	if err := repo.Create(accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AccountName:       "native-responses",
+		AuthMode:          accounts.AuthModeAPIKey,
+		CredentialRef:     "sk-native",
+		BaseURL:           "https://example.test/v1",
+		Status:            accounts.StatusActive,
+		SupportsResponses: true,
+		AllowChatFallback: false,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	items, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	if !items[0].SupportsResponses {
+		t.Fatalf("SupportsResponses = false, want true")
+	}
+}

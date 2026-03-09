@@ -75,6 +75,7 @@ type createAccountRequest struct {
 	AuthMode          accounts.AuthMode     `json:"auth_mode"`
 	BaseURL           string                `json:"base_url"`
 	CredentialRef     string                `json:"credential_ref"`
+	SupportsResponses bool                  `json:"supports_responses"`
 	AllowChatFallback bool                  `json:"allow_chat_fallback"`
 }
 
@@ -95,6 +96,7 @@ type updateAccountRequest struct {
 	Status            accounts.Status `json:"status"`
 	Priority          *int            `json:"priority"`
 	IsActive          *bool           `json:"is_active"`
+	SupportsResponses *bool           `json:"supports_responses"`
 	AllowChatFallback *bool           `json:"allow_chat_fallback"`
 }
 
@@ -124,6 +126,7 @@ func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) 
 		BaseURL:           req.BaseURL,
 		CredentialRef:     req.CredentialRef,
 		Status:            accounts.StatusActive,
+		SupportsResponses: req.SupportsResponses || req.ProviderType == accounts.ProviderOpenAIOfficial,
 		AllowChatFallback: req.AllowChatFallback,
 	})
 	if err != nil {
@@ -165,6 +168,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 		SecondaryResetsAt        *time.Time            `json:"secondary_resets_at,omitempty"`
 		Priority                 int                   `json:"priority"`
 		IsActive                 bool                  `json:"is_active"`
+		SupportsResponses        bool                  `json:"supports_responses"`
 		AllowChatFallback        bool                  `json:"allow_chat_fallback"`
 	}
 
@@ -172,26 +176,27 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 	now := time.Now().UTC()
 	for _, account := range accountList {
 		item := responseItem{
-			ID:               account.ID,
-			ProviderType:     account.ProviderType,
-			AccountName:      account.AccountName,
-			AuthMode:         account.AuthMode,
-			BaseURL:          account.BaseURL,
-			Status:           account.Status,
-			Priority:         account.Priority,
-			IsActive:         account.IsActive,
-			AllowChatFallback: account.AllowChatFallback,
-			Balance:          0,
-			QuotaRemaining:   0,
-			RPMRemaining:     0,
-			TPMRemaining:     0,
-			HealthScore:      0,
-			RecentErrorRate:  0,
-			LastTotalTokens:  0,
-			LastInputTokens:  0,
-			LastOutputTokens: 0,
-			ModelContextWindow: 0,
-			PrimaryUsedPercent: 0,
+			ID:                   account.ID,
+			ProviderType:         account.ProviderType,
+			AccountName:          account.AccountName,
+			AuthMode:             account.AuthMode,
+			BaseURL:              account.BaseURL,
+			Status:               account.Status,
+			Priority:             account.Priority,
+			IsActive:             account.IsActive,
+			SupportsResponses:    account.SupportsResponses,
+			AllowChatFallback:    account.AllowChatFallback,
+			Balance:              0,
+			QuotaRemaining:       0,
+			RPMRemaining:         0,
+			TPMRemaining:         0,
+			HealthScore:          0,
+			RecentErrorRate:      0,
+			LastTotalTokens:      0,
+			LastInputTokens:      0,
+			LastOutputTokens:     0,
+			ModelContextWindow:   0,
+			PrimaryUsedPercent:   0,
 			SecondaryUsedPercent: 0,
 		}
 		if account.CooldownUntil != nil {
@@ -345,6 +350,7 @@ func (h *AccountsHandler) importLocalAuth(w http.ResponseWriter, r *http.Request
 		CredentialRef:     string(raw),
 		BaseURL:           officialCodexBaseURL,
 		Status:            accounts.StatusActive,
+		SupportsResponses: true,
 		AllowChatFallback: false,
 	})
 	if err != nil {
@@ -388,6 +394,7 @@ func (h *AccountsHandler) importCurrentAuth(w http.ResponseWriter, r *http.Reque
 		CredentialRef:     string(raw),
 		BaseURL:           officialCodexBaseURL,
 		Status:            accounts.StatusActive,
+		SupportsResponses: true,
 		AllowChatFallback: false,
 	})
 	if err != nil {
@@ -444,6 +451,9 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.AllowChatFallback != nil {
 		current.AllowChatFallback = *req.AllowChatFallback
+	}
+	if req.SupportsResponses != nil {
+		current.SupportsResponses = *req.SupportsResponses
 	}
 
 	if err := h.repo.Update(current); err != nil {

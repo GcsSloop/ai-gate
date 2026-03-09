@@ -122,13 +122,14 @@ export function AccountsPage() {
     }
   }
 
-  async function handleCreateThirdParty(values: { account_name: string; base_url: string; credential_ref: string; allow_chat_fallback?: boolean }) {
+  async function handleCreateThirdParty(values: { account_name: string; base_url: string; credential_ref: string; supports_responses?: boolean; allow_chat_fallback?: boolean }) {
     await createAccount({
       provider_type: "openai-compatible",
       account_name: values.account_name,
       auth_mode: "api_key",
       base_url: values.base_url,
       credential_ref: values.credential_ref,
+      supports_responses: !!values.supports_responses,
       allow_chat_fallback: !!values.allow_chat_fallback,
     });
     setAddModalMode(null);
@@ -151,11 +152,12 @@ export function AccountsPage() {
       account_name: account.account_name,
       base_url: account.base_url,
       credential_ref: "",
+      supports_responses: !!account.supports_responses,
       allow_chat_fallback: !!account.allow_chat_fallback,
     });
   }
 
-  async function handleEdit(values: { account_name: string; base_url: string; credential_ref?: string; allow_chat_fallback?: boolean }) {
+  async function handleEdit(values: { account_name: string; base_url: string; credential_ref?: string; supports_responses?: boolean; allow_chat_fallback?: boolean }) {
     if (!editingAccount) {
       return;
     }
@@ -163,6 +165,7 @@ export function AccountsPage() {
       account_name: values.account_name,
       base_url: values.base_url,
       credential_ref: values.credential_ref || undefined,
+      supports_responses: !!values.supports_responses,
       allow_chat_fallback: !!values.allow_chat_fallback,
     });
     setEditingAccount(null);
@@ -284,6 +287,15 @@ export function AccountsPage() {
       title: "认证方式",
       dataIndex: "auth_mode",
       render: (value: string) => authModeTextMap[value] ?? value,
+    },
+    {
+      title: "能力",
+      key: "capabilities",
+      render: (_, record) => (
+        <Space size={4} wrap>
+          {record.supports_responses ? <Tag color="blue">/responses</Tag> : <Tag>/responses 未启用</Tag>}
+        </Space>
+      ),
     },
     {
       title: "状态",
@@ -420,7 +432,7 @@ export function AccountsPage() {
         <Form
           form={thirdPartyForm}
           layout="vertical"
-          initialValues={{ base_url: defaultBaseURL, allow_chat_fallback: false }}
+          initialValues={{ base_url: defaultBaseURL, supports_responses: false, allow_chat_fallback: false }}
           onFinish={(values) => void handleCreateThirdParty(values)}
         >
           <Form.Item label="账户名称" name="account_name" rules={[{ required: true, message: "请输入账户名称" }]}>
@@ -431,6 +443,14 @@ export function AccountsPage() {
           </Form.Item>
           <Form.Item label="API Key" name="credential_ref" rules={[{ required: true, message: "请输入 API Key" }]}>
             <Input.Password />
+          </Form.Item>
+          <Form.Item
+            label="原生 /responses"
+            name="supports_responses"
+            valuePropName="checked"
+            extra="仅在第三方供应商原生支持 /responses 时开启。薄网关模式不会做任何协议补偿。"
+          >
+            <Switch checkedChildren="已支持" unCheckedChildren="未支持" />
           </Form.Item>
           <Form.Item
             label="回退配置"
@@ -486,6 +506,14 @@ export function AccountsPage() {
           </Form.Item>
           <Form.Item label="API Key / Token" name="credential_ref">
             <Input.Password placeholder="留空表示不修改" />
+          </Form.Item>
+          <Form.Item
+            label="原生 /responses"
+            name="supports_responses"
+            valuePropName="checked"
+            extra="仅在供应商原生支持 /responses 时开启。薄网关模式不会做任何协议补偿。"
+          >
+            <Switch checkedChildren="已支持" unCheckedChildren="未支持" />
           </Form.Item>
           <Form.Item label="回退状态">
             <Button onClick={() => editForm.setFieldValue("allow_chat_fallback", !editAllowFallback)}>
