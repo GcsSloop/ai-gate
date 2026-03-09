@@ -21,6 +21,9 @@ func TestResponsesHandlerProxiesOpenAICompatibleAccount(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPathForCompatTests(w, r) {
+			return
+		}
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
 		}
@@ -62,13 +65,14 @@ func TestResponsesHandlerProxiesOpenAICompatibleAccount(t *testing.T) {
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "ppchat",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       upstream.URL + "/v1",
-		CredentialRef: "sk-third-party",
-		Status:        accounts.StatusActive,
-		Priority:      100,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -142,6 +146,7 @@ func TestResponsesHandlerProxiesLocalImportedOfficialAccount(t *testing.T) {
 		var payload struct {
 			Model        string `json:"model"`
 			Stream       bool   `json:"stream"`
+			Store        *bool  `json:"store"`
 			Instructions string `json:"instructions"`
 			Input        []struct {
 				Role    string `json:"role"`
@@ -159,6 +164,9 @@ func TestResponsesHandlerProxiesLocalImportedOfficialAccount(t *testing.T) {
 		}
 		if !payload.Stream {
 			t.Fatal("stream = false, want true for official codex backend")
+		}
+		if payload.Store == nil || *payload.Store {
+			t.Fatalf("store = %#v, want explicit false", payload.Store)
 		}
 		if strings.TrimSpace(payload.Instructions) == "" {
 			t.Fatal("instructions is empty, want default codex instructions")
@@ -309,6 +317,9 @@ func TestResponsesHandlerPrefersActiveAccountOverPriority(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPathForCompatTests(w, r) {
+			return
+		}
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-active" {
 			t.Fatalf("authorization = %q, want Bearer sk-active", got)
 		}
@@ -330,23 +341,25 @@ func TestResponsesHandlerPrefersActiveAccountOverPriority(t *testing.T) {
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	for _, item := range []accounts.Account{
 		{
-			ProviderType:  accounts.ProviderOpenAICompatible,
-			AccountName:   "high-priority",
-			AuthMode:      accounts.AuthModeAPIKey,
-			BaseURL:       upstream.URL + "/v1",
-			CredentialRef: "sk-high",
-			Status:        accounts.StatusActive,
-			Priority:      100,
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AllowChatFallback: true,
+			AccountName:       "high-priority",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           upstream.URL + "/v1",
+			CredentialRef:     "sk-high",
+			Status:            accounts.StatusActive,
+			Priority:          100,
 		},
 		{
-			ProviderType:  accounts.ProviderOpenAICompatible,
-			AccountName:   "manual-active",
-			AuthMode:      accounts.AuthModeAPIKey,
-			BaseURL:       upstream.URL + "/v1",
-			CredentialRef: "sk-active",
-			Status:        accounts.StatusActive,
-			Priority:      1,
-			IsActive:      true,
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AllowChatFallback: true,
+			AccountName:       "manual-active",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           upstream.URL + "/v1",
+			CredentialRef:     "sk-active",
+			Status:            accounts.StatusActive,
+			Priority:          1,
+			IsActive:          true,
 		},
 	} {
 		if err := accountRepo.Create(item); err != nil {
@@ -619,6 +632,9 @@ func TestResponsesHandlerMapsChatCompletionsToolCallsToResponsesOutput(t *testin
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPathForCompatTests(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{
@@ -651,13 +667,14 @@ func TestResponsesHandlerMapsChatCompletionsToolCallsToResponsesOutput(t *testin
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "ppchat",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       upstream.URL + "/v1",
-		CredentialRef: "sk-third-party",
-		Status:        accounts.StatusActive,
-		Priority:      100,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -702,6 +719,9 @@ func TestResponsesHandlerUsesPreviousResponseIDForConversationReplay(t *testing.
 
 	callCount := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPathForCompatTests(w, r) {
+			return
+		}
 		callCount++
 		var payload struct {
 			Messages []struct {
@@ -742,13 +762,14 @@ func TestResponsesHandlerUsesPreviousResponseIDForConversationReplay(t *testing.
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "ppchat",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       upstream.URL + "/v1",
-		CredentialRef: "sk-third-party",
-		Status:        accounts.StatusActive,
-		Priority:      100,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -803,6 +824,9 @@ func TestResponsesHandlerStreamsOfficialStyleLifecycleEvents(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPathForCompatTests(w, r) {
+			return
+		}
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("upstream path = %q, want /v1/chat/completions", r.URL.Path)
 		}
@@ -821,13 +845,14 @@ func TestResponsesHandlerStreamsOfficialStyleLifecycleEvents(t *testing.T) {
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "ppchat",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       upstream.URL + "/v1",
-		CredentialRef: "sk-third-party",
-		Status:        accounts.StatusActive,
-		Priority:      100,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -953,6 +978,139 @@ func TestResponsesHandlerStreamsOfficialCompletedOutputWithoutDelta(t *testing.T
 	}
 }
 
+func TestResponsesHandlerProxiesLocalImportedOfficialAccountWithoutCompletedEventFails(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"official-partial\"}\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("POST /v1/responses status = %d, want %d; body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(rec.Body.String()), "stream closed before response.completed") {
+		t.Fatalf("response body = %s, want stream closed before response.completed", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerStreamsOfficialLifecycleWithoutCompletedEventReturnsError(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"response.completed"`) || !strings.Contains(body, `"status":"failed"`) {
+		t.Fatalf("stream body missing failed response.completed event: %s", body)
+	}
+	if !strings.Contains(body, `"type":"error"`) {
+		t.Fatalf("stream body missing error event: %s", body)
+	}
+	if !strings.Contains(strings.ToLower(body), "stream closed before response.completed") {
+		t.Fatalf("stream body = %s, want stream closed before response.completed error", body)
+	}
+}
+
 func TestResponsesHandlerStreamFailureUsesErrorEvent(t *testing.T) {
 	t.Parallel()
 
@@ -969,13 +1127,14 @@ func TestResponsesHandlerStreamFailureUsesErrorEvent(t *testing.T) {
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "ppchat",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       upstream.URL + "/v1",
-		CredentialRef: "sk-third-party",
-		Status:        accounts.StatusActive,
-		Priority:      100,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -1015,6 +1174,9 @@ func TestResponsesHandlerStreamFailureUsesErrorEvent(t *testing.T) {
 	if !strings.Contains(body, `"type":"response.completed"`) {
 		t.Fatalf("stream body missing response.completed terminal event: %s", body)
 	}
+	if !strings.Contains(body, `"type":"response.output_text.delta"`) {
+		t.Fatalf("stream body missing output_text.delta for visible error text: %s", body)
+	}
 	if strings.Contains(body, `"type":"response.failed"`) {
 		t.Fatalf("stream body unexpectedly contains response.failed: %s", body)
 	}
@@ -1028,6 +1190,9 @@ func TestResponsesHandlerStreamsToolCallOutputItem(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPathForCompatTests(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_7\",\"type\":\"function\",\"function\":{\"name\":\"grep\",\"arguments\":\"{\\\"pattern\\\":\"}}]}}]}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"TODO\\\"}\"}}]}}]}\n\n"))
@@ -1043,13 +1208,14 @@ func TestResponsesHandlerStreamsToolCallOutputItem(t *testing.T) {
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "ppchat",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       upstream.URL + "/v1",
-		CredentialRef: "sk-third-party",
-		Status:        accounts.StatusActive,
-		Priority:      100,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -1103,6 +1269,80 @@ func TestResponsesHandlerStreamsToolCallOutputItem(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerChatFallbackStreamWithoutDoneReturnsError(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPathForCompatTests(w, r) {
+			return
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"error"`) {
+		t.Fatalf("stream body missing error event: %s", body)
+	}
+	if !strings.Contains(body, `"status":"failed"`) {
+		t.Fatalf("stream body missing failed status: %s", body)
+	}
+	if !strings.Contains(strings.ToLower(body), "stream closed before [done]") {
+		t.Fatalf("stream body = %s, want stream closed before [DONE]", body)
+	}
+}
+
 func TestResponsesHandlerStreamFailoverFromOfficialToThirdPartyDedupesOutput(t *testing.T) {
 	t.Parallel()
 
@@ -1114,6 +1354,9 @@ func TestResponsesHandlerStreamFailoverFromOfficialToThirdPartyDedupesOutput(t *
 	defer official.Close()
 
 	thirdParty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPathForCompatTests(w, r) {
+			return
+		}
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("path = %q, want /v1/chat/completions", r.URL.Path)
 		}
@@ -1145,13 +1388,14 @@ func TestResponsesHandlerStreamFailoverFromOfficialToThirdPartyDedupesOutput(t *
 		t.Fatalf("Create official returned error: %v", err)
 	}
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "fallback",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       thirdParty.URL + "/v1",
-		CredentialRef: "sk-third",
-		Status:        accounts.StatusActive,
-		Priority:      90,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "fallback",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           thirdParty.URL + "/v1",
+		CredentialRef:     "sk-third",
+		Status:            accounts.StatusActive,
+		Priority:          90,
 	}); err != nil {
 		t.Fatalf("Create fallback returned error: %v", err)
 	}
@@ -1208,6 +1452,77 @@ func TestResponsesHandlerStreamFailoverFromOfficialToThirdPartyDedupesOutput(t *
 	}
 }
 
+func TestResponsesHandlerStreamAllowsActiveAccountWhenSnapshotInfeasible(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPathForCompatTests(w, r) {
+			return
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "active-zero",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		IsActive:          true,
+		Priority:          100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        0,
+		QuotaRemaining: 0,
+		RPMRemaining:   0,
+		TPMRemaining:   0,
+		HealthScore:    1,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"delta":"pong"`) {
+		t.Fatalf("stream body = %s, want pong delta", body)
+	}
+	if !strings.Contains(body, `"status":"completed"`) {
+		t.Fatalf("stream body = %s, want completed status", body)
+	}
+}
+
 func TestResponsesHandlerStreamFailoverRecordsCapacityFailedStatusOn429(t *testing.T) {
 	t.Parallel()
 
@@ -1232,13 +1547,14 @@ func TestResponsesHandlerStreamFailoverRecordsCapacityFailedStatusOn429(t *testi
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	for index, baseURL := range []string{first.URL + "/v1", second.URL + "/v1"} {
 		if err := accountRepo.Create(accounts.Account{
-			ProviderType:  accounts.ProviderOpenAICompatible,
-			AccountName:   "acc",
-			AuthMode:      accounts.AuthModeAPIKey,
-			BaseURL:       baseURL,
-			CredentialRef: "sk",
-			Status:        accounts.StatusActive,
-			Priority:      100 - index,
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AllowChatFallback: true,
+			AccountName:       "acc",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           baseURL,
+			CredentialRef:     "sk",
+			Status:            accounts.StatusActive,
+			Priority:          100 - index,
 		}); err != nil {
 			t.Fatalf("Create account %d returned error: %v", index, err)
 		}
@@ -1317,13 +1633,14 @@ func TestResponsesHandlerRetrievesStoredResponseAndInputItems(t *testing.T) {
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "ppchat",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       upstream.URL + "/v1",
-		CredentialRef: "sk-third-party",
-		Status:        accounts.StatusActive,
-		Priority:      100,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -1409,13 +1726,14 @@ func TestResponsesHandlerInputItemsPreserveRawFunctionCallOutput(t *testing.T) {
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "ppchat",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       upstream.URL + "/v1",
-		CredentialRef: "sk-third-party",
-		Status:        accounts.StatusActive,
-		Priority:      100,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -1478,13 +1796,14 @@ func TestResponsesHandlerInputItemsSupportPaginationMetadata(t *testing.T) {
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "ppchat",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       upstream.URL + "/v1",
-		CredentialRef: "sk-third-party",
-		Status:        accounts.StatusActive,
-		Priority:      100,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -1626,4 +1945,12 @@ func TestResponsesHandlerRetrievesModelByID(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"id":"gpt-5.4"`) {
 		t.Fatalf("model body = %s, want gpt-5.4", rec.Body.String())
 	}
+}
+
+func maybeRejectResponsesPathForCompatTests(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path == "/v1/responses" {
+		http.Error(w, `{"error":{"message":"Invalid URL","type":"invalid_request_error"}}`, http.StatusNotFound)
+		return true
+	}
+	return false
 }

@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -96,6 +97,10 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 	req, err := gatewayopenai.ParseResponsesRequest(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Store != nil && *req.Store {
+		http.Error(w, "store is not supported", http.StatusBadRequest)
 		return
 	}
 	log.Printf("responses: received request path=%s model=%q stream=%t remote=%q", r.URL.Path, req.Model, req.Stream, r.RemoteAddr)
@@ -383,6 +388,7 @@ func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseW
 
 	var assistant strings.Builder
 	resultSnapshot := emptyResponsesUsageSnapshot()
+	lastRunErr := errors.New("no candidate succeeded")
 	textItemStarted := false
 	ensureTextItemStarted := func() error {
 		if textItemStarted {
@@ -410,7 +416,7 @@ func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseW
 			ProjectedOutputTokens: 1500,
 			SafetyFactor:          1.3,
 			EstimatedCost:         0.01,
-		}, candidate.Snapshot) {
+		}, candidate.Snapshot) && !candidate.Account.IsActive {
 			continue
 		}
 		existingOutput := assistant.String()
@@ -611,21 +617,38 @@ func (h *ResponsesHandler) streamResponses(ctx context.Context, w http.ResponseW
 			Model:          req.Model,
 			Status:         runStatusForErrorClass(classifyRunError(err)),
 		})
+		lastRunErr = err
 	}
 
+	message := "no candidate succeeded"
+	if lastRunErr != nil {
+		message = lastRunErr.Error()
+	}
+	if strings.TrimSpace(assistant.String()) == "" && strings.TrimSpace(message) != "" {
+		if err := ensureTextItemStarted(); err == nil {
+			assistant.WriteString(message)
+			_ = writeEvent(map[string]any{
+				"type":          "response.output_text.delta",
+				"delta":         message,
+				"item_id":       itemID,
+				"output_index":  0,
+				"content_index": 0,
+			})
+		}
+	}
 	_ = writeEvent(map[string]any{
 		"type": "error",
 		"error": map[string]any{
 			"type":    "server_error",
 			"code":    "upstream_error",
-			"message": "no candidate succeeded",
+			"message": message,
 		},
 	})
 	terminal := buildResponsesResponse(responseID, req.Model, assistant.String(), "failed", itemID, resultSnapshot, nil)
 	terminal["error"] = map[string]any{
 		"type":    "server_error",
 		"code":    "upstream_error",
-		"message": "no candidate succeeded",
+		"message": message,
 	}
 	terminal["incomplete_details"] = map[string]any{
 		"reason": "upstream_error",
@@ -732,6 +755,19 @@ func (h *ResponsesHandler) executeResponsesRequest(ctx context.Context, account 
 		}, nil
 	}
 
+	toolSummary := summarizeRequestedTools(req.Tools)
+	if compatibleResult, fallback, fallbackReason, err := h.tryExecuteCompatibleResponsesRequest(ctx, account, req, messages, credential); !fallback {
+		return compatibleResult, err
+	} else {
+		logResponsesDebug("non-stream fallback account_id=%d account_name=%q reason=%q tools=%s", account.ID, account.AccountName, fallbackReason, toolSummary.String())
+	}
+	if !account.AllowChatFallback {
+		return responsesExecutionResult{}, errors.New("responses unsupported for this account and chat fallback is disabled")
+	}
+	if toolSummary.HasMCP {
+		return responsesExecutionResult{}, errors.New("chat fallback does not support mcp tools; use /responses-compatible upstream or disable chat fallback")
+	}
+
 	body, err := json.Marshal(map[string]any{
 		"model": req.Model,
 	})
@@ -827,6 +863,19 @@ func (h *ResponsesHandler) executeResponsesStreamRequest(ctx context.Context, ac
 		}, err
 	}
 
+	toolSummary := summarizeRequestedTools(req.Tools)
+	if compatibleResult, fallback, fallbackReason, err := h.tryExecuteCompatibleResponsesStreamRequest(ctx, account, req, messages, emit, credential); !fallback {
+		return compatibleResult, err
+	} else {
+		logResponsesDebug("stream fallback account_id=%d account_name=%q reason=%q tools=%s", account.ID, account.AccountName, fallbackReason, toolSummary.String())
+	}
+	if !account.AllowChatFallback {
+		return responsesExecutionResult{}, errors.New("responses unsupported for this account and chat fallback is disabled")
+	}
+	if toolSummary.HasMCP {
+		return responsesExecutionResult{}, errors.New("chat fallback does not support mcp tools; use /responses-compatible upstream or disable chat fallback")
+	}
+
 	body, err := json.Marshal(buildChatCompletionsBody(req, messages, true))
 	if err != nil {
 		log.Printf("responses: stream forward failed account_id=%d err=%v", account.ID, err)
@@ -858,6 +907,155 @@ func (h *ResponsesHandler) executeResponsesStreamRequest(ctx context.Context, ac
 		Snapshot:    snapshot,
 		OutputItems: outputItems,
 	}, err
+}
+
+func (h *ResponsesHandler) tryExecuteCompatibleResponsesRequest(ctx context.Context, account accounts.Account, req gatewayopenai.ResponsesRequest, messages []conversations.Message, credential string) (responsesExecutionResult, bool, string, error) {
+	body, err := json.Marshal(buildOfficialResponsesBody(req, messages, false, effectiveCodexInstructions(req.Instructions)))
+	if err != nil {
+		return responsesExecutionResult{}, false, "", err
+	}
+	adapter := provideropenai.NewAdapter(resolveAccountBaseURL(account))
+	httpReq, err := adapter.BuildRequest(ctx, providers.Request{
+		Path:   "/responses",
+		Method: http.MethodPost,
+		APIKey: credential,
+		Body:   body,
+	})
+	if err != nil {
+		return responsesExecutionResult{}, false, "", err
+	}
+	resp, err := h.client.Do(httpReq)
+	if err != nil {
+		// Some providers hard-close unsupported paths; fallback to chat/completions.
+		return responsesExecutionResult{}, true, "responses_request_failed", nil
+	}
+	defer resp.Body.Close()
+	if fallback, reason := isCompatibleResponsesFallback(resp.StatusCode, resp.Body); fallback {
+		return responsesExecutionResult{}, true, reason, nil
+	}
+	if resp.StatusCode >= 400 {
+		return responsesExecutionResult{}, false, "", classifyHTTPError(resp)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return responsesExecutionResult{}, false, "", err
+	}
+	if !looksLikeResponsesPayload(raw) {
+		return responsesExecutionResult{}, true, "responses_payload_shape_mismatch", nil
+	}
+	return parseResponsesJSONResponse(raw, account.ID), false, "", nil
+}
+
+func (h *ResponsesHandler) tryExecuteCompatibleResponsesStreamRequest(ctx context.Context, account accounts.Account, req gatewayopenai.ResponsesRequest, messages []conversations.Message, emit func(string) error, credential string) (responsesExecutionResult, bool, string, error) {
+	body, err := json.Marshal(buildOfficialResponsesBody(req, messages, true, effectiveCodexInstructions(req.Instructions)))
+	if err != nil {
+		return responsesExecutionResult{}, false, "", err
+	}
+	adapter := provideropenai.NewAdapter(resolveAccountBaseURL(account))
+	httpReq, err := adapter.BuildRequest(ctx, providers.Request{
+		Path:   "/responses",
+		Method: http.MethodPost,
+		APIKey: credential,
+		Body:   body,
+	})
+	if err != nil {
+		return responsesExecutionResult{}, false, "", err
+	}
+	resp, err := h.client.Do(httpReq)
+	if err != nil {
+		return responsesExecutionResult{}, true, "responses_request_failed", nil
+	}
+	defer resp.Body.Close()
+	if fallback, reason := isCompatibleResponsesFallback(resp.StatusCode, resp.Body); fallback {
+		return responsesExecutionResult{}, true, reason, nil
+	}
+	if resp.StatusCode >= 400 {
+		return responsesExecutionResult{}, false, "", classifyHTTPError(resp)
+	}
+	collector := newResponsesUsageCollector(account.ID)
+	err = consumeResponsesStream(resp.Body, emit, collector.Observe)
+	if err == nil {
+		collector.Save(h.usage)
+	}
+	return responsesExecutionResult{
+		Snapshot:    collector.snapshotOrDefault(),
+		OutputItems: collector.outputItems(),
+	}, false, "", err
+}
+
+func isCompatibleResponsesFallback(status int, body io.Reader) (bool, string) {
+	switch status {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return true, fmt.Sprintf("responses_http_%d", status)
+	case http.StatusBadRequest:
+		raw, err := io.ReadAll(body)
+		if err != nil {
+			return false, ""
+		}
+		lower := strings.ToLower(string(raw))
+		if strings.Contains(lower, "invalid url") || strings.Contains(lower, "not found") {
+			return true, "responses_bad_request_invalid_url"
+		}
+		return false, ""
+	default:
+		return false, ""
+	}
+}
+
+type requestedToolSummary struct {
+	Count  int
+	Types  []string
+	HasMCP bool
+}
+
+func (s requestedToolSummary) String() string {
+	return fmt.Sprintf("count=%d types=%s has_mcp=%t", s.Count, strings.Join(s.Types, ","), s.HasMCP)
+}
+
+func summarizeRequestedTools(raw json.RawMessage) requestedToolSummary {
+	summary := requestedToolSummary{}
+	decoded, ok := decodeRawJSON(raw)
+	if !ok {
+		return summary
+	}
+	items, ok := decoded.([]any)
+	if !ok {
+		return summary
+	}
+	seen := map[string]struct{}{}
+	for _, entry := range items {
+		tool, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		summary.Count++
+		toolType, _ := tool["type"].(string)
+		toolType = strings.TrimSpace(strings.ToLower(toolType))
+		if toolType == "" {
+			continue
+		}
+		if _, exists := seen[toolType]; !exists {
+			seen[toolType] = struct{}{}
+			summary.Types = append(summary.Types, toolType)
+		}
+		if toolType == "mcp" {
+			summary.HasMCP = true
+		}
+	}
+	sort.Strings(summary.Types)
+	return summary
+}
+
+func logResponsesDebug(format string, args ...any) {
+	if !responsesDebugEnabled() {
+		return
+	}
+	log.Printf("responses-debug: "+format, args...)
+}
+
+func responsesDebugEnabled() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("AIGATE_DEBUG_RESPONSES")))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
 func buildResponsesInput(messages []conversations.Message) []map[string]any {
@@ -913,10 +1111,19 @@ func buildOfficialResponsesBody(req gatewayopenai.ResponsesRequest, messages []c
 }
 
 func buildChatCompletionsBody(req gatewayopenai.ResponsesRequest, messages []conversations.Message, stream bool) map[string]any {
+	chatMessages := buildChatMessages(messages)
+	if instructions := strings.TrimSpace(req.Instructions); instructions != "" {
+		chatMessages = append([]map[string]any{
+			{
+				"role":    "system",
+				"content": instructions,
+			},
+		}, chatMessages...)
+	}
 	body := map[string]any{
 		"model":    req.Model,
 		"stream":   stream,
-		"messages": buildChatMessages(messages),
+		"messages": chatMessages,
 	}
 	if stream {
 		body["stream_options"] = map[string]any{
@@ -934,11 +1141,42 @@ func buildChatCompletionsBody(req gatewayopenai.ResponsesRequest, messages []con
 	}
 	if req.MaxOutputTokens != nil {
 		body["max_completion_tokens"] = *req.MaxOutputTokens
+		body["max_tokens"] = *req.MaxOutputTokens
 	}
 	if value, ok := decodeRawJSON(req.Metadata); ok {
 		body["metadata"] = value
 	}
+	if value, ok := decodeRawJSON(req.Include); ok {
+		body["include"] = value
+	}
+	if value, ok := decodeRawJSON(req.Reasoning); ok {
+		body["reasoning"] = value
+		if reasoning, ok := value.(map[string]any); ok {
+			if effort, ok := reasoning["effort"].(string); ok && strings.TrimSpace(effort) != "" {
+				body["reasoning_effort"] = effort
+			}
+		}
+	}
+	if value, ok := extractResponseFormatFromText(req.Text); ok {
+		body["response_format"] = value
+	}
 	return body
+}
+
+func extractResponseFormatFromText(raw json.RawMessage) (any, bool) {
+	value, ok := decodeRawJSON(raw)
+	if !ok {
+		return nil, false
+	}
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	format, ok := obj["format"]
+	if !ok {
+		return nil, false
+	}
+	return format, true
 }
 
 func buildChatMessages(messages []conversations.Message) []map[string]any {
@@ -1027,6 +1265,7 @@ func buildResponsesResponse(id string, model string, text string, status string,
 		"error":              nil,
 		"incomplete_details": nil,
 		"model":              model,
+		"store":              false,
 		"output_text":        text,
 		"output":             outputItems,
 		"usage":              buildResponsesUsagePayload(snapshot),
@@ -1143,9 +1382,30 @@ func classifyHTTPError(resp *http.Response) error {
 		return providers.ErrInsufficientQuota
 	}
 	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(resp.Body)
+		detail := strings.TrimSpace(string(raw))
+		if detail != "" {
+			detail = compactErrorText(detail, 512)
+			return fmt.Errorf("http status %d: %s: %w", resp.StatusCode, detail, providers.HTTPError{StatusCode: resp.StatusCode})
+		}
 		return providers.HTTPError{StatusCode: resp.StatusCode}
 	}
 	return nil
+}
+
+func compactErrorText(value string, limit int) string {
+	compact := strings.Join(strings.Fields(value), " ")
+	if limit <= 0 || len(compact) <= limit {
+		return compact
+	}
+	return compact[:limit] + "..."
+}
+
+func isStreamClosedBeforeCompleted(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "stream closed before response.completed")
 }
 
 func classifyRunError(err error) providers.ErrorClass {
@@ -1198,6 +1458,8 @@ func consumeChatCompletionsStream(body io.Reader, emit func(string) error, accou
 	collector := newChatCompletionsStreamCollector()
 	snapshot := emptyResponsesUsageSnapshot()
 	snapshot.AccountID = accountID
+	sawDone := false
+	frameCount := 0
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data: ") {
@@ -1205,12 +1467,14 @@ func consumeChatCompletionsStream(body io.Reader, emit func(string) error, accou
 		}
 		payload := strings.TrimPrefix(line, "data: ")
 		if payload == "[DONE]" {
+			sawDone = true
 			return collector.outputItems(), snapshot, nil
 		}
 		var frame map[string]any
 		if err := json.Unmarshal([]byte(payload), &frame); err != nil {
 			return nil, snapshot, err
 		}
+		frameCount++
 		applyChatCompletionsUsageFrame(&snapshot, frame)
 		choices, _ := frame["choices"].([]any)
 		if len(choices) == 0 {
@@ -1227,6 +1491,9 @@ func consumeChatCompletionsStream(body io.Reader, emit func(string) error, accou
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, snapshot, err
+	}
+	if !sawDone {
+		return nil, snapshot, fmt.Errorf("stream closed before [DONE] (frames=%d)", frameCount)
 	}
 	return collector.outputItems(), snapshot, nil
 }
@@ -1316,6 +1583,8 @@ func consumeResponsesStream(body io.Reader, emit func(string) error, observe fun
 	var (
 		dataLines    []string
 		sawCompleted bool
+		frameCount   int
+		lastType     string
 	)
 
 	flush := func() (bool, error) {
@@ -1342,6 +1611,9 @@ func consumeResponsesStream(body io.Reader, emit func(string) error, observe fun
 		if observe != nil {
 			observe(frame)
 		}
+		frameCount++
+		lastType, _ = frame["type"].(string)
+		logResponsesDebug("stream frame index=%d type=%q", frameCount, lastType)
 
 		switch frame["type"] {
 		case "response.output_text.delta":
@@ -1392,7 +1664,7 @@ func consumeResponsesStream(body io.Reader, emit func(string) error, observe fun
 			if done || sawCompleted {
 				return nil
 			}
-			return errors.New("stream closed before response.completed")
+			return fmt.Errorf("stream closed before response.completed (frames=%d last_type=%q)", frameCount, lastType)
 		}
 	}
 }
@@ -1414,6 +1686,52 @@ func parseChatCompletionsUsage(raw []byte, accountID int64) usage.Snapshot {
 		LastOutputTokens: payload.Usage.CompletionTokens,
 		LastTotalTokens:  payload.Usage.TotalTokens,
 	}
+}
+
+func parseResponsesJSONResponse(raw []byte, accountID int64) responsesExecutionResult {
+	var payload struct {
+		OutputText string           `json:"output_text"`
+		Output     []map[string]any `json:"output"`
+		Usage      struct {
+			InputTokens  float64 `json:"input_tokens"`
+			OutputTokens float64 `json:"output_tokens"`
+			TotalTokens  float64 `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return responsesExecutionResult{Snapshot: emptyResponsesUsageSnapshot()}
+	}
+	text := strings.TrimSpace(payload.OutputText)
+	if text == "" {
+		text = outputItemsText(payload.Output)
+	}
+	return responsesExecutionResult{
+		Text: text,
+		Snapshot: usage.Snapshot{
+			AccountID:        accountID,
+			LastInputTokens:  payload.Usage.InputTokens,
+			LastOutputTokens: payload.Usage.OutputTokens,
+			LastTotalTokens:  payload.Usage.TotalTokens,
+		},
+		OutputItems: payload.Output,
+	}
+}
+
+func looksLikeResponsesPayload(raw []byte) bool {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	if object, _ := payload["object"].(string); object == "response" {
+		return true
+	}
+	if _, ok := payload["output"]; ok {
+		return true
+	}
+	if _, ok := payload["output_text"]; ok {
+		return true
+	}
+	return false
 }
 
 func listModels() []map[string]any {

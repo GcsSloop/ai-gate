@@ -28,7 +28,7 @@ func (e *Executor) ExecuteNonStream(ctx context.Context, conversationID int64, m
 	scored := ScoreCandidates(candidates)
 
 	for _, candidate := range scored {
-		if !IsFeasible(budget, candidate.Snapshot) {
+		if !IsFeasible(budget, candidate.Snapshot) && !candidate.Account.IsActive {
 			continue
 		}
 

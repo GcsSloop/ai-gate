@@ -21,6 +21,9 @@ func TestResponsesHandlerForwardsToolsToChatCompletions(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPath(w, r) {
+			return
+		}
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("Decode returned error: %v", err)
@@ -69,10 +72,300 @@ func TestResponsesHandlerForwardsToolsToChatCompletions(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerRejectsMCPToolsOnChatFallback(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPath(w, r) {
+			return
+		}
+		if r.URL.Path == "/v1/chat/completions" {
+			t.Fatal("chat/completions should not be called when tools include mcp")
+		}
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+
+	handler := newCompatResponsesHandler(t, upstream.URL+"/v1")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"使用 obsidian mcp 搜索所有张家港会议纪要",
+		"tools":[{"type":"mcp","server_label":"obsidian","server_url":"http://127.0.0.1:27123/sse"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("POST /v1/responses status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	if !strings.Contains(rec.Body.String(), "chat fallback does not support mcp tools") {
+		t.Fatalf("response body = %s, want explicit mcp fallback error", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerPrefersResponsesForCompatibleProvider(t *testing.T) {
+	t.Parallel()
+
+	responsesCalls := 0
+	chatCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			responsesCalls++
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode /responses payload error: %v", err)
+			}
+			if payload["model"] == nil {
+				t.Fatalf("responses payload missing model: %#v", payload)
+			}
+			store, exists := payload["store"]
+			if !exists {
+				t.Fatalf("responses payload missing store field")
+			}
+			storeBool, ok := store.(bool)
+			if !ok || storeBool {
+				t.Fatalf("responses payload store = %#v, want false", payload["store"])
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":          "resp_test_1",
+				"status":      "completed",
+				"model":       "gpt-5.4",
+				"output_text": "pong",
+				"output": []map[string]any{
+					{
+						"id":     "msg_1",
+						"type":   "message",
+						"status": "completed",
+						"role":   "assistant",
+						"content": []map[string]any{
+							{"type": "output_text", "text": "pong", "annotations": []any{}},
+						},
+					},
+				},
+				"usage": map[string]any{
+					"input_tokens":  12,
+					"output_tokens": 4,
+					"total_tokens":  16,
+				},
+			})
+		case "/v1/chat/completions":
+			chatCalls++
+			t.Fatalf("chat/completions should not be called when /responses is available")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	handler := newCompatResponsesHandler(t, upstream.URL+"/v1")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if responsesCalls == 0 {
+		t.Fatal("expected /responses to be called at least once")
+	}
+	if chatCalls != 0 {
+		t.Fatalf("chat/completions call count = %d, want 0", chatCalls)
+	}
+}
+
+func TestResponsesHandlerRejectsStoreParameter(t *testing.T) {
+	t.Parallel()
+
+	handler := newCompatResponsesHandler(t, "https://example.invalid/v1")
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"store":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/responses status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "store is not supported") {
+		t.Fatalf("response body = %s, want store unsupported error", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerCompatibleResponsesStreamClosedDoesNotFallbackToChat(t *testing.T) {
+	t.Parallel()
+
+	chatCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"))
+		case "/v1/chat/completions":
+			chatCalls++
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"fallback-ok\"}}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	handler := newCompatResponsesHandler(t, upstream.URL+"/v1")
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses stream status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"type":"error"`) {
+		t.Fatalf("stream body missing error event: %s", body)
+	}
+	if !strings.Contains(body, `"status":"failed"`) {
+		t.Fatalf("stream body missing failed status: %s", body)
+	}
+	if !strings.Contains(strings.ToLower(body), "stream closed before response.completed") {
+		t.Fatalf("stream body = %s, want stream closed before response.completed", body)
+	}
+	if chatCalls != 0 {
+		t.Fatalf("chat/completions call count = %d, want 0", chatCalls)
+	}
+}
+
+func TestResponsesHandlerForwardsInstructionsToChatCompletions(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPath(w, r) {
+			return
+		}
+		var payload struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if len(payload.Messages) < 2 {
+			t.Fatalf("messages = %#v, want system + user at least", payload.Messages)
+		}
+		if payload.Messages[0]["role"] != "system" {
+			t.Fatalf("messages[0] = %#v, want system instruction", payload.Messages[0])
+		}
+		if payload.Messages[0]["content"] != "be precise and use tools" {
+			t.Fatalf("messages[0].content = %#v, want forwarded instructions", payload.Messages[0]["content"])
+		}
+		if payload.Messages[1]["role"] != "user" {
+			t.Fatalf("messages[1] = %#v, want user message", payload.Messages[1])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "pong"}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	handler := newCompatResponsesHandler(t, upstream.URL+"/v1")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"instructions":"be precise and use tools"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerForwardsReasoningIncludeAndResponseFormatToChatCompletions(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPath(w, r) {
+			return
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		reasoning, ok := payload["reasoning"].(map[string]any)
+		if !ok || reasoning["effort"] != "high" {
+			t.Fatalf("reasoning = %#v, want effort=high", payload["reasoning"])
+		}
+		if payload["reasoning_effort"] != "high" {
+			t.Fatalf("reasoning_effort = %#v, want high", payload["reasoning_effort"])
+		}
+		include, ok := payload["include"].([]any)
+		if !ok || len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+			t.Fatalf("include = %#v, want reasoning include passthrough", payload["include"])
+		}
+		responseFormat, ok := payload["response_format"].(map[string]any)
+		if !ok || responseFormat["type"] != "json_object" {
+			t.Fatalf("response_format = %#v, want {type:json_object}", payload["response_format"])
+		}
+		if payload["max_completion_tokens"] != float64(1024) {
+			t.Fatalf("max_completion_tokens = %#v, want 1024", payload["max_completion_tokens"])
+		}
+		if payload["max_tokens"] != float64(1024) {
+			t.Fatalf("max_tokens = %#v, want 1024", payload["max_tokens"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "pong"}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	handler := newCompatResponsesHandler(t, upstream.URL+"/v1")
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"reasoning":{"effort":"high"},
+		"include":["reasoning.encrypted_content"],
+		"text":{"format":{"type":"json_object"}},
+		"max_output_tokens":1024
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
 func TestResponsesHandlerBridgesToolItemsToChatCompletionsMessages(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPath(w, r) {
+			return
+		}
 		var payload struct {
 			Messages []map[string]any `json:"messages"`
 		}
@@ -164,6 +457,9 @@ func TestResponsesHandlerStreamsMultipleToolCalls(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPath(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"grep\",\"arguments\":\"{\\\"pattern\\\":\"}},{\"index\":1,\"id\":\"call_2\",\"type\":\"function\",\"function\":{\"name\":\"ls\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"TODO\\\"}\"}},{\"index\":1,\"function\":{\"arguments\":\"\\\"src\\\"}\"}}]}}]}\n\n"))
@@ -203,6 +499,9 @@ func TestResponsesHandlerStreamsUsageFromChatCompletions(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if maybeRejectResponsesPath(w, r) {
+			return
+		}
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("Decode returned error: %v", err)
@@ -271,24 +570,26 @@ func TestResponsesHandlerRetrieveUsesMostRecentUsageSnapshot(t *testing.T) {
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "older",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       "https://example.invalid/v1",
-		CredentialRef: "sk-1",
-		Status:        accounts.StatusActive,
-		Priority:      100,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "older",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           "https://example.invalid/v1",
+		CredentialRef:     "sk-1",
+		Status:            accounts.StatusActive,
+		Priority:          100,
 	}); err != nil {
 		t.Fatalf("Create older returned error: %v", err)
 	}
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "newer",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       "https://example.invalid/v1",
-		CredentialRef: "sk-2",
-		Status:        accounts.StatusActive,
-		Priority:      90,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "newer",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           "https://example.invalid/v1",
+		CredentialRef:     "sk-2",
+		Status:            accounts.StatusActive,
+		Priority:          90,
 	}); err != nil {
 		t.Fatalf("Create newer returned error: %v", err)
 	}
@@ -326,6 +627,14 @@ func TestResponsesHandlerRetrieveUsesMostRecentUsageSnapshot(t *testing.T) {
 	}
 }
 
+func maybeRejectResponsesPath(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path == "/v1/responses" {
+		http.Error(w, `{"error":{"message":"Invalid URL","type":"invalid_request_error"}}`, http.StatusNotFound)
+		return true
+	}
+	return false
+}
+
 func newCompatResponsesHandler(t *testing.T, baseURL string) *api.ResponsesHandler {
 	t.Helper()
 
@@ -337,13 +646,14 @@ func newCompatResponsesHandler(t *testing.T, baseURL string) *api.ResponsesHandl
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "compat",
-		AuthMode:      accounts.AuthModeAPIKey,
-		BaseURL:       baseURL,
-		CredentialRef: "sk-third-party",
-		Status:        accounts.StatusActive,
-		Priority:      100,
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AllowChatFallback: true,
+		AccountName:       "compat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           baseURL,
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}

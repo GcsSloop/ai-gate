@@ -101,6 +101,41 @@ func TestExecuteNonStreamReturnsErrorWhenNoCandidateCanSucceed(t *testing.T) {
 	}
 }
 
+func TestExecuteNonStreamAllowsActiveAccountWhenSnapshotIsInfeasible(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	recorder := &runRecorder{}
+	executor := routing.NewExecutor(recorder, func(_ context.Context, candidate routing.Candidate) error {
+		attempts++
+		if candidate.Account.ID != 1 {
+			t.Fatalf("candidate account id = %d, want 1", candidate.Account.ID)
+		}
+		return nil
+	})
+
+	err := executor.ExecuteNonStream(context.Background(), 101, "gpt-5.4", []routing.Candidate{
+		{
+			Account: accounts.Account{ID: 1, AccountName: "active-zero", Status: accounts.StatusActive, Priority: 100, IsActive: true},
+			Snapshot: usage.Snapshot{
+				Balance:        0,
+				QuotaRemaining: 0,
+				RPMRemaining:   0,
+				TPMRemaining:   0,
+			},
+		},
+	}, routing.TokenBudget{ProjectedInputTokens: 100, ProjectedOutputTokens: 100, SafetyFactor: 1.2, EstimatedCost: 1})
+	if err != nil {
+		t.Fatalf("ExecuteNonStream returned error: %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	if len(recorder.runs) != 1 || recorder.runs[0].Status != "completed" {
+		t.Fatalf("runs = %+v, want one completed run", recorder.runs)
+	}
+}
+
 type runRecorder struct {
 	runs []conversations.Run
 }
