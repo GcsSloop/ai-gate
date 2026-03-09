@@ -2,25 +2,57 @@ package api
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 )
 
-type SettingsHandler struct{}
+type SettingsRepository interface {
+	GetAppSettings() (settings.AppSettings, error)
+	SaveAppSettings(settings.AppSettings) error
+	ListFailoverQueue() ([]int64, error)
+	SaveFailoverQueue([]int64) error
+}
+
+type SettingsHandler struct {
+	settings SettingsRepository
+	db       *sql.DB
+	dbPath   string
+}
 
 var proxyToggleMu sync.Mutex
 
-func NewSettingsHandler() *SettingsHandler {
-	return &SettingsHandler{}
+type SettingsHandlerOption func(*SettingsHandler)
+
+func WithSettingsDatabase(db *sql.DB, dbPath string) SettingsHandlerOption {
+	return func(handler *SettingsHandler) {
+		handler.db = db
+		handler.dbPath = dbPath
+	}
+}
+
+func NewSettingsHandler(repo SettingsRepository, opts ...SettingsHandlerOption) *SettingsHandler {
+	handler := &SettingsHandler{settings: repo}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(handler)
+		}
+	}
+	return handler
 }
 
 type codexBackupManifest struct {
@@ -42,6 +74,10 @@ type codexBackupItem struct {
 
 type codexRestoreRequest struct {
 	BackupID string `json:"backup_id"`
+}
+
+type failoverQueueRequest struct {
+	AccountIDs []int64 `json:"account_ids"`
 }
 
 type codexBackupFilesResponse struct {
@@ -71,10 +107,30 @@ type proxyStatusResponse struct {
 	Mode           string `json:"mode,omitempty"`
 	TargetProvider string `json:"target_provider,omitempty"`
 	ConfigConflict bool   `json:"config_conflict,omitempty"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
 }
 
 func (h *SettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/settings/app":
+		h.getAppSettings(w)
+	case r.Method == http.MethodPut && r.URL.Path == "/settings/app":
+		h.saveAppSettings(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/settings/failover-queue":
+		h.getFailoverQueue(w)
+	case r.Method == http.MethodPut && r.URL.Path == "/settings/failover-queue":
+		h.saveFailoverQueue(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/settings/database/sql-export":
+		h.exportDatabaseSQL(w)
+	case r.Method == http.MethodPost && r.URL.Path == "/settings/database/sql-import":
+		h.importDatabaseSQL(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/settings/database/backups":
+		h.listDatabaseBackups(w)
+	case r.Method == http.MethodPost && r.URL.Path == "/settings/database/backup":
+		h.createDatabaseBackup(w)
+	case r.Method == http.MethodPost && r.URL.Path == "/settings/database/restore":
+		h.restoreDatabaseBackup(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/settings/codex/backup":
 		h.createCodexBackup(w)
 	case r.Method == http.MethodGet && r.URL.Path == "/settings/codex/backups":
@@ -109,6 +165,155 @@ func (h *SettingsHandler) createCodexBackup(w http.ResponseWriter) {
 		"backup_id":   backupID,
 		"backup_path": filepath.Join(codexBackupRoot(home), backupID),
 	})
+}
+
+func (h *SettingsHandler) exportDatabaseSQL(w http.ResponseWriter) {
+	transfer, err := h.sqlTransfer()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	raw, err := transfer.Export()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
+func (h *SettingsHandler) importDatabaseSQL(w http.ResponseWriter, r *http.Request) {
+	transfer, err := h.sqlTransfer()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := transfer.Import(raw); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *SettingsHandler) listDatabaseBackups(w http.ResponseWriter) {
+	manager, err := h.dbBackupManager()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	items, err := manager.ListBackups()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (h *SettingsHandler) createDatabaseBackup(w http.ResponseWriter) {
+	manager, err := h.dbBackupManager()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	item, err := manager.CreateBackup(h.appSettings().BackupRetentionCount)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (h *SettingsHandler) restoreDatabaseBackup(w http.ResponseWriter, r *http.Request) {
+	manager, err := h.dbBackupManager()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var payload codexRestoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid restore payload", http.StatusBadRequest)
+		return
+	}
+	payload.BackupID = strings.TrimSpace(payload.BackupID)
+	if payload.BackupID == "" {
+		http.Error(w, "missing backup_id", http.StatusBadRequest)
+		return
+	}
+	if err := manager.RestoreBackup(payload.BackupID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"restored_from": payload.BackupID})
+}
+
+func (h *SettingsHandler) getAppSettings(w http.ResponseWriter) {
+	writeJSON(w, http.StatusOK, h.appSettings())
+}
+
+func (h *SettingsHandler) saveAppSettings(w http.ResponseWriter, r *http.Request) {
+	if h.settings == nil {
+		http.Error(w, "settings repository is not configured", http.StatusInternalServerError)
+		return
+	}
+
+	current := h.appSettings()
+	var payload settings.AppSettings
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid app settings payload", http.StatusBadRequest)
+		return
+	}
+	payload = normalizeAppSettings(payload)
+	if proxyEndpointChanged(current, payload) {
+		if err := h.updateEnabledProxyConfig(payload); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+	}
+	if err := h.settings.SaveAppSettings(payload); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.appSettings())
+}
+
+func (h *SettingsHandler) getFailoverQueue(w http.ResponseWriter) {
+	if h.settings == nil {
+		writeJSON(w, http.StatusOK, []int64{})
+		return
+	}
+	queue, err := h.settings.ListFailoverQueue()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if queue == nil {
+		queue = []int64{}
+	}
+	writeJSON(w, http.StatusOK, queue)
+}
+
+func (h *SettingsHandler) saveFailoverQueue(w http.ResponseWriter, r *http.Request) {
+	if h.settings == nil {
+		http.Error(w, "settings repository is not configured", http.StatusInternalServerError)
+		return
+	}
+
+	var payload failoverQueueRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid failover queue payload", http.StatusBadRequest)
+		return
+	}
+	if err := h.settings.SaveFailoverQueue(payload.AccountIDs); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func createCodexBackupSnapshot(home string, kind string) (string, string, error) {
@@ -183,6 +388,7 @@ func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
 	targetProvider := "aigate"
 	originalBaseURL := ""
 
+	proxyBaseURL := h.proxyBaseURL()
 	if isThirdPartyProvider(content, currentProvider) {
 		baseURL, ok := getProviderValue(content, currentProvider, "base_url")
 		if !ok {
@@ -192,10 +398,10 @@ func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
 		mode = "patched_existing_provider"
 		targetProvider = currentProvider
 		originalBaseURL = baseURL
-		updated = setProviderValue(content, currentProvider, "base_url", `"http://127.0.0.1:6789/ai-router/api"`)
+		updated = setProviderValue(content, currentProvider, "base_url", strconv.Quote(proxyBaseURL))
 	} else {
 		updated = setModelProvider(content, "aigate")
-		updated = ensureAigateProvider(updated)
+		updated = ensureAigateProvider(updated, proxyBaseURL)
 	}
 	if err := writeAtomic(configPath, []byte(updated), 0o600); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -226,6 +432,8 @@ func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
 		LastBackupID:   backupID,
 		Mode:           session.Mode,
 		TargetProvider: session.TargetProvider,
+		Host:           h.appSettings().ProxyHost,
+		Port:           h.appSettings().ProxyPort,
 	})
 }
 
@@ -274,6 +482,8 @@ func (h *SettingsHandler) disableProxy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, proxyStatusResponse{
 		Enabled:      false,
 		LastBackupID: state.LastBackupID,
+		Host:         h.appSettings().ProxyHost,
+		Port:         h.appSettings().ProxyPort,
 	})
 }
 
@@ -285,9 +495,12 @@ func (h *SettingsHandler) getProxyStatus(w http.ResponseWriter) {
 	}
 	state, _ := readProxyState(home)
 	session, sessionErr := readProxySession(home)
+	appSettings := h.appSettings()
 	resp := proxyStatusResponse{
 		Enabled:      sessionErr == nil,
 		LastBackupID: state.LastBackupID,
+		Host:         appSettings.ProxyHost,
+		Port:         appSettings.ProxyPort,
 	}
 	if sessionErr == nil {
 		resp.Mode = session.Mode
@@ -298,6 +511,100 @@ func (h *SettingsHandler) getProxyStatus(w http.ResponseWriter) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *SettingsHandler) appSettings() settings.AppSettings {
+	if h.settings == nil {
+		return settings.DefaultAppSettings()
+	}
+	value, err := h.settings.GetAppSettings()
+	if err != nil {
+		return settings.DefaultAppSettings()
+	}
+	return value
+}
+
+func (h *SettingsHandler) proxyBaseURL() string {
+	value := h.appSettings()
+	return "http://" + net.JoinHostPort(value.ProxyHost, strconv.Itoa(value.ProxyPort)) + "/ai-router/api"
+}
+
+func proxyBaseURLForSettings(value settings.AppSettings) string {
+	return "http://" + net.JoinHostPort(value.ProxyHost, strconv.Itoa(value.ProxyPort)) + "/ai-router/api"
+}
+
+func proxyEndpointChanged(current settings.AppSettings, next settings.AppSettings) bool {
+	return strings.TrimSpace(current.ProxyHost) != strings.TrimSpace(next.ProxyHost) || current.ProxyPort != next.ProxyPort
+}
+
+func normalizeAppSettings(value settings.AppSettings) settings.AppSettings {
+	defaults := settings.DefaultAppSettings()
+	if strings.TrimSpace(value.ProxyHost) == "" {
+		value.ProxyHost = defaults.ProxyHost
+	}
+	if value.ProxyPort <= 0 {
+		value.ProxyPort = defaults.ProxyPort
+	}
+	if value.AutoBackupIntervalHours <= 0 {
+		value.AutoBackupIntervalHours = defaults.AutoBackupIntervalHours
+	}
+	if value.BackupRetentionCount <= 0 {
+		value.BackupRetentionCount = defaults.BackupRetentionCount
+	}
+	return value
+}
+
+func (h *SettingsHandler) updateEnabledProxyConfig(value settings.AppSettings) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home dir: %w", err)
+	}
+	session, err := readProxySession(home)
+	if err != nil {
+		return nil
+	}
+
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read codex config: %w", err)
+	}
+	if hashBytes(raw) != session.EnabledConfigHash {
+		return fmt.Errorf("proxy config changed externally; disable proxy before changing host or port")
+	}
+
+	updated := string(raw)
+	proxyBaseURL := proxyBaseURLForSettings(value)
+	if session.Mode == "patched_existing_provider" {
+		targetProvider := strings.TrimSpace(session.TargetProvider)
+		if targetProvider == "" {
+			return fmt.Errorf("proxy session missing target provider")
+		}
+		updated = setProviderValue(updated, targetProvider, "base_url", strconv.Quote(proxyBaseURL))
+	} else {
+		updated = setModelProvider(updated, "aigate")
+		updated = ensureAigateProvider(updated, proxyBaseURL)
+	}
+
+	if err := writeAtomic(configPath, []byte(updated), 0o600); err != nil {
+		return err
+	}
+	session.EnabledConfigHash = hashString(updated)
+	return writeProxySession(home, session)
+}
+
+func (h *SettingsHandler) sqlTransfer() (*settings.SQLTransfer, error) {
+	if h.db == nil {
+		return nil, errors.New("database is not configured")
+	}
+	return settings.NewSQLTransfer(h.db), nil
+}
+
+func (h *SettingsHandler) dbBackupManager() (*settings.DBBackupManager, error) {
+	if h.db == nil || strings.TrimSpace(h.dbPath) == "" {
+		return nil, errors.New("database is not configured")
+	}
+	return settings.NewDBBackupManager(h.db, h.dbPath), nil
 }
 
 func IsProxyEnabled() bool {
@@ -524,10 +831,10 @@ func setModelProvider(content string, provider string) string {
 	return line + "\n\n" + strings.TrimLeft(content, "\n")
 }
 
-func aigateProviderBlock() string {
+func aigateProviderBlock(proxyBaseURL string) string {
 	return `[model_providers.aigate]
 name = "aigate"
-base_url = "http://127.0.0.1:6789/ai-router/api"
+base_url = "` + proxyBaseURL + `"
 wire_api = "responses"
 requires_openai_auth = true
 store = false`
@@ -618,15 +925,15 @@ func isThirdPartyProvider(content string, provider string) bool {
 	return true
 }
 
-func ensureAigateProvider(content string) string {
+func ensureAigateProvider(content string, proxyBaseURL string) string {
 	// Always normalize to a single canonical [model_providers.aigate] section.
 	// This avoids duplicate-section parse errors from historical/broken config files.
 	withoutAigate := removeAigateProviderDefinitions(content)
 	base := strings.TrimSpace(withoutAigate)
 	if base == "" {
-		return aigateProviderBlock() + "\n"
+		return aigateProviderBlock(proxyBaseURL) + "\n"
 	}
-	return base + "\n\n" + aigateProviderBlock() + "\n"
+	return base + "\n\n" + aigateProviderBlock(proxyBaseURL) + "\n"
 }
 
 func hasProviderSection(content string, provider string) bool {

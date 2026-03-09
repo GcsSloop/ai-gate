@@ -92,6 +92,26 @@ export type CodexBackupFiles = {
 export type ProxyStatus = {
   enabled: boolean;
   last_backup_id?: string;
+  host?: string;
+  port?: number;
+};
+
+export type AppSettings = {
+  launch_at_login: boolean;
+  silent_start: boolean;
+  close_to_tray: boolean;
+  show_proxy_switch_on_home: boolean;
+  proxy_host: string;
+  proxy_port: number;
+  auto_failover_enabled: boolean;
+  auto_backup_interval_hours: number;
+  backup_retention_count: number;
+};
+
+export type DatabaseBackupItem = {
+  backup_id: string;
+  created_at: string;
+  size_bytes: number;
 };
 
 export async function listAccounts(): Promise<AccountRecord[]> {
@@ -260,6 +280,99 @@ export async function getProxyStatus(): Promise<ProxyStatus> {
     throw new Error("failed to fetch proxy status");
   }
   return response.json();
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  const response = await fetch(apiPath("/settings/app"));
+  if (!response.ok) {
+    throw new Error("failed to fetch app settings");
+  }
+  return response.json();
+}
+
+export async function saveAppSettings(payload: AppSettings): Promise<AppSettings> {
+  const response = await fetch(apiPath("/settings/app"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to save app settings");
+  }
+  return response.json();
+}
+
+export async function getFailoverQueue(): Promise<number[]> {
+  const response = await fetch(apiPath("/settings/failover-queue"));
+  if (!response.ok) {
+    throw new Error("failed to fetch failover queue");
+  }
+  return response.json();
+}
+
+export async function saveFailoverQueue(accountIDs: number[]): Promise<void> {
+  const response = await fetch(apiPath("/settings/failover-queue"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ account_ids: accountIDs }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to save failover queue");
+  }
+}
+
+export async function exportDatabaseSQL(): Promise<string> {
+  const response = await fetch(apiPath("/settings/database/sql-export"));
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to export database sql");
+  }
+  return response.text();
+}
+
+export async function importDatabaseSQL(raw: string): Promise<void> {
+  const response = await fetch(apiPath("/settings/database/sql-import"), {
+    method: "POST",
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+    body: raw,
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to import database sql");
+  }
+}
+
+export async function listDatabaseBackups(): Promise<DatabaseBackupItem[]> {
+  const response = await fetch(apiPath("/settings/database/backups"));
+  if (!response.ok) {
+    throw new Error("failed to list database backups");
+  }
+  return response.json();
+}
+
+export async function createDatabaseBackup(): Promise<DatabaseBackupItem> {
+  const response = await fetch(apiPath("/settings/database/backup"), {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to create database backup");
+  }
+  return response.json();
+}
+
+export async function restoreDatabaseBackup(backupID: string): Promise<void> {
+  const response = await fetch(apiPath("/settings/database/restore"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ backup_id: backupID }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to restore database backup");
+  }
 }
 
 export async function enableProxy(): Promise<ProxyStatus> {

@@ -11,6 +11,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/api"
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
@@ -99,6 +100,93 @@ func TestGatewayHandlerProxiesToConfiguredAccount(t *testing.T) {
 	}
 	if response["model"] != "gpt-5.2-codex" {
 		t.Fatalf("response model = %v, want %v", response["model"], "gpt-5.2-codex")
+	}
+}
+
+func TestGatewayHandlerUsesExplicitFailoverQueueWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-queued" {
+			t.Fatalf("Authorization = %q, want %q", got, "Bearer sk-queued")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "chat.completion",
+			"model":  "gpt-5.2-codex",
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "ok"}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, item := range []accounts.Account{
+		{
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "score-first",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       upstream.URL + "/v1",
+			CredentialRef: "sk-score",
+			Status:        accounts.StatusActive,
+			Priority:      100,
+		},
+		{
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "queued-first",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       upstream.URL + "/v1",
+			CredentialRef: "sk-queued",
+			Status:        accounts.StatusActive,
+			Priority:      10,
+		},
+	} {
+		if err := accountRepo.Create(item); err != nil {
+			t.Fatalf("Create(account) returned error: %v", err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for _, snapshot := range []usage.Snapshot{
+		{AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.95},
+		{AccountID: 2, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.5},
+	} {
+		if err := usageRepo.Save(snapshot); err != nil {
+			t.Fatalf("Save(snapshot) returned error: %v", err)
+		}
+	}
+
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+	if err := settingsRepo.SaveFailoverQueue([]int64{2, 1}); err != nil {
+		t.Fatalf("SaveFailoverQueue returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo, api.WithGatewaySettings(settingsRepo))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-5.2-codex",
+		"stream":false,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gateway status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 }
 

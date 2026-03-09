@@ -19,6 +19,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/providers"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/routing"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 	streamproxy "github.com/gcssloop/codex-router/backend/internal/streaming"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
@@ -37,20 +38,40 @@ type GatewayRuns interface {
 	CreateRun(run conversations.Run) (int64, error)
 }
 
+type GatewayRoutingSettings interface {
+	GetAppSettings() (settings.AppSettings, error)
+	ListFailoverQueue() ([]int64, error)
+}
+
 type GatewayHandler struct {
 	accounts      GatewayAccounts
 	usage         GatewayUsage
 	conversations GatewayRuns
+	settings      GatewayRoutingSettings
 	client        *http.Client
 }
 
-func NewGatewayHandler(accounts GatewayAccounts, usage GatewayUsage, conversations GatewayRuns) *GatewayHandler {
-	return &GatewayHandler{
+type GatewayHandlerOption func(*GatewayHandler)
+
+func WithGatewaySettings(repo GatewayRoutingSettings) GatewayHandlerOption {
+	return func(handler *GatewayHandler) {
+		handler.settings = repo
+	}
+}
+
+func NewGatewayHandler(accounts GatewayAccounts, usage GatewayUsage, conversations GatewayRuns, opts ...GatewayHandlerOption) *GatewayHandler {
+	handler := &GatewayHandler{
 		accounts:      accounts,
 		usage:         usage,
 		conversations: conversations,
 		client:        http.DefaultClient,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(handler)
+		}
+	}
+	return handler
 }
 
 func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +132,11 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var upstreamResponse []byte
+	orderedCandidates, err := h.orderedCandidates(candidates)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	executor := routing.NewExecutor(h.conversations, func(ctx context.Context, candidate routing.Candidate) error {
 		account := candidate.Account
 		startedAt := time.Now()
@@ -158,7 +184,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 
-	err = executor.ExecuteNonStream(r.Context(), conversationID, req.Model, candidates, routing.TokenBudget{
+	err = executor.ExecuteNonStream(r.Context(), conversationID, req.Model, orderedCandidates, routing.TokenBudget{
 		ProjectedInputTokens:  float64(len(req.Messages) * 500),
 		ProjectedOutputTokens: 1500,
 		SafetyFactor:          1.3,
@@ -175,6 +201,12 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter, req gatewayopenai.ChatCompletionRequest, body []byte, candidates []routing.Candidate, conversationID int64) {
+	orderedCandidates, err := h.orderedCandidates(candidates)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 
@@ -275,7 +307,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		return nil
 	})
 
-	output, err := proxy.Execute(ctx, conversationID, req.Model, candidates, routing.TokenBudget{
+	output, err := proxy.Execute(ctx, conversationID, req.Model, orderedCandidates, routing.TokenBudget{
 		ProjectedInputTokens:  float64(len(req.Messages) * 500),
 		ProjectedOutputTokens: 1500,
 		SafetyFactor:          1.3,
@@ -291,6 +323,13 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 	if flusher != nil {
 		flusher.Flush()
 	}
+}
+
+func (h *GatewayHandler) orderedCandidates(candidates []routing.Candidate) ([]routing.Candidate, error) {
+	if h.settings == nil {
+		return routing.ScoreCandidates(candidates), nil
+	}
+	return settings.OrderCandidates(h.settings, candidates)
 }
 
 func resolveCredential(account accounts.Account) (string, error) {

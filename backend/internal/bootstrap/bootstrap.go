@@ -14,6 +14,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/policy"
 	"github.com/gcssloop/codex-router/backend/internal/scheduler"
 	"github.com/gcssloop/codex-router/backend/internal/secrets"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
@@ -56,6 +57,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	}
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB(), credentialCipher)
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
 	usageRepo := usage.NewSQLiteRepository(store.DB())
 	conversationRepo := conversations.NewSQLiteRepository(store.DB())
 	policyRepo := policy.NewMemoryRepository()
@@ -73,16 +75,23 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/dashboard/account-stats", api.NewDashboardHandler(conversationRepo))
 	apiMux.Handle("/conversations", conversationsHandler)
 	apiMux.Handle("/conversations/", conversationsHandler)
-	settingsHandler := api.NewSettingsHandler()
+	settingsHandler := api.NewSettingsHandler(settingsRepo, api.WithSettingsDatabase(store.DB(), cfg.DatabasePath))
 	apiMux.Handle("/settings/codex/backup", settingsHandler)
 	apiMux.Handle("/settings/codex/backups", settingsHandler)
 	apiMux.Handle("/settings/codex/backups/", settingsHandler)
 	apiMux.Handle("/settings/codex/restore", settingsHandler)
+	apiMux.Handle("/settings/app", settingsHandler)
+	apiMux.Handle("/settings/failover-queue", settingsHandler)
+	apiMux.Handle("/settings/database/sql-export", settingsHandler)
+	apiMux.Handle("/settings/database/sql-import", settingsHandler)
+	apiMux.Handle("/settings/database/backups", settingsHandler)
+	apiMux.Handle("/settings/database/backup", settingsHandler)
+	apiMux.Handle("/settings/database/restore", settingsHandler)
 	apiMux.Handle("/settings/proxy/status", settingsHandler)
 	apiMux.Handle("/settings/proxy/enable", settingsHandler)
 	apiMux.Handle("/settings/proxy/disable", settingsHandler)
-	gatewayHandler := api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo)
-	responsesHandler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+	gatewayHandler := api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo, api.WithGatewaySettings(settingsRepo))
+	responsesHandler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo, api.WithResponsesSettings(settingsRepo))
 	apiMux.Handle("/chat/completions", api.RequireProxyEnabled(gatewayHandler))
 	apiMux.Handle("/v1/chat/completions", api.RequireProxyEnabled(gatewayHandler))
 	apiMux.Handle("/responses", api.RequireProxyEnabled(responsesHandler))
@@ -110,6 +119,10 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	recoveryJob := scheduler.NewRecoveryJob(accountRepo, func(context.Context, accounts.Account) error {
 		return nil
 	}, interval)
+	backupJob := scheduler.NewDBBackupJob(
+		settingsRepo,
+		settings.NewDBBackupManager(store.DB(), cfg.DatabasePath),
+	)
 	app.background.Add(1)
 	go func() {
 		defer app.background.Done()
@@ -121,6 +134,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 				return
 			case now := <-ticker.C:
 				_ = recoveryJob.Run(appCtx, now.UTC())
+				_ = backupJob.Run(appCtx, now.UTC())
 			}
 		}
 	}()

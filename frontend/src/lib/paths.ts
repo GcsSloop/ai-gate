@@ -1,6 +1,6 @@
 export const WEBUI_BASE = "/ai-router/webui";
 
-function resolveAPIBase(): string {
+function resolveInitialAPIBase(): string {
   if (typeof window !== "undefined") {
     const protocol = window.location.protocol;
     if (protocol === "tauri:" || protocol === "file:") {
@@ -10,11 +10,15 @@ function resolveAPIBase(): string {
   return "/ai-router/api";
 }
 
-export const API_BASE = resolveAPIBase();
+let apiBase = resolveInitialAPIBase();
+
+export function setAPIBase(value: string): void {
+  apiBase = value.replace(/\/$/, "");
+}
 
 export function apiPath(path: string): string {
   if (path.startsWith("/")) {
-    return `${API_BASE}${path}`;
+    return `${apiBase}${path}`;
   }
-  return `${API_BASE}/${path}`;
+  return `${apiBase}/${path}`;
 }

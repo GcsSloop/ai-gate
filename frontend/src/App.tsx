@@ -1,11 +1,12 @@
-import { App as AntApp, ConfigProvider, Modal, Switch, message } from "antd";
-import { useCallback, useEffect, useState } from "react";
+import { App as AntApp, ConfigProvider, Modal, Spin, Switch, message } from "antd";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { AccountsPage } from "./features/accounts/AccountsPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
-import { disableProxy, enableProxy, getProxyStatus } from "./lib/api";
-import { refreshDesktopTrayState, subscribeDesktopBackendStateChanged } from "./lib/desktop-shell";
+import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus } from "./lib/api";
+import { loadDesktopShellContext, refreshDesktopTrayState, subscribeDesktopBackendStateChanged } from "./lib/desktop-shell";
+import { setAPIBase } from "./lib/paths";
 import "./styles.css";
 
 export function App() {
@@ -15,8 +16,10 @@ export function App() {
   const [lastBackupID, setLastBackupID] = useState("");
   const [proxyLoading, setProxyLoading] = useState(false);
   const [accountsSyncToken, setAccountsSyncToken] = useState(0);
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
+  const [shellReady, setShellReady] = useState(false);
 
-  const refreshProxyState = useCallback(async () => {
+  async function refreshProxyState() {
     try {
       const status = await getProxyStatus();
       setProxyEnabled(status.enabled);
@@ -24,11 +27,45 @@ export function App() {
     } catch {
       // Keep UI usable even if status endpoint is temporarily unavailable.
     }
-  }, []);
+  }
+
+  async function refreshAppSettingsState() {
+    const settings = await getAppSettings();
+    setAppSettings(settings);
+    return settings;
+  }
 
   useEffect(() => {
-    void refreshProxyState();
-  }, [refreshProxyState]);
+    let disposed = false;
+
+    async function boot() {
+      try {
+        const shellContext = await loadDesktopShellContext();
+        if (shellContext?.backend_api_base) {
+          setAPIBase(shellContext.backend_api_base);
+        }
+      } catch {
+        // Fall back to the default API base in browser mode.
+      }
+
+      try {
+        await Promise.all([refreshProxyState(), refreshAppSettingsState()]);
+      } catch (error) {
+        if (!disposed) {
+          void messageApi.error(error instanceof Error ? error.message : "初始化设置中心失败");
+        }
+      } finally {
+        if (!disposed) {
+          setShellReady(true);
+        }
+      }
+    }
+
+    void boot();
+    return () => {
+      disposed = true;
+    };
+  }, [messageApi]);
 
   useEffect(() => {
     let disposed = false;
@@ -47,7 +84,7 @@ export function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [refreshProxyState]);
+  }, []);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -129,54 +166,81 @@ export function App() {
     }
   }
 
+  async function handleSettingsChanged(next: AppSettings) {
+    setAppSettings(next);
+    await refreshProxyState();
+  }
+
+  const showProxySwitch = appSettings?.show_proxy_switch_on_home ?? true;
+
   return (
     <ConfigProvider
       theme={{
         token: {
-          colorPrimary: "#1677ff",
-          borderRadius: 14,
-          colorBgLayout: "#f4f7fb",
+          colorPrimary: "#0f766e",
+          borderRadius: 16,
+          colorBgLayout: "#eef3ee",
           colorBgContainer: "#ffffff",
-          colorBorderSecondary: "#e8edf5",
+          colorBorderSecondary: "#d8e0d8",
         },
       }}
     >
       <AntApp>
         {contextHolder}
-        <div className="app-shell">
-          <header className="top-menu">
-            <div className="brand">AI Gate</div>
-            <div className="top-menu-right">
-              <div className="proxy-panel">
-                <span className="proxy-label">开启代理</span>
-                <Switch checked={proxyEnabled} loading={proxyLoading} onChange={(checked) => void handleToggleProxy(checked)} />
-                {lastBackupID ? <span className="proxy-backup">备份: {lastBackupID}</span> : null}
+        {!shellReady || !appSettings ? (
+          <div className="app-loading">
+            <Spin size="large" />
+            <span>正在载入设置中心…</span>
+          </div>
+        ) : (
+          <div className="app-shell">
+            <header className="top-menu">
+              <div className="brand-block">
+                <div className="brand-mark">AI</div>
+                <div>
+                  <div className="brand">AI Gate</div>
+                  <div className="brand-subtitle">本地代理与路由控制台</div>
+                </div>
               </div>
-              <div className="menu-actions">
-              <button
-                type="button"
-                className={`menu-button ${tab === "accounts" ? "active" : ""}`}
-                onClick={() => setTab("accounts")}
-              >
-                账号
-              </button>
-              <button
-                type="button"
-                className={`menu-button ${tab === "settings" ? "active" : ""}`}
-                onClick={() => setTab("settings")}
-              >
-                设置
-              </button>
+              <div className="top-menu-right">
+                {showProxySwitch ? (
+                  <div className="proxy-panel">
+                    <span className="proxy-label">开启代理</span>
+                    <Switch checked={proxyEnabled} loading={proxyLoading} onChange={(checked) => void handleToggleProxy(checked)} />
+                    {lastBackupID ? <span className="proxy-backup">备份: {lastBackupID}</span> : null}
+                  </div>
+                ) : null}
+                <div className="menu-actions">
+                  <button
+                    type="button"
+                    className={`menu-button ${tab === "accounts" ? "active" : ""}`}
+                    onClick={() => setTab("accounts")}
+                  >
+                    账号
+                  </button>
+                  <button
+                    type="button"
+                    className={`menu-button ${tab === "settings" ? "active" : ""}`}
+                    onClick={() => setTab("settings")}
+                  >
+                    设置
+                  </button>
+                </div>
               </div>
+            </header>
+            <div style={{ display: tab === "accounts" ? "block" : "none" }}>
+              <AccountsPage syncToken={accountsSyncToken} />
             </div>
-          </header>
-          <div style={{ display: tab === "accounts" ? "block" : "none" }}>
-            <AccountsPage syncToken={accountsSyncToken} />
+            <div style={{ display: tab === "settings" ? "block" : "none" }}>
+              <SettingsPage
+                initialSettings={appSettings}
+                proxyEnabled={proxyEnabled}
+                onSettingsChanged={(next) => void handleSettingsChanged(next)}
+                onToggleProxy={(checked) => handleToggleProxy(checked)}
+              />
+            </div>
           </div>
-          <div style={{ display: tab === "settings" ? "block" : "none" }}>
-            <SettingsPage />
-          </div>
-        </div>
+        )}
       </AntApp>
     </ConfigProvider>
   );

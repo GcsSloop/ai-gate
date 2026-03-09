@@ -68,11 +68,10 @@ func NewProxy(recorder RunRecorder, attempt AttemptFunc) *Proxy {
 }
 
 func (p *Proxy) Execute(ctx context.Context, conversationID int64, model string, candidates []routing.Candidate, budget routing.TokenBudget) (string, error) {
-	scored := routing.ScoreCandidates(candidates)
 	accumulated := ""
 	var previousRunID *int64
 
-	for _, candidate := range scored {
+	for _, candidate := range candidates {
 		if !routing.IsFeasible(budget, candidate.Snapshot) {
 			continue
 		}

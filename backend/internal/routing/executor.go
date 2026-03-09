@@ -25,9 +25,7 @@ func NewExecutor(recorder RunRecorder, attempt AttemptFunc) *Executor {
 }
 
 func (e *Executor) ExecuteNonStream(ctx context.Context, conversationID int64, model string, candidates []Candidate, budget TokenBudget) error {
-	scored := ScoreCandidates(candidates)
-
-	for _, candidate := range scored {
+	for _, candidate := range candidates {
 		if !IsFeasible(budget, candidate.Snapshot) && !candidate.Account.IsActive {
 			continue
 		}

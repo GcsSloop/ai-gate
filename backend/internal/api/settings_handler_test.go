@@ -13,14 +13,225 @@ import (
 	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/api"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
+	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 )
+
+func TestSettingsHandlerGetAndPutAppSettings(t *testing.T) {
+	handler, repo := newSettingsHandler(t)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/settings/app", nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET /settings/app status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+
+	var got settings.AppSettings
+	if err := json.Unmarshal(getRec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal app settings: %v", err)
+	}
+	if got != settings.DefaultAppSettings() {
+		t.Fatalf("default settings = %+v, want %+v", got, settings.DefaultAppSettings())
+	}
+
+	body := bytes.NewBufferString(`{
+		"launch_at_login": true,
+		"silent_start": true,
+		"close_to_tray": false,
+		"show_proxy_switch_on_home": false,
+		"proxy_host": "localhost",
+		"proxy_port": 15721,
+		"auto_failover_enabled": true,
+		"auto_backup_interval_hours": 12,
+		"backup_retention_count": 7
+	}`)
+	putReq := httptest.NewRequest(http.MethodPut, "/settings/app", body)
+	putReq.Header.Set("Content-Type", "application/json")
+	putRec := httptest.NewRecorder()
+	handler.ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT /settings/app status = %d, want %d; body=%s", putRec.Code, http.StatusOK, putRec.Body.String())
+	}
+
+	stored, err := repo.GetAppSettings()
+	if err != nil {
+		t.Fatalf("GetAppSettings returned error: %v", err)
+	}
+	if !stored.LaunchAtLogin || !stored.SilentStart || stored.CloseToTray || stored.ShowProxySwitchOnHome || stored.ProxyHost != "localhost" || stored.ProxyPort != 15721 || !stored.AutoFailoverEnabled || stored.AutoBackupIntervalHours != 12 || stored.BackupRetentionCount != 7 {
+		t.Fatalf("stored settings = %+v, want updated values", stored)
+	}
+}
+
+func TestSettingsHandlerGetAndPutFailoverQueue(t *testing.T) {
+	handler, repo := newSettingsHandler(t)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/settings/failover-queue", nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET /settings/failover-queue status = %d, want %d", getRec.Code, http.StatusOK)
+	}
+	if strings.TrimSpace(getRec.Body.String()) != "[]" {
+		t.Fatalf("GET /settings/failover-queue body = %s, want []", getRec.Body.String())
+	}
+
+	putReq := httptest.NewRequest(http.MethodPut, "/settings/failover-queue", bytes.NewBufferString(`{"account_ids":[3,1,8]}`))
+	putReq.Header.Set("Content-Type", "application/json")
+	putRec := httptest.NewRecorder()
+	handler.ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT /settings/failover-queue status = %d, want %d; body=%s", putRec.Code, http.StatusOK, putRec.Body.String())
+	}
+
+	queue, err := repo.ListFailoverQueue()
+	if err != nil {
+		t.Fatalf("ListFailoverQueue returned error: %v", err)
+	}
+	if !equalInt64s(queue, []int64{3, 1, 8}) {
+		t.Fatalf("stored queue = %v, want [3 1 8]", queue)
+	}
+}
+
+func TestSettingsHandlerProxyStatusIncludesConfiguredAddress(t *testing.T) {
+	handler, repo := newSettingsHandler(t)
+
+	current := settings.DefaultAppSettings()
+	current.ProxyHost = "localhost"
+	current.ProxyPort = 15721
+	if err := repo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/settings/proxy/status", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /settings/proxy/status status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal status response: %v", err)
+	}
+	if payload["host"] != "localhost" {
+		t.Fatalf("host = %v, want localhost", payload["host"])
+	}
+	if payload["port"] != float64(15721) {
+		t.Fatalf("port = %v, want 15721", payload["port"])
+	}
+}
+
+func TestSettingsHandlerExportsAndImportsSQL(t *testing.T) {
+	handler, repo := newSettingsHandler(t)
+
+	initial := settings.DefaultAppSettings()
+	initial.ProxyPort = 15721
+	if err := repo.SaveAppSettings(initial); err != nil {
+		t.Fatalf("SaveAppSettings(initial) returned error: %v", err)
+	}
+
+	exportReq := httptest.NewRequest(http.MethodGet, "/settings/database/sql-export", nil)
+	exportRec := httptest.NewRecorder()
+	handler.ServeHTTP(exportRec, exportReq)
+	if exportRec.Code != http.StatusOK {
+		t.Fatalf("GET /settings/database/sql-export status = %d, want %d; body=%s", exportRec.Code, http.StatusOK, exportRec.Body.String())
+	}
+	exported := exportRec.Body.Bytes()
+	if !bytes.Contains(exported, []byte(`INSERT INTO "app_settings"`)) {
+		t.Fatalf("exported SQL missing app_settings insert: %s", string(exported))
+	}
+
+	changed := initial
+	changed.ProxyPort = 16888
+	if err := repo.SaveAppSettings(changed); err != nil {
+		t.Fatalf("SaveAppSettings(changed) returned error: %v", err)
+	}
+
+	importReq := httptest.NewRequest(http.MethodPost, "/settings/database/sql-import", bytes.NewReader(exported))
+	importRec := httptest.NewRecorder()
+	handler.ServeHTTP(importRec, importReq)
+	if importRec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/database/sql-import status = %d, want %d; body=%s", importRec.Code, http.StatusOK, importRec.Body.String())
+	}
+
+	restored, err := repo.GetAppSettings()
+	if err != nil {
+		t.Fatalf("GetAppSettings returned error: %v", err)
+	}
+	if restored.ProxyPort != 15721 {
+		t.Fatalf("restored ProxyPort = %d, want 15721", restored.ProxyPort)
+	}
+}
+
+func TestSettingsHandlerCreatesListsAndRestoresDatabaseBackups(t *testing.T) {
+	handler, repo := newSettingsHandler(t)
+
+	initial := settings.DefaultAppSettings()
+	initial.ProxyPort = 15721
+	if err := repo.SaveAppSettings(initial); err != nil {
+		t.Fatalf("SaveAppSettings(initial) returned error: %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/settings/database/backup", nil)
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("POST /settings/database/backup status = %d, want %d; body=%s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var created map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal created backup: %v", err)
+	}
+	backupID, _ := created["backup_id"].(string)
+	if strings.TrimSpace(backupID) == "" {
+		t.Fatal("backup_id is empty")
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/settings/database/backups", nil)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("GET /settings/database/backups status = %d, want %d", listRec.Code, http.StatusOK)
+	}
+	var listed []map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("unmarshal listed backups: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("len(listed) = %d, want 1", len(listed))
+	}
+
+	changed := initial
+	changed.ProxyPort = 16888
+	if err := repo.SaveAppSettings(changed); err != nil {
+		t.Fatalf("SaveAppSettings(changed) returned error: %v", err)
+	}
+
+	restoreReq := httptest.NewRequest(http.MethodPost, "/settings/database/restore", bytes.NewBufferString(`{"backup_id":"`+backupID+`"}`))
+	restoreReq.Header.Set("Content-Type", "application/json")
+	restoreRec := httptest.NewRecorder()
+	handler.ServeHTTP(restoreRec, restoreReq)
+	if restoreRec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/database/restore status = %d, want %d; body=%s", restoreRec.Code, http.StatusOK, restoreRec.Body.String())
+	}
+
+	restored, err := repo.GetAppSettings()
+	if err != nil {
+		t.Fatalf("GetAppSettings returned error: %v", err)
+	}
+	if restored.ProxyPort != 15721 {
+		t.Fatalf("restored ProxyPort = %d, want 15721", restored.ProxyPort)
+	}
+}
 
 func TestSettingsHandlerBackupAndList(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	prepareCodexFiles(t, home, "provider = \"router\"\n", `{"access_token":"token-a"}`)
 
-	handler := api.NewSettingsHandler()
+	handler, _ := newSettingsHandler(t)
 
 	backupReq := httptest.NewRequest(http.MethodPost, "/settings/codex/backup", nil)
 	backupRec := httptest.NewRecorder()
@@ -85,7 +296,7 @@ func TestSettingsHandlerRestoreCreatesPreRestoreBackup(t *testing.T) {
 	t.Setenv("HOME", home)
 	prepareCodexFiles(t, home, "provider = \"before\"\n", `{"access_token":"token-before"}`)
 
-	handler := api.NewSettingsHandler()
+	handler, _ := newSettingsHandler(t)
 
 	firstBackupReq := httptest.NewRequest(http.MethodPost, "/settings/codex/backup", nil)
 	firstBackupRec := httptest.NewRecorder()
@@ -141,7 +352,7 @@ func TestSettingsHandlerProxyEnableDisable(t *testing.T) {
 	t.Setenv("HOME", home)
 	prepareCodexFiles(t, home, "model_provider = \"openai\"\n", `{"access_token":"token-before"}`)
 
-	handler := api.NewSettingsHandler()
+	handler, _ := newSettingsHandler(t)
 
 	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
 	enableRec := httptest.NewRecorder()
@@ -176,12 +387,47 @@ func TestSettingsHandlerProxyEnableDisable(t *testing.T) {
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
 }
 
+func TestSettingsHandlerUpdatingProxyAddressRewritesEnabledConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	prepareCodexFiles(t, home, "model_provider = \"openai\"\n", `{"access_token":"token-before"}`)
+
+	handler, _ := newSettingsHandler(t)
+
+	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
+	enableRec := httptest.NewRecorder()
+	handler.ServeHTTP(enableRec, enableReq)
+	if enableRec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/proxy/enable status = %d, want %d", enableRec.Code, http.StatusOK)
+	}
+
+	putReq := httptest.NewRequest(http.MethodPut, "/settings/app", bytes.NewBufferString(`{
+		"launch_at_login": false,
+		"silent_start": false,
+		"close_to_tray": true,
+		"show_proxy_switch_on_home": true,
+		"proxy_host": "localhost",
+		"proxy_port": 15721,
+		"auto_failover_enabled": false,
+		"auto_backup_interval_hours": 24,
+		"backup_retention_count": 10
+	}`))
+	putReq.Header.Set("Content-Type", "application/json")
+	putRec := httptest.NewRecorder()
+	handler.ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT /settings/app status = %d, want %d; body=%s", putRec.Code, http.StatusOK, putRec.Body.String())
+	}
+
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "http://localhost:15721/ai-router/api"`)
+}
+
 func TestSettingsHandlerProxyDisableConflictWhenConfigChanged(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	prepareCodexFiles(t, home, "model_provider = \"openai\"\n", `{"access_token":"token-before"}`)
 
-	handler := api.NewSettingsHandler()
+	handler, _ := newSettingsHandler(t)
 
 	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
 	enableRec := httptest.NewRecorder()
@@ -216,7 +462,7 @@ func TestSettingsHandlerProxyDisableForceRestoresWhenConfigChanged(t *testing.T)
 	t.Setenv("HOME", home)
 	prepareCodexFiles(t, home, "model_provider = \"openai\"\n", `{"access_token":"token-before"}`)
 
-	handler := api.NewSettingsHandler()
+	handler, _ := newSettingsHandler(t)
 
 	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
 	enableRec := httptest.NewRecorder()
@@ -250,7 +496,7 @@ base_url = "https://code.ppchat.vip/v1"
 wire_api = "responses"
 `, `{"access_token":"token-before"}`)
 
-	handler := api.NewSettingsHandler()
+	handler, _ := newSettingsHandler(t)
 
 	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
 	enableRec := httptest.NewRecorder()
@@ -303,7 +549,7 @@ base_url = "https://old-b.example/v1"
 wire_api = "chat_completions"
 `, `{"access_token":"token-before"}`)
 
-	handler := api.NewSettingsHandler()
+	handler, _ := newSettingsHandler(t)
 	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
 	enableRec := httptest.NewRecorder()
 	handler.ServeHTTP(enableRec, enableReq)
@@ -343,7 +589,7 @@ base_url = "https://legacy-section.example/v1"
 wire_api = "chat_completions"
 `, `{"access_token":"token-before"}`)
 
-	handler := api.NewSettingsHandler()
+	handler, _ := newSettingsHandler(t)
 	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
 	enableRec := httptest.NewRecorder()
 	handler.ServeHTTP(enableRec, enableReq)
@@ -396,4 +642,32 @@ func assertFileContains(t *testing.T, path string, expected string) {
 	if !strings.Contains(body, expected) {
 		t.Fatalf("%s does not contain %q. got=%q", path, expected, body)
 	}
+}
+
+func newSettingsHandler(t *testing.T) (*api.SettingsHandler, *settings.SQLiteRepository) {
+	t.Helper()
+
+	dbPath := filepath.Join(t.TempDir(), "router.sqlite")
+	store, err := sqlitestore.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := settings.NewSQLiteRepository(store.DB())
+	return api.NewSettingsHandler(repo, api.WithSettingsDatabase(store.DB(), dbPath)), repo
+}
+
+func equalInt64s(left []int64, right []int64) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }

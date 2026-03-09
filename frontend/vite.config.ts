@@ -27,6 +27,18 @@ export default defineConfig({
       "/ai-router/api": "http://127.0.0.1:6789",
     },
   },
+  build: {
+    chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ["react", "react-dom", "react-router-dom"],
+          antd: ["antd", "@ant-design/icons"],
+          tauri: ["@tauri-apps/api"],
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     setupFiles: "./src/vitest.setup.ts",

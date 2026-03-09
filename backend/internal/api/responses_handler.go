@@ -23,6 +23,7 @@ import (
 	providercodex "github.com/gcssloop/codex-router/backend/internal/providers/codex"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/routing"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
 
@@ -53,10 +54,17 @@ type ResponsesHandler struct {
 	accounts      ResponsesAccounts
 	usage         ResponsesUsage
 	conversations ResponsesRuns
+	settings      settings.ReadRepository
 	client        *http.Client
 }
 
 type ResponsesHandlerOption func(*ResponsesHandler)
+
+func WithResponsesSettings(repo settings.ReadRepository) ResponsesHandlerOption {
+	return func(handler *ResponsesHandler) {
+		handler.settings = repo
+	}
+}
 
 type responsesExecutionResult struct {
 	Text        string
@@ -236,6 +244,20 @@ func (h *ResponsesHandler) selectThinGatewayAccount() (accounts.Account, error) 
 	if err != nil {
 		return accounts.Account{}, err
 	}
+	if h.autoFailoverEnabled() {
+		ordered, err := settings.OrderCandidates(h.settings, h.buildCandidates(accountList))
+		if err != nil {
+			return accounts.Account{}, err
+		}
+		for _, candidate := range ordered {
+			if candidate.Account.NativeResponsesCapable() {
+				logThinGatewayCandidate(candidate.Account, "select", "explicit_queue")
+				return candidate.Account, nil
+			}
+			logThinGatewayCandidate(candidate.Account, "skip", "supports_responses=false")
+		}
+		return accounts.Account{}, errThinGatewayRequiresResponsesAccount
+	}
 	for _, account := range accountList {
 		if !account.IsActive {
 			continue
@@ -255,6 +277,21 @@ func (h *ResponsesHandler) selectThinGatewayAccount() (accounts.Account, error) 
 		logThinGatewayCandidate(candidate.Account, "skip", "supports_responses=false")
 	}
 	return accounts.Account{}, errThinGatewayRequiresResponsesAccount
+}
+
+func (h *ResponsesHandler) autoFailoverEnabled() bool {
+	if h.settings == nil {
+		return false
+	}
+	appSettings, err := h.settings.GetAppSettings()
+	if err != nil || !appSettings.AutoFailoverEnabled {
+		return false
+	}
+	queue, err := h.settings.ListFailoverQueue()
+	if err != nil {
+		return false
+	}
+	return len(queue) > 0
 }
 
 func copyResponseHeaders(dst, src http.Header) {

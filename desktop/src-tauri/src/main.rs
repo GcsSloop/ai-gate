@@ -1,22 +1,28 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
+static DESKTOP_RUNTIME: Lazy<Mutex<DesktopRuntime>> =
+    Lazy::new(|| Mutex::new(DesktopRuntime::default()));
 static ALLOW_DIRECT_EXIT: AtomicBool = AtomicBool::new(false);
 
-const BACKEND_ADDR: &str = "127.0.0.1:6789";
+const DEFAULT_PROXY_HOST: &str = "127.0.0.1";
+const DEFAULT_PROXY_PORT: u16 = 6789;
+const SETTINGS_CACHE_FILE: &str = "desktop-settings.json";
+const LAUNCH_AGENT_LABEL: &str = "com.aigate.desktop";
 const TRAY_ID: &str = "aigate-tray";
 const MENU_OPEN_MAIN: &str = "open-main";
 const MENU_PROXY_STATUS: &str = "proxy-status";
@@ -25,6 +31,104 @@ const MENU_PROXY_DISABLE: &str = "proxy-disable";
 const MENU_QUIT: &str = "quit";
 const MENU_ACCOUNT_PREFIX: &str = "account-select:";
 const BACKEND_STATE_CHANGED_EVENT: &str = "aigate-backend-state-changed";
+const ABOUT_DESCRIPTION: &str =
+    "AI Gate 是一个本地桌面代理与账号编排工具，用于统一管理路由、故障转移与数据备份。";
+const ABOUT_AUTHOR: &str = "GcsSloop";
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+struct DesktopSettingsCache {
+    launch_at_login: bool,
+    silent_start: bool,
+    close_to_tray: bool,
+    proxy_host: String,
+    proxy_port: u16,
+}
+
+impl Default for DesktopSettingsCache {
+    fn default() -> Self {
+        Self {
+            launch_at_login: false,
+            silent_start: false,
+            close_to_tray: true,
+            proxy_host: DEFAULT_PROXY_HOST.to_string(),
+            proxy_port: DEFAULT_PROXY_PORT,
+        }
+    }
+}
+
+impl DesktopSettingsCache {
+    fn from_app_settings(value: AppSettingsPayload) -> Self {
+        let defaults = Self::default();
+        let proxy_host = value.proxy_host.trim();
+        let proxy_port = if value.proxy_port == 0 {
+            defaults.proxy_port
+        } else {
+            value.proxy_port
+        };
+        Self {
+            launch_at_login: value.launch_at_login,
+            silent_start: value.silent_start,
+            close_to_tray: value.close_to_tray,
+            proxy_host: if proxy_host.is_empty() {
+                defaults.proxy_host
+            } else {
+                proxy_host.to_string()
+            },
+            proxy_port,
+        }
+    }
+
+    fn backend_addr(&self) -> String {
+        format!("{}:{}", self.proxy_host, self.proxy_port)
+    }
+
+    fn backend_api_base(&self) -> String {
+        format!("http://{}/ai-router/api", self.backend_addr())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct AppSettingsPayload {
+    launch_at_login: bool,
+    silent_start: bool,
+    close_to_tray: bool,
+    show_proxy_switch_on_home: bool,
+    proxy_host: String,
+    proxy_port: u16,
+    auto_failover_enabled: bool,
+    auto_backup_interval_hours: i32,
+    backup_retention_count: i32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DesktopShellContext {
+    backend_addr: String,
+    backend_api_base: String,
+    launch_at_login: bool,
+    silent_start: bool,
+    close_to_tray: bool,
+}
+
+impl DesktopShellContext {
+    fn from_cache(cache: &DesktopSettingsCache) -> Self {
+        Self {
+            backend_addr: cache.backend_addr(),
+            backend_api_base: cache.backend_api_base(),
+            launch_at_login: cache.launch_at_login,
+            silent_start: cache.silent_start,
+            close_to_tray: cache.close_to_tray,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AppMetadataPayload {
+    name: String,
+    version: String,
+    description: String,
+    author: String,
+}
 
 #[derive(Clone, Default)]
 struct ProxyStatusSnapshot {
@@ -50,37 +154,35 @@ struct HttpResponse {
     body: String,
 }
 
+#[derive(Clone, Default)]
+struct DesktopRuntime {
+    sidecar_path: PathBuf,
+    database_path: PathBuf,
+    settings_path: PathBuf,
+    settings_cache: DesktopSettingsCache,
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![force_exit_app, refresh_tray_state])
+        .invoke_handler(tauri::generate_handler![
+            force_exit_app,
+            refresh_tray_state,
+            get_desktop_shell_context,
+            apply_app_settings,
+            get_app_metadata
+        ])
         .setup(|app| {
-            let sidecar_path = resolve_sidecar_path(app.handle())?;
-            let home_dir = app
-                .path()
-                .home_dir()
-                .map_err(|e| format!("resolve home_dir failed: {e}"))?;
-            let data_dir = home_dir.join(".aigate").join("data");
-            std::fs::create_dir_all(&data_dir).map_err(|e| format!("create data_dir failed: {e}"))?;
-
-            let database_path = data_dir.join("aigate.sqlite");
-            let mut command = Command::new(&sidecar_path);
-            command
-                .env("CODEX_ROUTER_LISTEN_ADDR", BACKEND_ADDR)
-                .env("CODEX_ROUTER_DATABASE_PATH", database_path)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-
-            let child = command
-                .spawn()
-                .map_err(|e| format!("spawn sidecar {} failed: {e}", sidecar_path.display()))?;
-
-            let mut guard = SIDECAR_CHILD
-                .lock()
-                .map_err(|_| "sidecar child lock poisoned".to_string())?;
-            *guard = Some(child);
-            drop(guard);
-
+            let cache = initialize_runtime(app.handle())?;
+            if let Err(err) = sync_launch_agent(cache.launch_at_login) {
+                eprintln!("sync launch agent failed: {err}");
+            }
+            spawn_sidecar()?;
             setup_tray(app.handle())?;
+            if cache.silent_start {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -89,9 +191,14 @@ fn main() {
             tauri::RunEvent::WindowEvent { label, event, .. } => {
                 if label == "main" {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            let _ = window.hide();
+                        if current_settings_cache().close_to_tray {
+                            api.prevent_close();
+                            if let Some(window) = app_handle.get_webview_window("main") {
+                                let _ = window.hide();
+                            }
+                        } else {
+                            api.prevent_close();
+                            request_app_exit(app_handle);
                         }
                     }
                 }
@@ -129,6 +236,204 @@ fn force_exit_app<R: Runtime>(app: AppHandle<R>) {
 fn refresh_tray_state<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     refresh_tray_state_from_backend(&app);
     Ok(())
+}
+
+#[tauri::command]
+fn get_desktop_shell_context() -> Result<DesktopShellContext, String> {
+    Ok(DesktopShellContext::from_cache(&current_settings_cache()))
+}
+
+#[tauri::command]
+fn apply_app_settings<R: Runtime>(
+    app: AppHandle<R>,
+    payload: AppSettingsPayload,
+) -> Result<DesktopShellContext, String> {
+    let cache = DesktopSettingsCache::from_app_settings(payload);
+    let restart_required = persist_runtime_settings(cache.clone())?;
+    sync_launch_agent(cache.launch_at_login)?;
+    if restart_required {
+        restart_sidecar()?;
+    }
+    refresh_tray_state_from_backend(&app);
+    emit_backend_state_changed(&app);
+    Ok(DesktopShellContext::from_cache(&cache))
+}
+
+#[tauri::command]
+fn get_app_metadata<R: Runtime>(app: AppHandle<R>) -> AppMetadataPayload {
+    let package = app.package_info();
+    AppMetadataPayload {
+        name: package.name.clone(),
+        version: package.version.to_string(),
+        description: ABOUT_DESCRIPTION.to_string(),
+        author: ABOUT_AUTHOR.to_string(),
+    }
+}
+
+fn initialize_runtime(app: &tauri::AppHandle) -> Result<DesktopSettingsCache, String> {
+    let sidecar_path = resolve_sidecar_path(app)?;
+    let home_dir = app
+        .path()
+        .home_dir()
+        .map_err(|e| format!("resolve home_dir failed: {e}"))?;
+    let data_dir = home_dir.join(".aigate").join("data");
+    std::fs::create_dir_all(&data_dir).map_err(|e| format!("create data_dir failed: {e}"))?;
+
+    let database_path = data_dir.join("aigate.sqlite");
+    let settings_path = data_dir.join(SETTINGS_CACHE_FILE);
+    let settings_cache = load_settings_cache(&settings_path);
+
+    let mut runtime = DESKTOP_RUNTIME
+        .lock()
+        .map_err(|_| "desktop runtime lock poisoned".to_string())?;
+    *runtime = DesktopRuntime {
+        sidecar_path,
+        database_path,
+        settings_path,
+        settings_cache: settings_cache.clone(),
+    };
+    Ok(settings_cache)
+}
+
+fn load_settings_cache(settings_path: &Path) -> DesktopSettingsCache {
+    let Ok(raw) = std::fs::read_to_string(settings_path) else {
+        return DesktopSettingsCache::default();
+    };
+    serde_json::from_str::<DesktopSettingsCache>(&raw).unwrap_or_default()
+}
+
+fn persist_runtime_settings(cache: DesktopSettingsCache) -> Result<bool, String> {
+    let mut runtime = DESKTOP_RUNTIME
+        .lock()
+        .map_err(|_| "desktop runtime lock poisoned".to_string())?;
+    let previous_addr = runtime.settings_cache.backend_addr();
+    persist_settings_cache(&runtime.settings_path, &cache)?;
+    runtime.settings_cache = cache.clone();
+    Ok(previous_addr != cache.backend_addr())
+}
+
+fn persist_settings_cache(
+    settings_path: &Path,
+    cache: &DesktopSettingsCache,
+) -> Result<(), String> {
+    if let Some(parent) = settings_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create settings cache dir failed: {e}"))?;
+    }
+    let raw = serde_json::to_vec_pretty(cache)
+        .map_err(|e| format!("serialize settings cache failed: {e}"))?;
+    std::fs::write(settings_path, raw).map_err(|e| format!("write settings cache failed: {e}"))
+}
+
+fn current_settings_cache() -> DesktopSettingsCache {
+    DESKTOP_RUNTIME
+        .lock()
+        .map(|runtime| runtime.settings_cache.clone())
+        .unwrap_or_default()
+}
+
+fn current_backend_addr() -> String {
+    current_settings_cache().backend_addr()
+}
+
+fn spawn_sidecar() -> Result<(), String> {
+    let runtime = DESKTOP_RUNTIME
+        .lock()
+        .map_err(|_| "desktop runtime lock poisoned".to_string())?
+        .clone();
+
+    let mut command = Command::new(&runtime.sidecar_path);
+    command
+        .env(
+            "CODEX_ROUTER_LISTEN_ADDR",
+            runtime.settings_cache.backend_addr(),
+        )
+        .env("CODEX_ROUTER_DATABASE_PATH", runtime.database_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    let child = command.spawn().map_err(|e| {
+        format!(
+            "spawn sidecar {} failed: {e}",
+            runtime.sidecar_path.display()
+        )
+    })?;
+
+    let mut guard = SIDECAR_CHILD
+        .lock()
+        .map_err(|_| "sidecar child lock poisoned".to_string())?;
+    *guard = Some(child);
+    Ok(())
+}
+
+fn restart_sidecar() -> Result<(), String> {
+    shutdown_sidecar();
+    spawn_sidecar()
+}
+
+fn sync_launch_agent(enabled: bool) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+
+    let home = std::env::var("HOME").map_err(|e| format!("resolve HOME failed: {e}"))?;
+    let launch_agent_path = launch_agent_path(Path::new(&home));
+    if enabled {
+        if let Some(parent) = launch_agent_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create LaunchAgents dir failed: {e}"))?;
+        }
+        let current_exe =
+            std::env::current_exe().map_err(|e| format!("resolve current exe failed: {e}"))?;
+        let plist = build_launch_agent_plist(&current_exe);
+        std::fs::write(&launch_agent_path, plist)
+            .map_err(|e| format!("write launch agent failed: {e}"))?;
+        return Ok(());
+    }
+
+    if launch_agent_path.exists() {
+        std::fs::remove_file(&launch_agent_path)
+            .map_err(|e| format!("remove launch agent failed: {e}"))?;
+    }
+    Ok(())
+}
+
+fn launch_agent_path(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("LaunchAgents")
+        .join(format!("{LAUNCH_AGENT_LABEL}.plist"))
+}
+
+fn build_launch_agent_plist(executable: &Path) -> String {
+    let escaped_path = escape_xml(executable.to_string_lossy().as_ref());
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{LAUNCH_AGENT_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{escaped_path}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <false/>
+</dict>
+</plist>
+"#
+    )
+}
+
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn request_app_exit<R: Runtime>(app: &AppHandle<R>) {
@@ -232,7 +537,11 @@ fn handle_tray_menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
             let _ = request_backend("POST", "/ai-router/api/settings/proxy/enable", "");
         }
         MENU_PROXY_DISABLE => {
-            let _ = request_backend("POST", "/ai-router/api/settings/proxy/disable?skip_restore=1", "");
+            let _ = request_backend(
+                "POST",
+                "/ai-router/api/settings/proxy/disable?skip_restore=1",
+                "",
+            );
         }
         MENU_QUIT => {
             request_app_exit(app);
@@ -370,9 +679,11 @@ fn emit_backend_state_changed<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn request_backend(method: &str, path: &str, body: &str) -> Result<HttpResponse, String> {
-    let mut stream = TcpStream::connect(BACKEND_ADDR).map_err(|e| format!("connect backend failed: {e}"))?;
+    let backend_addr = current_backend_addr();
+    let mut stream =
+        TcpStream::connect(&backend_addr).map_err(|e| format!("connect backend failed: {e}"))?;
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {BACKEND_ADDR}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: {backend_addr}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
     stream
@@ -450,8 +761,10 @@ fn shutdown_sidecar() {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_tray_title, parse_account_menu_id, should_refresh_tray_after_action,
+        build_launch_agent_plist, format_tray_title, parse_account_menu_id,
+        should_refresh_tray_after_action, AppSettingsPayload, DesktopSettingsCache,
     };
+    use std::path::Path;
 
     #[test]
     fn parse_account_menu_id_accepts_valid_ids() {
@@ -496,5 +809,75 @@ mod tests {
     fn tray_title_formats_no_account() {
         assert_eq!(format_tray_title(false, None), "· 无账户");
         assert_eq!(format_tray_title(true, None), "§ 无账户");
+    }
+
+    #[test]
+    fn desktop_settings_cache_defaults_match_app_defaults() {
+        let cache = DesktopSettingsCache::default();
+
+        assert!(!cache.launch_at_login);
+        assert!(!cache.silent_start);
+        assert!(cache.close_to_tray);
+        assert_eq!(cache.proxy_host, "127.0.0.1");
+        assert_eq!(cache.proxy_port, 6789);
+        assert_eq!(cache.backend_addr(), "127.0.0.1:6789");
+        assert_eq!(
+            cache.backend_api_base(),
+            "http://127.0.0.1:6789/ai-router/api"
+        );
+    }
+
+    #[test]
+    fn desktop_settings_cache_tracks_runtime_fields_from_app_settings() {
+        let payload = AppSettingsPayload {
+            launch_at_login: true,
+            silent_start: true,
+            close_to_tray: false,
+            show_proxy_switch_on_home: false,
+            proxy_host: "0.0.0.0".to_string(),
+            proxy_port: 18080,
+            auto_failover_enabled: true,
+            auto_backup_interval_hours: 12,
+            backup_retention_count: 7,
+        };
+
+        let cache = DesktopSettingsCache::from_app_settings(payload);
+        assert!(cache.launch_at_login);
+        assert!(cache.silent_start);
+        assert!(!cache.close_to_tray);
+        assert_eq!(cache.proxy_host, "0.0.0.0");
+        assert_eq!(cache.proxy_port, 18080);
+        assert_eq!(cache.backend_addr(), "0.0.0.0:18080");
+    }
+
+    #[test]
+    fn desktop_settings_cache_sanitizes_invalid_proxy_endpoint() {
+        let payload = AppSettingsPayload {
+            launch_at_login: false,
+            silent_start: false,
+            close_to_tray: true,
+            show_proxy_switch_on_home: true,
+            proxy_host: "   ".to_string(),
+            proxy_port: 0,
+            auto_failover_enabled: false,
+            auto_backup_interval_hours: 24,
+            backup_retention_count: 10,
+        };
+
+        let cache = DesktopSettingsCache::from_app_settings(payload);
+        assert_eq!(cache.proxy_host, "127.0.0.1");
+        assert_eq!(cache.proxy_port, 6789);
+    }
+
+    #[test]
+    fn launch_agent_plist_uses_current_executable() {
+        let plist = build_launch_agent_plist(Path::new(
+            "/Applications/AI Gate.app/Contents/MacOS/aigate-desktop",
+        ));
+
+        assert!(plist.contains("<string>com.aigate.desktop</string>"));
+        assert!(plist
+            .contains("<string>/Applications/AI Gate.app/Contents/MacOS/aigate-desktop</string>"));
+        assert!(plist.contains("<key>RunAtLoad</key>"));
     }
 }

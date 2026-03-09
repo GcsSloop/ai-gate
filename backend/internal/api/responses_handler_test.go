@@ -13,6 +13,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/api"
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
@@ -80,6 +81,93 @@ func TestResponsesHandlerThinModeRejectsUnsupportedActiveAccount(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "supports /responses") {
 		t.Fatalf("body = %s, want explicit capability error", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerThinModeUsesExplicitFailoverQueueWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-queued" {
+			t.Fatalf("authorization = %q, want Bearer sk-queued", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_tp_q","object":"response","status":"completed","output_text":"queued-first"}`)
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, item := range []accounts.Account{
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "active-unsupported",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           upstream.URL + "/v1",
+			CredentialRef:     "sk-unsupported",
+			Status:            accounts.StatusActive,
+			Priority:          100,
+			SupportsResponses: false,
+			IsActive:          true,
+		},
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "queued-supported",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           upstream.URL + "/v1",
+			CredentialRef:     "sk-queued",
+			Status:            accounts.StatusActive,
+			Priority:          10,
+			SupportsResponses: true,
+		},
+	} {
+		if err := accountRepo.Create(item); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for _, snapshot := range []usage.Snapshot{
+		{AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.95},
+		{AccountID: 2, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.5},
+	} {
+		if err := usageRepo.Save(snapshot); err != nil {
+			t.Fatalf("Save returned error: %v", err)
+		}
+	}
+
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+	if err := settingsRepo.SaveFailoverQueue([]int64{2, 1}); err != nil {
+		t.Fatalf("SaveFailoverQueue returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithResponsesSettings(settingsRepo),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"output_text":"queued-first"`) {
+		t.Fatalf("body = %s, want queue-selected output", rec.Body.String())
 	}
 }
 

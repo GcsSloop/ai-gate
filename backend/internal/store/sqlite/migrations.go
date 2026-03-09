@@ -47,6 +47,25 @@ var schemaStatements = []string{
 		payload TEXT NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,
+	`CREATE TABLE IF NOT EXISTS app_settings (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		launch_at_login INTEGER NOT NULL DEFAULT 0,
+		silent_start INTEGER NOT NULL DEFAULT 0,
+		close_to_tray INTEGER NOT NULL DEFAULT 1,
+		show_proxy_switch_on_home INTEGER NOT NULL DEFAULT 1,
+		proxy_host TEXT NOT NULL DEFAULT '127.0.0.1',
+		proxy_port INTEGER NOT NULL DEFAULT 6789,
+		auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
+		auto_backup_interval_hours INTEGER NOT NULL DEFAULT 24,
+		backup_retention_count INTEGER NOT NULL DEFAULT 10,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`,
+	`CREATE TABLE IF NOT EXISTS failover_queue_items (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id INTEGER NOT NULL,
+		position INTEGER NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`,
 	`CREATE TABLE IF NOT EXISTS conversations (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		client_id TEXT,
