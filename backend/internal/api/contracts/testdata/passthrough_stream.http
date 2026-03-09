@@ -1,0 +1,7 @@
+data: {"type":"response.created","response":{"id":"resp_contract_stream","object":"response","status":"in_progress"}}
+
+data: {"type":"response.output_text.delta","delta":"pong"}
+
+data: {"type":"response.completed","response":{"id":"resp_contract_stream","object":"response","status":"completed","output_text":"pong"}}
+
+data: [DONE]
