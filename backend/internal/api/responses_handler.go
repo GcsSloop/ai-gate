@@ -357,6 +357,10 @@ func (h *ResponsesHandler) handleModelDetail(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *ResponsesHandler) handleResponseDetail(w http.ResponseWriter, r *http.Request) {
+	if h.thinGatewayMode {
+		writeThinGatewayUnsupported(w, "response retrieval is unavailable in thin gateway mode")
+		return
+	}
 	responseID := pathBase(r.URL.Path)
 	responsePayload, err := h.buildStoredResponse(responseID)
 	if err != nil {
@@ -367,6 +371,10 @@ func (h *ResponsesHandler) handleResponseDetail(w http.ResponseWriter, r *http.R
 }
 
 func (h *ResponsesHandler) handleResponseInputItems(w http.ResponseWriter, r *http.Request) {
+	if h.thinGatewayMode {
+		writeThinGatewayUnsupported(w, "response input_items are unavailable in thin gateway mode")
+		return
+	}
 	responseID := pathBase(pathDir(r.URL.Path))
 	items, err := h.buildStoredInputItems(responseID)
 	if err != nil {
@@ -384,6 +392,10 @@ func (h *ResponsesHandler) handleResponseInputItems(w http.ResponseWriter, r *ht
 }
 
 func (h *ResponsesHandler) handleDeleteResponse(w http.ResponseWriter, r *http.Request) {
+	if h.thinGatewayMode {
+		writeThinGatewayUnsupported(w, "response deletion is unavailable in thin gateway mode")
+		return
+	}
 	responseID := pathBase(r.URL.Path)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":      responseID,
@@ -393,6 +405,10 @@ func (h *ResponsesHandler) handleDeleteResponse(w http.ResponseWriter, r *http.R
 }
 
 func (h *ResponsesHandler) handleCancelResponse(w http.ResponseWriter, r *http.Request) {
+	if h.thinGatewayMode {
+		writeThinGatewayUnsupported(w, "response cancellation is unavailable in thin gateway mode")
+		return
+	}
 	responseID := pathBase(pathDir(r.URL.Path))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":                 responseID,
@@ -429,6 +445,10 @@ func (h *ResponsesHandler) handleResponsesInputTokens(w http.ResponseWriter, r *
 }
 
 func (h *ResponsesHandler) handleResponsesCompact(w http.ResponseWriter, r *http.Request) {
+	if h.thinGatewayMode {
+		writeThinGatewayUnsupported(w, "responses compact is unavailable in thin gateway mode")
+		return
+	}
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -448,6 +468,16 @@ func (h *ResponsesHandler) handleResponsesCompact(w http.ResponseWriter, r *http
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"output": output,
+	})
+}
+
+func writeThinGatewayUnsupported(w http.ResponseWriter, message string) {
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error": map[string]any{
+			"type":    "invalid_request_error",
+			"code":    "thin_gateway_unsupported",
+			"message": message,
+		},
 	})
 }
 

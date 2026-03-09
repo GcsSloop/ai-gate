@@ -78,3 +78,32 @@ func TestResponsesHandlerCompactEndpointExists(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerThinModeDisablesCompact(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo, api.WithThinGatewayMode(true))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("POST /v1/responses/compact status = %d, want %d, body=%s", rec.Code, http.StatusNotImplemented, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("thin gateway mode")) {
+		t.Fatalf("response body = %s, want thin gateway mode error", rec.Body.String())
+	}
+}

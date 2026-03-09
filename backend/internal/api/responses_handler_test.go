@@ -2074,6 +2074,49 @@ func TestResponsesHandlerRetrievesStoredResponseAndInputItems(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerThinModeDisablesSyntheticEndpoints(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	handler := api.NewResponsesHandler(
+		accounts.NewSQLiteRepository(store.DB()),
+		usage.NewSQLiteRepository(store.DB()),
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithThinGatewayMode(true),
+	)
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "detail", method: http.MethodGet, path: "/v1/responses/resp_1"},
+		{name: "input_items", method: http.MethodGet, path: "/v1/responses/resp_1/input_items"},
+		{name: "cancel", method: http.MethodPost, path: "/v1/responses/resp_1/cancel"},
+		{name: "delete", method: http.MethodDelete, path: "/v1/responses/resp_1"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotImplemented {
+				t.Fatalf("%s %s status = %d, want %d, body=%s", tc.method, tc.path, rec.Code, http.StatusNotImplemented, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "thin gateway mode") {
+				t.Fatalf("%s %s body = %s, want thin gateway mode error", tc.method, tc.path, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestResponsesHandlerInputItemsPreserveRawFunctionCallOutput(t *testing.T) {
 	t.Parallel()
 
