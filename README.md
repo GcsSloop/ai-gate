@@ -57,20 +57,12 @@ The frontend dev server proxies `/accounts`, `/policy`, `/monitoring`, `/convers
 
 ## Codex CLI via Gateway
 
-The gateway now exposes:
+Thin gateway mode is intended to mirror the official Responses API surface while staying out of orchestration and conversation semantics.
 
-- `/ai-router/api/responses`
-- `/ai-router/api/models`
-- `/ai-router/api/chat/completions`
+Current thin-gateway contract:
+
 - `/ai-router/api/v1/responses`
 - `/ai-router/api/v1/models`
-- `/ai-router/api/v1/chat/completions`
-- `/ai-router/api/v1/responses/{response_id}`
-- `/ai-router/api/v1/responses/{response_id}/input_items`
-- `/ai-router/api/v1/responses/{response_id}/cancel`
-- `/ai-router/api/v1/responses/input_tokens`
-- `/ai-router/api/v1/models/{model_id}`
-- `DELETE /ai-router/api/v1/responses/{response_id}`
 
 Recommended local Codex CLI config:
 
@@ -86,9 +78,11 @@ requires_openai_auth = true
 
 Notes:
 
-- Third-party accounts continue to use their configured OpenAI-compatible `base_url + api_key`.
+- Thin gateway mode is official-upstream only. Third-party OpenAI-compatible providers are out of scope.
 - Uploaded local `auth.json` accounts are treated as official Codex sessions and routed to `https://chatgpt.com/backend-api/codex`.
-- Gateway-managed `response_id` values are used to replay conversation history, so official and third-party accounts can share one conversation chain.
+- `response_id` and `previous_response_id` semantics are owned by the upstream service, not reconstructed locally.
+- Endpoints that require gateway-synthesized response state are disabled in thin gateway mode instead of being faked locally.
+- See [`docs/thin-gateway-mode.md`](docs/thin-gateway-mode.md) for the exact boundary.
 
 ## Tauri package for customers (GitLab CI)
 

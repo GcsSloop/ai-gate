@@ -12,19 +12,6 @@ cd backend && go test ./...
 npm --prefix frontend test
 ```
 
-## Optional third-party smoke
-
-This is intentionally low volume. It creates one OpenAI-compatible third-party account in the router and sends one tiny completion request.
-
-```bash
-ROUTER_URL=http://127.0.0.1:6789 \
-THIRD_PARTY_BASE_URL=https://code.ppchat.vip/v1 \
-THIRD_PARTY_API_KEY=sk-... \
-bash scripts/test/third_party_smoke.sh
-```
-
-Do not put third-party account credentials in `.env`. Manage them in the Accounts page during normal use, and only pass them inline for one-off smoke runs. Rotate any test key after use.
-
 ## Codex CLI smoke
 
 Start the router backend, then point local Codex CLI to the router:
@@ -43,6 +30,12 @@ Minimal checks:
 
 1. `curl http://127.0.0.1:6789/ai-router/api/models`
 2. Send one non-stream request to `POST /ai-router/api/responses`
-3. Verify `GET /ai-router/api/v1/responses/{response_id}`, `GET /ai-router/api/v1/responses/{response_id}/input_items`, and `POST /ai-router/api/v1/responses/{response_id}/cancel`
-4. Verify `POST /ai-router/api/v1/responses/input_tokens`
-5. From Codex CLI, run one short prompt and verify the router account list shows runs against either a third-party account or an uploaded local `auth.json` account
+3. Send one stream request to `POST /ai-router/api/responses` and verify the stream terminates with an upstream-aligned terminal event
+4. Switch between two official `auth.json` accounts and verify requests do not hang or lose terminal output
+5. From Codex CLI, run one short prompt and verify the router account list shows a run against the active official account
+
+Thin gateway mode notes:
+
+- Do not run third-party provider smoke tests in thin gateway mode.
+- Do not expect gateway-synthesized response retrieval endpoints to be available.
+- Treat upstream `response_id` as authoritative.
