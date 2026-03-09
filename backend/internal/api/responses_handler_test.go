@@ -1005,6 +1005,190 @@ func TestResponsesHandlerUsesPreviousResponseIDForConversationReplay(t *testing.
 	}
 }
 
+func TestResponsesHandlerThinModeForwardsPreviousResponseID(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			PreviousResponseID string `json:"previous_response_id"`
+			Input              string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if payload.PreviousResponseID != "resp_upstream_prev_1" {
+			t.Fatalf("previous_response_id = %q, want resp_upstream_prev_1", payload.PreviousResponseID)
+		}
+		if payload.Input != "second question" {
+			t.Fatalf("input = %q, want second question", payload.Input)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "resp_upstream_current_1",
+			"object":      "response",
+			"status":      "completed",
+			"output_text": "second answer",
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()), api.WithThinGatewayMode(true))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"previous_response_id":"resp_upstream_prev_1",
+		"input":"second question",
+		"stream":false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"resp_upstream_current_1"`) {
+		t.Fatalf("response body = %s, want upstream response id", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerThinModeNoLocalReplay(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			PreviousResponseID string           `json:"previous_response_id"`
+			Input              []map[string]any `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if payload.PreviousResponseID != "upstream_prev_nonlocal" {
+			t.Fatalf("previous_response_id = %q, want upstream_prev_nonlocal", payload.PreviousResponseID)
+		}
+		if len(payload.Input) != 1 {
+			t.Fatalf("input items = %+v, want exactly one user item without local replay", payload.Input)
+		}
+		content, _ := payload.Input[0]["content"].([]any)
+		if len(content) != 1 {
+			t.Fatalf("input content = %+v, want single content item", payload.Input[0]["content"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "resp_upstream_current_2",
+			"object":      "response",
+			"status":      "completed",
+			"output_text": "no replay",
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	if _, err := conversationRepo.CreateConversation(conversations.Conversation{
+		ClientID:             "test",
+		TargetProviderFamily: "codex-router",
+		DefaultModel:         "gpt-5.4",
+		State:                "active",
+	}); err != nil {
+		t.Fatalf("CreateConversation returned error: %v", err)
+	}
+	if err := conversationRepo.AppendMessage(conversations.Message{
+		ConversationID: 1,
+		Role:           "user",
+		Content:        "should not be replayed",
+		SequenceNo:     0,
+	}); err != nil {
+		t.Fatalf("AppendMessage returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo, api.WithThinGatewayMode(true))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"previous_response_id":"upstream_prev_nonlocal",
+		"input":[{"role":"user","content":[{"type":"input_text","text":"fresh question"}]}],
+		"stream":false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"resp_upstream_current_2"`) {
+		t.Fatalf("response body = %s, want upstream response id", rec.Body.String())
+	}
+}
+
 func TestResponsesHandlerStreamsOfficialStyleLifecycleEvents(t *testing.T) {
 	t.Parallel()
 
