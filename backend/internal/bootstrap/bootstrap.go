@@ -23,6 +23,7 @@ type Config struct {
 	DatabasePath      string
 	SchedulerInterval time.Duration
 	EncryptionKey     string
+	ThinGatewayMode   bool
 }
 
 type App struct {
@@ -82,7 +83,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/settings/proxy/enable", settingsHandler)
 	apiMux.Handle("/settings/proxy/disable", settingsHandler)
 	gatewayHandler := api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo)
-	responsesHandler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo)
+	responsesHandler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo, api.WithThinGatewayMode(cfg.ThinGatewayMode))
 	apiMux.Handle("/chat/completions", api.RequireProxyEnabled(gatewayHandler))
 	apiMux.Handle("/v1/chat/completions", api.RequireProxyEnabled(gatewayHandler))
 	apiMux.Handle("/responses", api.RequireProxyEnabled(responsesHandler))

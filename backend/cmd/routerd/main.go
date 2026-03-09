@@ -20,6 +20,7 @@ func main() {
 		DatabasePath:      cfg.DatabasePath,
 		SchedulerInterval: cfg.SchedulerInterval,
 		EncryptionKey:     cfg.EncryptionKey,
+		ThinGatewayMode:   cfg.ThinGatewayMode,
 	})
 	if err != nil {
 		log.Fatalf("create app: %v", err)

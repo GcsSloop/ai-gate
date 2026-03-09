@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -47,11 +48,14 @@ type ResponsesRuns interface {
 }
 
 type ResponsesHandler struct {
-	accounts      ResponsesAccounts
-	usage         ResponsesUsage
-	conversations ResponsesRuns
-	client        *http.Client
+	accounts        ResponsesAccounts
+	usage           ResponsesUsage
+	conversations   ResponsesRuns
+	client          *http.Client
+	thinGatewayMode bool
 }
+
+type ResponsesHandlerOption func(*ResponsesHandler)
 
 type responsesExecutionResult struct {
 	Text        string
@@ -59,12 +63,24 @@ type responsesExecutionResult struct {
 	OutputItems []map[string]any
 }
 
-func NewResponsesHandler(accounts ResponsesAccounts, usage ResponsesUsage, conversations ResponsesRuns) *ResponsesHandler {
-	return &ResponsesHandler{
+func NewResponsesHandler(accounts ResponsesAccounts, usage ResponsesUsage, conversations ResponsesRuns, opts ...ResponsesHandlerOption) *ResponsesHandler {
+	handler := &ResponsesHandler{
 		accounts:      accounts,
 		usage:         usage,
 		conversations: conversations,
 		client:        http.DefaultClient,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(handler)
+		}
+	}
+	return handler
+}
+
+func WithThinGatewayMode(enabled bool) ResponsesHandlerOption {
+	return func(handler *ResponsesHandler) {
+		handler.thinGatewayMode = enabled
 	}
 }
 
@@ -94,9 +110,18 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Request) {
-	req, err := gatewayopenai.ParseResponsesRequest(r.Body)
+	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req, err := gatewayopenai.ParseResponsesRequest(bytes.NewReader(rawBody))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if h.thinGatewayMode {
+		h.handleResponsesThin(w, r, req, rawBody)
 		return
 	}
 	if req.Store != nil && *req.Store {
@@ -229,6 +254,88 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, buildResponsesResponse(responseID, req.Model, result.Text, "completed", newResponseItemID(), result.Snapshot, result.OutputItems))
+}
+
+func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Request, req gatewayopenai.ResponsesRequest, rawBody []byte) {
+	account, err := h.selectThinGatewayAccount()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if err := ensureOfficialAccountSession(r.Context(), h.client, h.accounts, &account); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	credential, err := resolveCredential(account)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	accountID, err := resolveLocalAccountID(account)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	adapter := providercodex.NewAdapter(resolveAccountBaseURL(account))
+	upstreamReq, err := adapter.BuildResponsesRequest(r.Context(), credential, accountID, rawBody, req.Stream)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	resp, err := h.client.Do(upstreamReq)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.Header().Set("OpenAI-Model", req.Model)
+	w.WriteHeader(resp.StatusCode)
+	copyResponseStream(w, resp.Body)
+}
+
+func (h *ResponsesHandler) selectThinGatewayAccount() (accounts.Account, error) {
+	accountList, err := h.accounts.List()
+	if err != nil {
+		return accounts.Account{}, err
+	}
+	for _, candidate := range routing.ScoreCandidates(h.buildCandidates(accountList)) {
+		if usesOfficialCodexAdapter(candidate.Account) {
+			return candidate.Account, nil
+		}
+	}
+	return accounts.Account{}, errors.New("thin gateway mode requires an official OpenAI account")
+}
+
+func copyResponseHeaders(dst, src http.Header) {
+	for key, values := range src {
+		dst.Del(key)
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func copyResponseStream(w http.ResponseWriter, body io.Reader) {
+	flusher, _ := w.(http.Flusher)
+	buffer := make([]byte, 32*1024)
+	for {
+		n, err := body.Read(buffer)
+		if n > 0 {
+			_, _ = w.Write(buffer[:n])
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			return
+		}
+	}
 }
 
 func (h *ResponsesHandler) handleModels(w http.ResponseWriter, _ *http.Request) {
