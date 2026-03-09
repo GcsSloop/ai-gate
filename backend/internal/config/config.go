@@ -20,16 +20,18 @@ type Config struct {
 	DatabasePath      string
 	SchedulerInterval time.Duration
 	EncryptionKey     string
+	ThinGatewayMode   bool
 }
 
 func Load() (Config, error) {
 	defaultDatabasePath := resolveDefaultDatabasePath()
-	cfg := Config{
-		ListenAddr:        readString("CODEX_ROUTER_LISTEN_ADDR", defaultListenAddr),
-		DatabasePath:      readString("CODEX_ROUTER_DATABASE_PATH", defaultDatabasePath),
-		SchedulerInterval: defaultSchedulerInterval,
-		EncryptionKey:     os.Getenv("CODEX_ROUTER_ENCRYPTION_KEY"),
-	}
+		cfg := Config{
+			ListenAddr:        readString("CODEX_ROUTER_LISTEN_ADDR", defaultListenAddr),
+			DatabasePath:      readString("CODEX_ROUTER_DATABASE_PATH", defaultDatabasePath),
+			SchedulerInterval: defaultSchedulerInterval,
+			EncryptionKey:     os.Getenv("CODEX_ROUTER_ENCRYPTION_KEY"),
+			ThinGatewayMode:   readBool("THIN_GATEWAY_MODE", true),
+		}
 
 	if value := os.Getenv("CODEX_ROUTER_SCHEDULER_INTERVAL"); value != "" {
 		parsed, err := time.ParseDuration(value)
@@ -62,6 +64,20 @@ func readString(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func readBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	case "":
+		return fallback
+	default:
+		return fallback
+	}
 }
 
 func validateLocalListenAddr(addr string) error {
