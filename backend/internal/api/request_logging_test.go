@@ -38,8 +38,11 @@ func TestLogResponsesRequestSummaryReadableAndRedacted(t *testing.T) {
 
 func TestResponsesHandlerLogsReadableRequestAndUpstreamSummary(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("path = %q, want /v1/responses", r.URL.Path)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"pong"}}]}`))
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","output_text":"pong"}`))
 	}))
 	defer upstream.Close()
 
@@ -52,13 +55,13 @@ func TestResponsesHandlerLogsReadableRequestAndUpstreamSummary(t *testing.T) {
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	if err := accountRepo.Create(accounts.Account{
 		ProviderType:      accounts.ProviderOpenAICompatible,
-		AllowChatFallback: true,
 		AccountName:       "ppchat-main",
 		AuthMode:          accounts.AuthModeAPIKey,
 		BaseURL:           upstream.URL + "/v1",
 		CredentialRef:     "sk-test-secret",
 		Status:            accounts.StatusActive,
 		Priority:          100,
+		SupportsResponses: true,
 	}); err != nil {
 		t.Fatalf("Create(account) returned error: %v", err)
 	}
@@ -108,7 +111,7 @@ func TestResponsesHandlerLogsReadableRequestAndUpstreamSummary(t *testing.T) {
 		`account_id=1`,
 		`account=ppchat-main`,
 		`provider=openai-compatible`,
-		`endpoint=/chat/completions`,
+		`endpoint=/responses`,
 		`model_upstream=gpt-5.4`,
 		`responses result`,
 	} {
@@ -244,7 +247,7 @@ func TestResponsesHandlerLogsThinGatewayCandidateSkipReason(t *testing.T) {
 		t.Fatalf("Save(snapshot) returned error: %v", err)
 	}
 
-	handler := NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()), WithThinGatewayMode(true))
+	handler := NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
 
 	var logs bytes.Buffer
 	previousWriter := log.Writer()
@@ -261,8 +264,8 @@ func TestResponsesHandlerLogsThinGatewayCandidateSkipReason(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 	output := logs.String()
 	for _, want := range []string{

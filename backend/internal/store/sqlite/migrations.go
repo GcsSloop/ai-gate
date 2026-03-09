@@ -17,7 +17,6 @@ var schemaStatements = []string{
 		priority INTEGER NOT NULL DEFAULT 0,
 		is_active INTEGER NOT NULL DEFAULT 0,
 		supports_responses INTEGER NOT NULL DEFAULT 0,
-		allow_chat_fallback INTEGER NOT NULL DEFAULT 0,
 		cooldown_until DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,

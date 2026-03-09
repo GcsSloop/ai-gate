@@ -242,7 +242,6 @@ func TestSQLiteRepositoryPersistsSupportsResponses(t *testing.T) {
 		BaseURL:           "https://example.test/v1",
 		Status:            accounts.StatusActive,
 		SupportsResponses: true,
-		AllowChatFallback: false,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}

@@ -89,8 +89,6 @@ export function AccountsPage() {
   const [officialForm] = Form.useForm();
   const [editForm] = Form.useForm();
   const [testForm] = Form.useForm();
-  const editAllowFallback = Form.useWatch("allow_chat_fallback", editForm) ?? false;
-
   useEffect(() => {
     void refreshAll();
   }, []);
@@ -122,7 +120,7 @@ export function AccountsPage() {
     }
   }
 
-  async function handleCreateThirdParty(values: { account_name: string; base_url: string; credential_ref: string; supports_responses?: boolean; allow_chat_fallback?: boolean }) {
+  async function handleCreateThirdParty(values: { account_name: string; base_url: string; credential_ref: string; supports_responses?: boolean }) {
     await createAccount({
       provider_type: "openai-compatible",
       account_name: values.account_name,
@@ -130,7 +128,6 @@ export function AccountsPage() {
       base_url: values.base_url,
       credential_ref: values.credential_ref,
       supports_responses: !!values.supports_responses,
-      allow_chat_fallback: !!values.allow_chat_fallback,
     });
     setAddModalMode(null);
     thirdPartyForm.resetFields();
@@ -153,11 +150,10 @@ export function AccountsPage() {
       base_url: account.base_url,
       credential_ref: "",
       supports_responses: !!account.supports_responses,
-      allow_chat_fallback: !!account.allow_chat_fallback,
     });
   }
 
-  async function handleEdit(values: { account_name: string; base_url: string; credential_ref?: string; supports_responses?: boolean; allow_chat_fallback?: boolean }) {
+  async function handleEdit(values: { account_name: string; base_url: string; credential_ref?: string; supports_responses?: boolean }) {
     if (!editingAccount) {
       return;
     }
@@ -166,7 +162,6 @@ export function AccountsPage() {
       base_url: values.base_url,
       credential_ref: values.credential_ref || undefined,
       supports_responses: !!values.supports_responses,
-      allow_chat_fallback: !!values.allow_chat_fallback,
     });
     setEditingAccount(null);
     editForm.resetFields();
@@ -432,7 +427,7 @@ export function AccountsPage() {
         <Form
           form={thirdPartyForm}
           layout="vertical"
-          initialValues={{ base_url: defaultBaseURL, supports_responses: true, allow_chat_fallback: false }}
+          initialValues={{ base_url: defaultBaseURL, supports_responses: true }}
           onFinish={(values) => void handleCreateThirdParty(values)}
         >
           <Form.Item label="账户名称" name="account_name" rules={[{ required: true, message: "请输入账户名称" }]}>
@@ -451,14 +446,6 @@ export function AccountsPage() {
             extra="仅在第三方供应商原生支持 /responses 时开启。薄网关模式不会做任何协议补偿。"
           >
             <Switch checkedChildren="已支持" unCheckedChildren="未支持" />
-          </Form.Item>
-          <Form.Item
-            label="回退配置"
-            name="allow_chat_fallback"
-            valuePropName="checked"
-            extra="默认关闭。关闭时强制使用 /responses；开启后当 /responses 不可用会回退 /chat/completions。"
-          >
-            <Switch checkedChildren="允许回退" unCheckedChildren="强制 responses" />
           </Form.Item>
           <div className="modal-footer">
             <Button onClick={() => setAddModalMode(null)}>取消</Button>
@@ -514,19 +501,6 @@ export function AccountsPage() {
             extra="仅在供应商原生支持 /responses 时开启。薄网关模式不会做任何协议补偿。"
           >
             <Switch checkedChildren="已支持" unCheckedChildren="未支持" />
-          </Form.Item>
-          <Form.Item label="回退状态">
-            <Button onClick={() => editForm.setFieldValue("allow_chat_fallback", !editAllowFallback)}>
-              {editAllowFallback ? "已开启回退（点击关闭）" : "已关闭回退（点击开启）"}
-            </Button>
-          </Form.Item>
-          <Form.Item
-            label="回退配置"
-            name="allow_chat_fallback"
-            valuePropName="checked"
-            extra="默认关闭。关闭时强制使用 /responses；开启后当 /responses 不可用会回退 /chat/completions。"
-          >
-            <Switch checkedChildren="允许回退" unCheckedChildren="强制 responses" />
           </Form.Item>
           <div className="modal-footer">
             <Button onClick={() => setEditingAccount(null)}>取消</Button>

@@ -101,6 +101,9 @@ func TestAccountsHandler(t *testing.T) {
 	if len(listed) != 2 {
 		t.Fatalf("GET /accounts returned %d items, want 2", len(listed))
 	}
+	if _, ok := listed[0]["allow_chat_fallback"]; ok {
+		t.Fatalf("GET /accounts item = %+v, want no allow_chat_fallback field", listed[0])
+	}
 	if listed[1]["cooldown_remaining_seconds"] == nil {
 		t.Fatal("cooldown_remaining_seconds missing from cooldown account")
 	}
@@ -307,7 +310,8 @@ func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 		"credential_ref":"sk-updated",
 		"status":"cooldown",
 		"priority":7,
-		"is_active":true
+		"is_active":true,
+		"supports_responses":true
 	}`))
 	updateReq.Header.Set("Content-Type", "application/json")
 	updateRec := httptest.NewRecorder()
@@ -331,6 +335,9 @@ func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 	}
 	if !listed[0].IsActive {
 		t.Fatal("IsActive = false, want true")
+	}
+	if !listed[0].SupportsResponses {
+		t.Fatal("SupportsResponses = false, want true")
 	}
 
 	testReq := httptest.NewRequest(http.MethodPost, "/accounts/1/test", bytes.NewBufferString(`{

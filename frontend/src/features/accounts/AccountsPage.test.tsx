@@ -124,7 +124,6 @@ describe("AccountsPage", () => {
             base_url: "https://code.ppchat.vip/v1",
             credential_ref: "sk-test",
             supports_responses: true,
-            allow_chat_fallback: false,
           }),
         }),
       );
@@ -134,6 +133,7 @@ describe("AccountsPage", () => {
     const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
     const responsesSwitch = within(editModal).getByLabelText("原生 /responses");
     expect(responsesSwitch).toBeInTheDocument();
+    expect(within(editModal).queryByText("回退配置")).not.toBeInTheDocument();
     fireEvent.click(responsesSwitch);
     fireEvent.click(within(editModal).getByRole("button", { name: /保\s*存/ }));
 
@@ -146,7 +146,6 @@ describe("AccountsPage", () => {
             account_name: "mirror-east",
             base_url: "https://code.ppchat.vip/v1",
             supports_responses: true,
-            allow_chat_fallback: false,
           }),
         }),
       );

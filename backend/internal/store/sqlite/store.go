@@ -78,7 +78,6 @@ func (s *Store) migrate() error {
 		{table: "account_usage_snapshots", name: "secondary_resets_at", definition: "DATETIME"},
 		{table: "accounts", name: "is_active", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "accounts", name: "supports_responses", definition: "INTEGER NOT NULL DEFAULT 0"},
-		{table: "accounts", name: "allow_chat_fallback", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "runs", name: "model", definition: "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := s.addColumnIfMissing(column.table, column.name, column.definition); err != nil {

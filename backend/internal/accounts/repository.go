@@ -41,8 +41,8 @@ func (r *SQLiteRepository) Create(account Account) error {
 	}
 
 	_, err = r.db.Exec(
-		`INSERT INTO accounts (provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, allow_chat_fallback, cooldown_until)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO accounts (provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, cooldown_until)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		account.ProviderType,
 		account.AccountName,
 		account.AuthMode,
@@ -52,7 +52,6 @@ func (r *SQLiteRepository) Create(account Account) error {
 		account.Priority,
 		boolToInt(account.IsActive),
 		boolToInt(account.SupportsResponses),
-		boolToInt(account.AllowChatFallback),
 		nullTime(account.CooldownUntil),
 	)
 	if err != nil {
@@ -63,7 +62,7 @@ func (r *SQLiteRepository) Create(account Account) error {
 
 func (r *SQLiteRepository) List() ([]Account, error) {
 	records, err := r.db.Query(
-		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, allow_chat_fallback, cooldown_until, created_at
+		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, cooldown_until, created_at
 		 FROM accounts
 		 ORDER BY priority DESC, id ASC`,
 	)
@@ -78,7 +77,6 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 		var cooldown sql.NullTime
 		var isActive int
 		var supportsResponses int
-		var allowChatFallback int
 
 		if err := records.Scan(
 			&account.ID,
@@ -91,7 +89,6 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 			&account.Priority,
 			&isActive,
 			&supportsResponses,
-			&allowChatFallback,
 			&cooldown,
 			&account.CreatedAt,
 		); err != nil {
@@ -102,8 +99,6 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 		if account.NativeResponsesCapable() {
 			account.SupportsResponses = true
 		}
-		account.AllowChatFallback = allowChatFallback == 1
-
 		if cooldown.Valid {
 			value := cooldown.Time.UTC()
 			account.CooldownUntil = &value
@@ -125,7 +120,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 
 func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 	row := r.db.QueryRow(
-		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, allow_chat_fallback, cooldown_until, created_at
+		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, cooldown_until, created_at
 		 FROM accounts WHERE id = ?`,
 		id,
 	)
@@ -134,7 +129,6 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 	var cooldown sql.NullTime
 	var isActive int
 	var supportsResponses int
-	var allowChatFallback int
 	if err := row.Scan(
 		&account.ID,
 		&account.ProviderType,
@@ -146,7 +140,6 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 		&account.Priority,
 		&isActive,
 		&supportsResponses,
-		&allowChatFallback,
 		&cooldown,
 		&account.CreatedAt,
 	); err != nil {
@@ -157,7 +150,6 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 	if account.NativeResponsesCapable() {
 		account.SupportsResponses = true
 	}
-	account.AllowChatFallback = allowChatFallback == 1
 	if cooldown.Valid {
 		value := cooldown.Time.UTC()
 		account.CooldownUntil = &value
@@ -179,7 +171,7 @@ func (r *SQLiteRepository) Update(account Account) error {
 
 	_, err = r.db.Exec(
 		`UPDATE accounts
-		 SET account_name = ?, base_url = ?, credential_ref = ?, status = ?, priority = ?, is_active = ?, supports_responses = ?, allow_chat_fallback = ?, cooldown_until = ?
+		 SET account_name = ?, base_url = ?, credential_ref = ?, status = ?, priority = ?, is_active = ?, supports_responses = ?, cooldown_until = ?
 		 WHERE id = ?`,
 		account.AccountName,
 		account.BaseURL,
@@ -188,7 +180,6 @@ func (r *SQLiteRepository) Update(account Account) error {
 		account.Priority,
 		boolToInt(account.IsActive),
 		boolToInt(account.SupportsResponses),
-		boolToInt(account.AllowChatFallback),
 		nullTime(account.CooldownUntil),
 		account.ID,
 	)

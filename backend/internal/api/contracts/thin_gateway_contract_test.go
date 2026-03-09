@@ -155,6 +155,5 @@ func newThinGatewayContractHandler(t *testing.T, baseURL string) http.Handler {
 		accountRepo,
 		usageRepo,
 		conversations.NewSQLiteRepository(store.DB()),
-		api.WithThinGatewayMode(true),
 	)
 }

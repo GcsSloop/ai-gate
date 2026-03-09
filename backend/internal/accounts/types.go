@@ -38,7 +38,6 @@ type Account struct {
 	Priority          int
 	IsActive          bool
 	SupportsResponses bool
-	AllowChatFallback bool
 	CooldownUntil     *time.Time
 	CreatedAt         time.Time
 }

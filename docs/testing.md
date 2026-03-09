@@ -32,10 +32,10 @@ Minimal checks:
 2. Send one non-stream request to `POST /ai-router/api/responses`
 3. Send one stream request to `POST /ai-router/api/responses` and verify the stream terminates with an upstream-aligned terminal event
 4. Switch between two official `auth.json` accounts and verify requests do not hang or lose terminal output
-5. From Codex CLI, run one short prompt and verify the router account list shows a run against the active official account
+5. From Codex CLI, run one short prompt and verify the router account list shows a run against the active account
 
-Thin gateway mode notes:
+Thin gateway notes:
 
-- Do not run third-party provider smoke tests in thin gateway mode.
+- Third-party smoke tests are valid only for providers that natively implement `/responses`.
 - Do not expect gateway-synthesized response retrieval endpoints to be available.
 - Treat upstream `response_id` as authoritative.

@@ -2,34 +2,35 @@
 
 ## 目标
 
-薄网关模式下，网关只承担四类职责：
+当前版本只保留薄网关职责，网关只承担四类职责：
 
-- 官方账号认证与刷新
-- 请求路由到官方上游
-- 官方请求体、响应体、SSE 事件的透明透传
+- 账号认证与刷新
+- 请求路由到原生 `/responses` 上游
+- 请求体、响应体、SSE 事件的透明透传
 - 审计日志与运行观测
 
-网关不承担本地代理编排、工具闭环、多轮补偿或第三方兼容适配。
+网关不承担本地代理编排、工具闭环、多轮补偿或协议兼容补偿。
 
 ## 保留能力
 
 - `POST /ai-router/api/v1/responses`
 - `GET /ai-router/api/v1/models`
 - 官方账号切换
-- 官方账号 token 刷新
+- 账号 token 刷新
+- 原生支持 `/responses` 的第三方账号
 - 基础运行记录与监控
 
 ## 禁用能力
 
-以下能力依赖网关本地语义，在薄网关模式下必须禁用，而不是本地伪实现：
+以下能力依赖网关本地语义，已经被删除，而不是保留为本地伪实现：
 
 - 本地生成 `response_id`
 - 用本地历史重放替代 `previous_response_id`
 - `/responses` 回退到 `/chat/completions`
-- 第三方 OpenAI 兼容供应商支持
 - 本地拼装 `/v1/responses/{id}`
 - 本地拼装 `/v1/responses/{id}/input_items`
 - 本地模拟 `/v1/responses/{id}/cancel`
+- 本地实现 `/v1/responses/input_tokens`
 - 本地实现 `/v1/responses/compact`
 
 ## 协议原则
@@ -54,12 +55,8 @@
 - `response_id` 推导
 - 多轮工具执行状态
 
-## 回滚
+## 账号要求
 
-设置：
-
-```bash
-THIN_GATEWAY_MODE=false
-```
-
-然后重启后端，恢复旧兼容路径。
+- 官方账号默认视为支持 `/responses`
+- 第三方账号创建时默认声明支持 `/responses`
+- 如果激活账号不支持 `/responses`，网关直接返回明确错误，不做回退

@@ -26,9 +26,6 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.SchedulerInterval != 5*time.Minute {
 		t.Fatalf("SchedulerInterval = %s, want %s", cfg.SchedulerInterval, 5*time.Minute)
 	}
-	if !cfg.ThinGatewayMode {
-		t.Fatal("ThinGatewayMode = false, want true by default")
-	}
 }
 
 func TestLoadRejectsShortEncryptionKey(t *testing.T) {
@@ -71,17 +68,5 @@ func TestLoadRejectsNonLocalListenAddr(t *testing.T) {
 	_, err := config.Load()
 	if err == nil {
 		t.Fatal("Load returned nil error, want localhost validation error")
-	}
-}
-
-func TestLoadParsesThinGatewayModeFromEnv(t *testing.T) {
-	t.Setenv("THIN_GATEWAY_MODE", "false")
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-	if cfg.ThinGatewayMode {
-		t.Fatal("ThinGatewayMode = true, want false from env")
 	}
 }

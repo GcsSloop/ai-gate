@@ -78,10 +78,11 @@ requires_openai_auth = true
 
 Notes:
 
-- Thin gateway mode is official-upstream only. Third-party OpenAI-compatible providers are out of scope.
-- Uploaded local `auth.json` accounts are treated as official Codex sessions and routed to `https://chatgpt.com/backend-api/codex`.
+- The router now runs in thin-gateway mode only.
+- Official `auth.json` accounts are routed to `https://chatgpt.com/backend-api/codex`.
+- Third-party accounts are supported only when they natively implement `/responses`; the router does not fall back to `/chat/completions`.
 - `response_id` and `previous_response_id` semantics are owned by the upstream service, not reconstructed locally.
-- Endpoints that require gateway-synthesized response state are disabled in thin gateway mode instead of being faked locally.
+- Endpoints that require gateway-synthesized response state are removed instead of being faked locally.
 - See [`docs/thin-gateway-mode.md`](docs/thin-gateway-mode.md) for the exact boundary.
 
 ## Tauri package for customers (GitLab CI)

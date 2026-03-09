@@ -76,7 +76,6 @@ type createAccountRequest struct {
 	BaseURL           string                `json:"base_url"`
 	CredentialRef     string                `json:"credential_ref"`
 	SupportsResponses *bool                 `json:"supports_responses"`
-	AllowChatFallback bool                  `json:"allow_chat_fallback"`
 }
 
 type importLocalAuthRequest struct {
@@ -97,7 +96,6 @@ type updateAccountRequest struct {
 	Priority          *int            `json:"priority"`
 	IsActive          *bool           `json:"is_active"`
 	SupportsResponses *bool           `json:"supports_responses"`
-	AllowChatFallback *bool           `json:"allow_chat_fallback"`
 }
 
 type accountTestResponse struct {
@@ -135,7 +133,6 @@ func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) 
 		CredentialRef:     req.CredentialRef,
 		Status:            accounts.StatusActive,
 		SupportsResponses: supportsResponses,
-		AllowChatFallback: req.AllowChatFallback,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -177,7 +174,6 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 		Priority                 int                   `json:"priority"`
 		IsActive                 bool                  `json:"is_active"`
 		SupportsResponses        bool                  `json:"supports_responses"`
-		AllowChatFallback        bool                  `json:"allow_chat_fallback"`
 	}
 
 	response := make([]responseItem, 0, len(accountList))
@@ -193,7 +189,6 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 			Priority:             account.Priority,
 			IsActive:             account.IsActive,
 			SupportsResponses:    account.SupportsResponses,
-			AllowChatFallback:    account.AllowChatFallback,
 			Balance:              0,
 			QuotaRemaining:       0,
 			RPMRemaining:         0,
@@ -359,7 +354,6 @@ func (h *AccountsHandler) importLocalAuth(w http.ResponseWriter, r *http.Request
 		BaseURL:           officialCodexBaseURL,
 		Status:            accounts.StatusActive,
 		SupportsResponses: true,
-		AllowChatFallback: false,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -403,7 +397,6 @@ func (h *AccountsHandler) importCurrentAuth(w http.ResponseWriter, r *http.Reque
 		BaseURL:           officialCodexBaseURL,
 		Status:            accounts.StatusActive,
 		SupportsResponses: true,
-		AllowChatFallback: false,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -456,9 +449,6 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 			}
 			log.Printf("accounts: active account updated account_id=%d account_name=%q", current.ID, current.AccountName)
 		}
-	}
-	if req.AllowChatFallback != nil {
-		current.AllowChatFallback = *req.AllowChatFallback
 	}
 	if req.SupportsResponses != nil {
 		current.SupportsResponses = *req.SupportsResponses
