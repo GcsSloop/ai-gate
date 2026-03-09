@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
 static ALLOW_DIRECT_EXIT: AtomicBool = AtomicBool::new(false);
@@ -24,6 +24,7 @@ const MENU_PROXY_ENABLE: &str = "proxy-enable";
 const MENU_PROXY_DISABLE: &str = "proxy-disable";
 const MENU_QUIT: &str = "quit";
 const MENU_ACCOUNT_PREFIX: &str = "account-select:";
+const BACKEND_STATE_CHANGED_EVENT: &str = "aigate-backend-state-changed";
 
 #[derive(Clone, Default)]
 struct ProxyStatusSnapshot {
@@ -37,6 +38,13 @@ struct AccountSummary {
     is_active: bool,
 }
 
+#[derive(Clone, Default)]
+struct TrayStateSnapshot {
+    proxy: ProxyStatusSnapshot,
+    accounts: Vec<AccountSummary>,
+    active_account_name: Option<String>,
+}
+
 struct HttpResponse {
     status: u16,
     body: String,
@@ -44,7 +52,7 @@ struct HttpResponse {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![force_exit_app])
+        .invoke_handler(tauri::generate_handler![force_exit_app, refresh_tray_state])
         .setup(|app| {
             let sidecar_path = resolve_sidecar_path(app.handle())?;
             let home_dir = app
@@ -117,15 +125,27 @@ fn force_exit_app<R: Runtime>(app: AppHandle<R>) {
     request_app_exit(&app);
 }
 
+#[tauri::command]
+fn refresh_tray_state<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    refresh_tray_state_from_backend(&app);
+    Ok(())
+}
+
 fn request_app_exit<R: Runtime>(app: &AppHandle<R>) {
     ALLOW_DIRECT_EXIT.store(true, Ordering::Relaxed);
     app.exit(0);
 }
 
 fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let tray_menu = build_tray_menu(app)?;
+    let tray_state = build_tray_state();
+    let tray_menu = build_tray_menu(app, &tray_state)?;
+    let tray_title = format_tray_title(
+        tray_state.proxy.enabled,
+        tray_state.active_account_name.as_deref(),
+    );
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&tray_menu)
+        .title(tray_title)
         .tooltip("AI Gate")
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
@@ -145,11 +165,11 @@ fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     Ok(())
 }
 
-fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, String> {
-    let proxy = fetch_proxy_status();
-    let accounts = fetch_accounts();
-
-    let proxy_status_text = if proxy.enabled {
+fn build_tray_menu<R: Runtime>(
+    app: &AppHandle<R>,
+    tray_state: &TrayStateSnapshot,
+) -> Result<Menu<R>, String> {
+    let proxy_status_text = if tray_state.proxy.enabled {
         "代理状态：已开启"
     } else {
         "代理状态：未开启"
@@ -163,15 +183,15 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, String> {
         .text(MENU_PROXY_DISABLE, "关闭代理")
         .separator();
 
-    if accounts.is_empty() {
+    if tray_state.accounts.is_empty() {
         builder = builder.text("accounts-empty", "Codex（无账户，请在主界面添加）");
     } else {
-        for account in accounts {
+        for account in &tray_state.accounts {
             let id = format!("{MENU_ACCOUNT_PREFIX}{}", account.id);
             let label = if account.is_active {
                 format!("✓ {}", account.name)
             } else {
-                account.name
+                account.name.clone()
             };
             builder = builder.text(id, label);
         }
@@ -184,14 +204,23 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, String> {
         .map_err(|e| format!("build tray menu failed: {e}"))
 }
 
-fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
+fn refresh_tray_state_from_backend<R: Runtime>(app: &AppHandle<R>) {
+    let tray_state = build_tray_state();
+    apply_tray_state(app, &tray_state);
+}
+
+fn apply_tray_state<R: Runtime>(app: &AppHandle<R>, tray_state: &TrayStateSnapshot) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    let Ok(menu) = build_tray_menu(app) else {
+    let Ok(menu) = build_tray_menu(app, tray_state) else {
         return;
     };
     let _ = tray.set_menu(Some(menu));
+    let _ = tray.set_title(Some(format_tray_title(
+        tray_state.proxy.enabled,
+        tray_state.active_account_name.as_deref(),
+    )));
 }
 
 fn handle_tray_menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
@@ -221,12 +250,13 @@ fn handle_tray_menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
     }
 
     if should_refresh_tray_after_action(id) {
-        refresh_tray_menu(app);
+        refresh_tray_state_from_backend(app);
+        emit_backend_state_changed(app);
     }
 }
 
 fn should_refresh_tray_after_action(id: &str) -> bool {
-    id != MENU_OPEN_MAIN
+    id != MENU_OPEN_MAIN && id != MENU_QUIT
 }
 
 fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
@@ -312,6 +342,33 @@ fn fetch_accounts() -> Vec<AccountSummary> {
         .collect()
 }
 
+fn build_tray_state() -> TrayStateSnapshot {
+    let proxy = fetch_proxy_status();
+    let accounts = fetch_accounts();
+    let active_account_name = accounts
+        .iter()
+        .find(|account| account.is_active)
+        .map(|account| account.name.clone());
+    TrayStateSnapshot {
+        proxy,
+        accounts,
+        active_account_name,
+    }
+}
+
+fn format_tray_title(proxy_enabled: bool, active_account_name: Option<&str>) -> String {
+    let indicator = if proxy_enabled { "§" } else { "·" };
+    let account_name = active_account_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("无账户");
+    format!("{indicator} {account_name}")
+}
+
+fn emit_backend_state_changed<R: Runtime>(app: &AppHandle<R>) {
+    let _ = app.emit_to("main", BACKEND_STATE_CHANGED_EVENT, ());
+}
+
 fn request_backend(method: &str, path: &str, body: &str) -> Result<HttpResponse, String> {
     let mut stream = TcpStream::connect(BACKEND_ADDR).map_err(|e| format!("connect backend failed: {e}"))?;
     let request = format!(
@@ -392,7 +449,9 @@ fn shutdown_sidecar() {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_account_menu_id, should_refresh_tray_after_action};
+    use super::{
+        format_tray_title, parse_account_menu_id, should_refresh_tray_after_action,
+    };
 
     #[test]
     fn parse_account_menu_id_accepts_valid_ids() {
@@ -414,7 +473,28 @@ mod tests {
     fn tray_refresh_runs_for_stateful_actions() {
         assert!(should_refresh_tray_after_action("proxy-enable"));
         assert!(should_refresh_tray_after_action("proxy-disable"));
-        assert!(should_refresh_tray_after_action("quit"));
         assert!(should_refresh_tray_after_action("account-select:7"));
+    }
+
+    #[test]
+    fn tray_refresh_skips_non_stateful_actions() {
+        assert!(!should_refresh_tray_after_action("open-main"));
+        assert!(!should_refresh_tray_after_action("quit"));
+    }
+
+    #[test]
+    fn tray_title_formats_proxy_enabled_with_account() {
+        assert_eq!(format_tray_title(true, Some("team")), "§ team");
+    }
+
+    #[test]
+    fn tray_title_formats_proxy_disabled_with_account() {
+        assert_eq!(format_tray_title(false, Some("team")), "· team");
+    }
+
+    #[test]
+    fn tray_title_formats_no_account() {
+        assert_eq!(format_tray_title(false, None), "· 无账户");
+        assert_eq!(format_tray_title(true, None), "§ 无账户");
     }
 }

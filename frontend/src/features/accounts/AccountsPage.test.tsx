@@ -1,8 +1,17 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
+import { refreshDesktopTrayState } from "../../lib/desktop-shell";
 import { AccountsPage } from "./AccountsPage";
 
+vi.mock("../../lib/desktop-shell", () => ({
+  refreshDesktopTrayState: vi.fn(),
+}));
+
 describe("AccountsPage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("supports official upload, third-party create, and chat test in a single dashboard", async () => {
     const accountList = [
       {
@@ -251,6 +260,9 @@ describe("AccountsPage", () => {
           body: JSON.stringify({ is_active: true }),
         }),
       );
+    });
+    await waitFor(() => {
+      expect(refreshDesktopTrayState).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -29,6 +29,7 @@ import {
   type AccountRecord,
   type AccountTestResult,
 } from "../../lib/api";
+import { refreshDesktopTrayState } from "../../lib/desktop-shell";
 
 const { Title, Text } = Typography;
 
@@ -76,7 +77,11 @@ function formatResetAt(value?: string) {
   return date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }
 
-export function AccountsPage() {
+type AccountsPageProps = {
+  syncToken?: number;
+};
+
+export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
   const [messageApi, contextHolder] = message.useMessage();
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [addModalMode, setAddModalMode] = useState<AddModalMode>(null);
@@ -91,7 +96,7 @@ export function AccountsPage() {
   const [testForm] = Form.useForm();
   useEffect(() => {
     void refreshAll();
-  }, []);
+  }, [syncToken]);
 
   async function refreshAll() {
     const accountItems = await listAccounts();
@@ -132,6 +137,7 @@ export function AccountsPage() {
     setAddModalMode(null);
     thirdPartyForm.resetFields();
     await refreshAll();
+    void refreshDesktopTrayState();
     void messageApi.success("第三方账户已添加");
   }
 
@@ -140,6 +146,7 @@ export function AccountsPage() {
     officialForm.resetFields();
     setAddModalMode(null);
     await refreshAll();
+    void refreshDesktopTrayState();
     void messageApi.success("官方账户已导入");
   }
 
@@ -166,12 +173,14 @@ export function AccountsPage() {
     setEditingAccount(null);
     editForm.resetFields();
     await refreshAll();
+    void refreshDesktopTrayState();
     void messageApi.success("账户已更新");
   }
 
   async function handleDelete(account: AccountRecord) {
     await deleteAccount(account.id);
     await refreshAll();
+    void refreshDesktopTrayState();
     void messageApi.success(`已删除账户 ${account.account_name}`);
   }
 
@@ -206,6 +215,7 @@ export function AccountsPage() {
         const account = reordered[index];
         await updateAccount(account.id, { priority: reordered.length - index });
       }
+      void refreshDesktopTrayState();
       void messageApi.success("优先级顺序已更新");
     } catch (error) {
       setAccounts(previous);
@@ -226,6 +236,7 @@ export function AccountsPage() {
     );
     try {
       await updateAccount(account.id, { is_active: true });
+      void refreshDesktopTrayState();
       void messageApi.success(`已切换当前激活账户为 ${account.account_name}`);
     } catch (error) {
       setAccounts(previous);
