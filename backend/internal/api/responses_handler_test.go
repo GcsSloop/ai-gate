@@ -319,6 +319,93 @@ func TestResponsesHandlerThinModeThirdPartyResponsesPassthrough(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerThinModeRetriesOfficialEOFOnce(t *testing.T) {
+	t.Parallel()
+
+	var attempts int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("upstream path = %q, want /backend-api/codex/responses", r.URL.Path)
+		}
+		if attempts == 1 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("ResponseWriter does not support hijacking")
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("Hijack returned error: %v", err)
+			}
+			_ = conn.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "resp_retry_ok",
+			"object":      "response",
+			"status":      "completed",
+			"output_text": "official-after-retry",
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:   accounts.StatusActive,
+		Priority: 100,
+		IsActive: true,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()), api.WithThinGatewayMode(true))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{
+		"model":"gpt-5.4",
+		"input":"ping",
+		"stream":false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"resp_retry_ok"`) {
+		t.Fatalf("response body = %s, want retry response id", rec.Body.String())
+	}
+}
+
 func TestResponsesHandlerThinModePassthroughSSE(t *testing.T) {
 	t.Parallel()
 

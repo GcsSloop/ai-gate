@@ -2,8 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -103,14 +107,16 @@ func logResultSummary(kind string, conversationID int64, accountID int64, status
 }
 
 func logFailureSummary(kind string, conversationID int64, accountID int64, stage string, startedAt time.Time, err error) {
+	details := summarizeTransportError(err)
 	log.Printf(
-		"%s failure conversation_id=%d account_id=%d stage=%s duration_ms=%d err=%q",
+		"%s failure conversation_id=%d account_id=%d stage=%s duration_ms=%d err=%q%s",
 		kind,
 		conversationID,
 		accountID,
 		stage,
 		time.Since(startedAt).Milliseconds(),
 		err,
+		details,
 	)
 }
 
@@ -170,4 +176,34 @@ func previewText(text string) string {
 		return normalized
 	}
 	return string(runes[:requestLogPreviewLimit]) + "..."
+}
+
+func summarizeTransportError(err error) string {
+	if err == nil {
+		return ""
+	}
+	errKind := "generic"
+	urlOp := ""
+	timeout := false
+	eof := errors.Is(err, io.EOF)
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		errKind = "url_error"
+		urlOp = strings.TrimSpace(urlErr.Op)
+		timeout = urlErr.Timeout()
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if errKind == "generic" {
+			errKind = "net_error"
+		}
+		timeout = timeout || netErr.Timeout()
+	}
+
+	if urlOp != "" {
+		return fmt.Sprintf(" err_kind=%s url_op=%s timeout=%t eof=%t", errKind, urlOp, timeout, eof)
+	}
+	return fmt.Sprintf(" err_kind=%s timeout=%t eof=%t", errKind, timeout, eof)
 }

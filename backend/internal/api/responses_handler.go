@@ -285,14 +285,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 	}
 	startedAt := time.Now()
 	logUpstreamSummary("responses", conversationID, account, "/responses", req.Model)
-	upstreamReq, err := h.buildThinResponsesProxyRequest(r.Context(), account, credential, rawBody, req.Stream)
-	if err != nil {
-		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
-		logFailureSummary("responses", conversationID, account.ID, "build_request", startedAt, err)
-		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
-		return
-	}
-	resp, err := h.client.Do(upstreamReq)
+	resp, err := h.executeThinResponsesUpstreamRequest(r.Context(), account, credential, rawBody, req.Stream, conversationID, req.Model, startedAt)
 	if err != nil {
 		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
 		logFailureSummary("responses", conversationID, account.ID, "upstream_request", startedAt, err)
@@ -340,6 +333,37 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 	_, _ = w.Write(responseBody)
 }
 
+func (h *ResponsesHandler) executeThinResponsesUpstreamRequest(ctx context.Context, account accounts.Account, credential string, rawBody []byte, stream bool, conversationID int64, model string, startedAt time.Time) (*http.Response, error) {
+	attempts := 1
+	if usesOfficialCodexAdapter(account) {
+		attempts = 2
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		upstreamReq, err := h.buildThinResponsesProxyRequest(ctx, account, credential, rawBody, stream)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := h.client.Do(upstreamReq)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempt == attempts || !shouldRetryOfficialResponsesTransportError(account, err) {
+			break
+		}
+		log.Printf(
+			"responses retry conversation_id=%d account_id=%d provider=%s endpoint=/responses model=%s attempt=%d reason=transport_eof",
+			conversationID,
+			account.ID,
+			account.ProviderType,
+			model,
+			attempt+1,
+		)
+	}
+	return nil, lastErr
+}
+
 func (h *ResponsesHandler) buildThinResponsesProxyRequest(ctx context.Context, account accounts.Account, credential string, rawBody []byte, stream bool) (*http.Request, error) {
 	if usesOfficialCodexAdapter(account) {
 		accountID, err := resolveLocalAccountID(account)
@@ -354,6 +378,10 @@ func (h *ResponsesHandler) buildThinResponsesProxyRequest(ctx context.Context, a
 		APIKey: credential,
 		Body:   rawBody,
 	})
+}
+
+func shouldRetryOfficialResponsesTransportError(account accounts.Account, err error) bool {
+	return usesOfficialCodexAdapter(account) && errors.Is(err, io.EOF)
 }
 
 func (h *ResponsesHandler) selectThinGatewayAccount() (accounts.Account, error) {

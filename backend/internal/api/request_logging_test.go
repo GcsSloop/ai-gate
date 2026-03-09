@@ -3,13 +3,16 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
@@ -269,5 +272,46 @@ func TestResponsesHandlerLogsThinGatewayCandidateSkipReason(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("logs = %s, want substring %q", output, want)
 		}
+	}
+}
+
+func TestLogFailureSummaryIncludesTransportDiagnostics(t *testing.T) {
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	}()
+
+	logFailureSummary(
+		"responses",
+		99,
+		14,
+		"upstream_request",
+		time.Now(),
+		&url.Error{Op: "Post", URL: "https://chatgpt.com/backend-api/codex/responses", Err: io.EOF},
+	)
+
+	output := logs.String()
+	for _, want := range []string{
+		`stage=upstream_request`,
+		`err_kind=url_error`,
+		`url_op=Post`,
+		`eof=true`,
+		`timeout=false`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("logs = %s, want substring %q", output, want)
+		}
+	}
+	if strings.Contains(output, "Authorization") {
+		t.Fatalf("logs = %s, should not contain Authorization", output)
+	}
+
+	if errors.Is(io.EOF, io.EOF) == false {
+		t.Fatal("sanity check failed")
 	}
 }
