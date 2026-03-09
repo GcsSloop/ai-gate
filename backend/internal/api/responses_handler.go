@@ -272,19 +272,19 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 	conversationID, nextSequence := h.startThinAudit(r, req, account.ID, inputItems)
 	if err := ensureOfficialAccountSession(r.Context(), h.client, h.accounts, &account); err != nil {
 		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
 		return
 	}
 	credential, err := resolveCredential(account)
 	if err != nil {
 		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
 		return
 	}
 	accountID, err := resolveLocalAccountID(account)
 	if err != nil {
 		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
 		return
 	}
 
@@ -292,13 +292,13 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 	upstreamReq, err := adapter.BuildResponsesRequest(r.Context(), credential, accountID, rawBody, req.Stream)
 	if err != nil {
 		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
 		return
 	}
 	resp, err := h.client.Do(upstreamReq)
 	if err != nil {
 		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -308,11 +308,12 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		runStatus = runStatusForErrorClass(classifyRunError(providers.HTTPError{StatusCode: resp.StatusCode}))
 	}
 	copyResponseHeaders(w.Header(), resp.Header)
-	w.Header().Set("OpenAI-Model", req.Model)
-	w.WriteHeader(resp.StatusCode)
 	if isEventStreamResponse(resp.Header) {
+		w.Header().Set("OpenAI-Model", req.Model)
+		w.WriteHeader(resp.StatusCode)
 		if err := copyResponseStream(w, resp.Body); err != nil {
 			runStatus = runStatusForErrorClass(classifyRunError(err))
+			writeThinGatewayFailure(w, true, http.StatusBadGateway, err)
 		}
 		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatus)
 		return
@@ -321,6 +322,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
+		writeThinGatewayFailure(w, false, http.StatusBadGateway, err)
 		return
 	}
 	if resp.StatusCode < 400 {
@@ -328,6 +330,8 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		h.appendThinAuditOutput(conversationID, nextSequence, result)
 	}
 	h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatus)
+	w.Header().Set("OpenAI-Model", req.Model)
+	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(responseBody)
 }
 
@@ -590,6 +594,36 @@ func writeThinGatewayUnsupported(w http.ResponseWriter, message string) {
 			"type":    "invalid_request_error",
 			"code":    "thin_gateway_unsupported",
 			"message": message,
+		},
+	})
+}
+
+func writeThinGatewayFailure(w http.ResponseWriter, stream bool, statusCode int, err error) {
+	if stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		payload, marshalErr := json.Marshal(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":    "server_error",
+				"code":    "thin_gateway_upstream_error",
+				"message": err.Error(),
+			},
+		})
+		if marshalErr == nil {
+			_, _ = w.Write([]byte("data: " + string(payload) + "\n\n"))
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return
+	}
+	writeJSON(w, statusCode, map[string]any{
+		"error": map[string]any{
+			"type":    "server_error",
+			"code":    "thin_gateway_upstream_error",
+			"message": err.Error(),
 		},
 	})
 }

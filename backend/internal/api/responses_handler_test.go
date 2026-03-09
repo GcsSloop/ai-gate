@@ -512,6 +512,112 @@ func TestThinModeStorageNotUsedForProtocol(t *testing.T) {
 	}
 }
 
+func TestThinModeAccountSwitchIsolated(t *testing.T) {
+	t.Parallel()
+
+	requestTokens := make([]string, 0, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestTokens = append(requestTokens, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "resp_account_switch",
+			"object":      "response",
+			"status":      "completed",
+			"output_text": "ok",
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, account := range []accounts.Account{
+		{
+			ProviderType: accounts.ProviderOpenAIOfficial,
+			AccountName:  "official-1",
+			AuthMode:     accounts.AuthModeLocalImport,
+			BaseURL:      upstream.URL + "/backend-api/codex",
+			CredentialRef: `{
+				"auth_mode":"chatgpt",
+				"tokens":{"access_token":"token-1","account_id":"acct-1"}
+			}`,
+			Status:   accounts.StatusActive,
+			Priority: 100,
+		},
+		{
+			ProviderType: accounts.ProviderOpenAIOfficial,
+			AccountName:  "official-2",
+			AuthMode:     accounts.AuthModeLocalImport,
+			BaseURL:      upstream.URL + "/backend-api/codex",
+			CredentialRef: `{
+				"auth_mode":"chatgpt",
+				"tokens":{"access_token":"token-2","account_id":"acct-2"}
+			}`,
+			Status:   accounts.StatusActive,
+			Priority: 90,
+		},
+	} {
+		if err := accountRepo.Create(account); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for id := int64(1); id <= 2; id++ {
+		if err := usageRepo.Save(usage.Snapshot{
+			AccountID:      id,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.9,
+		}); err != nil {
+			t.Fatalf("Save snapshot %d returned error: %v", id, err)
+		}
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()), api.WithThinGatewayMode(true))
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"first"}`))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("first POST /v1/responses status = %d, want %d", firstRec.Code, http.StatusOK)
+	}
+
+	account2, err := accountRepo.GetByID(2)
+	if err != nil {
+		t.Fatalf("GetByID returned error: %v", err)
+	}
+	account2.IsActive = true
+	if err := accountRepo.Update(account2); err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"second"}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondRec := httptest.NewRecorder()
+	handler.ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("second POST /v1/responses status = %d, want %d", secondRec.Code, http.StatusOK)
+	}
+
+	if len(requestTokens) != 2 {
+		t.Fatalf("requestTokens = %v, want two requests", requestTokens)
+	}
+	if requestTokens[0] != "Bearer token-1" {
+		t.Fatalf("first Authorization = %q, want Bearer token-1", requestTokens[0])
+	}
+	if requestTokens[1] != "Bearer token-2" {
+		t.Fatalf("second Authorization = %q, want Bearer token-2", requestTokens[1])
+	}
+}
+
 func TestResponsesHandlerProxiesLocalImportedOfficialAccount(t *testing.T) {
 	t.Parallel()
 
