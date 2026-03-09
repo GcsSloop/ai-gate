@@ -10,9 +10,11 @@ import (
 type ResponsesRequest struct {
 	Model              string          `json:"model"`
 	Stream             bool            `json:"stream"`
+	Store              *bool           `json:"store"`
 	Input              json.RawMessage `json:"input"`
 	PreviousResponseID string          `json:"previous_response_id"`
 	Instructions       string          `json:"instructions"`
+	Text               json.RawMessage `json:"text"`
 	Tools              json.RawMessage `json:"tools"`
 	ToolChoice         json.RawMessage `json:"tool_choice"`
 	ParallelToolCalls  *bool           `json:"parallel_tool_calls"`

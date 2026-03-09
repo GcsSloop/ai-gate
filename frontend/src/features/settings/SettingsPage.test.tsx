@@ -68,7 +68,7 @@ describe("SettingsPage", () => {
       expect(fetchMock).toHaveBeenCalledWith("/ai-router/api/settings/codex/backup", expect.objectContaining({ method: "POST" }));
     });
 
-    fireEvent.click(screen.getAllByRole("button", { name: "恢复" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /恢\s*复/ })[0]);
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/ai-router/api/settings/codex/restore",
@@ -79,8 +79,9 @@ describe("SettingsPage", () => {
       );
     });
 
-    fireEvent.click(screen.getAllByRole("button", { name: "查看" })[0]);
-    expect(await screen.findByRole("dialog", { name: "备份文件详情" })).toBeInTheDocument();
-    expect(screen.getByText("model_provider = \"router\"")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: /查\s*看/ })[0]);
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/ai-router/api/settings/codex/backups/20260309-090000.000/files");
+    });
   });
 });

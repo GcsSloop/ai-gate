@@ -529,7 +529,8 @@ func aigateProviderBlock() string {
 name = "aigate"
 base_url = "http://127.0.0.1:6789/ai-router/api"
 wire_api = "responses"
-requires_openai_auth = true`
+requires_openai_auth = true
+store = false`
 }
 
 func hashString(value string) string {
@@ -620,7 +621,7 @@ func isThirdPartyProvider(content string, provider string) bool {
 func ensureAigateProvider(content string) string {
 	// Always normalize to a single canonical [model_providers.aigate] section.
 	// This avoids duplicate-section parse errors from historical/broken config files.
-	withoutAigate := removeProviderSections(content, "aigate")
+	withoutAigate := removeAigateProviderDefinitions(content)
 	base := strings.TrimSpace(withoutAigate)
 	if base == "" {
 		return aigateProviderBlock() + "\n"
@@ -677,6 +678,46 @@ func removeProviderSections(content string, provider string) string {
 		}
 		if inTarget {
 			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+func removeAigateProviderDefinitions(content string) string {
+	lines := strings.Split(content, "\n")
+	const targetSection = "[model_providers.aigate]"
+	aigateInlineRE := regexp.MustCompile(`^aigate\s*=`)
+	inAigateSection := false
+	inModelProvidersSection := false
+	var kept []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inAigateSection = false
+			inModelProvidersSection = false
+			if trimmed == targetSection || strings.HasPrefix(trimmed, "[model_providers.aigate.") {
+				inAigateSection = true
+				continue
+			}
+			if trimmed == "[model_providers]" {
+				inModelProvidersSection = true
+			}
+		}
+		if inAigateSection {
+			continue
+		}
+		// Remove dotted-key definitions like:
+		// model_providers.aigate.base_url = "..."
+		if strings.HasPrefix(trimmed, "model_providers.aigate.") {
+			continue
+		}
+		// Remove inline table definitions under [model_providers]:
+		// aigate = { ... }
+		if inModelProvidersSection {
+			if aigateInlineRE.MatchString(trimmed) {
+				continue
+			}
 		}
 		kept = append(kept, line)
 	}

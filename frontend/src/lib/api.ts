@@ -9,6 +9,7 @@ export type AccountRecord = {
   status: string;
   priority: number;
   is_active: boolean;
+  allow_chat_fallback?: boolean;
   cooldown_remaining_seconds?: number;
   balance: number;
   quota_remaining: number;
@@ -50,6 +51,7 @@ export type CreateAccountPayload = {
   auth_mode: string;
   base_url: string;
   credential_ref: string;
+  allow_chat_fallback?: boolean;
 };
 
 export type DashboardSummary = {
@@ -121,7 +123,7 @@ export async function createAccount(payload: CreateAccountPayload): Promise<void
 
 export async function updateAccount(
   id: number,
-  payload: Partial<CreateAccountPayload> & { account_name?: string; status?: string; priority?: number; is_active?: boolean },
+  payload: Partial<CreateAccountPayload> & { account_name?: string; status?: string; priority?: number; is_active?: boolean; allow_chat_fallback?: boolean },
 ): Promise<void> {
   const response = await fetch(apiPath(`/accounts/${id}`), {
     method: "PUT",

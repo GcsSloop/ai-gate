@@ -28,15 +28,16 @@ const (
 )
 
 type Account struct {
-	ID            int64
-	ProviderType  ProviderType
-	AccountName   string
-	AuthMode      AuthMode
-	CredentialRef string
-	BaseURL       string
-	Status        Status
-	Priority      int
-	IsActive      bool
-	CooldownUntil *time.Time
-	CreatedAt     time.Time
+	ID                int64
+	ProviderType      ProviderType
+	AccountName       string
+	AuthMode          AuthMode
+	CredentialRef     string
+	BaseURL           string
+	Status            Status
+	Priority          int
+	IsActive          bool
+	AllowChatFallback bool
+	CooldownUntil     *time.Time
+	CreatedAt         time.Time
 }

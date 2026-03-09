@@ -70,11 +70,12 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type createAccountRequest struct {
-	ProviderType  accounts.ProviderType `json:"provider_type"`
-	AccountName   string                `json:"account_name"`
-	AuthMode      accounts.AuthMode     `json:"auth_mode"`
-	BaseURL       string                `json:"base_url"`
-	CredentialRef string                `json:"credential_ref"`
+	ProviderType      accounts.ProviderType `json:"provider_type"`
+	AccountName       string                `json:"account_name"`
+	AuthMode          accounts.AuthMode     `json:"auth_mode"`
+	BaseURL           string                `json:"base_url"`
+	CredentialRef     string                `json:"credential_ref"`
+	AllowChatFallback bool                  `json:"allow_chat_fallback"`
 }
 
 type importLocalAuthRequest struct {
@@ -88,12 +89,13 @@ type importCurrentAuthRequest struct {
 }
 
 type updateAccountRequest struct {
-	AccountName   string          `json:"account_name"`
-	BaseURL       string          `json:"base_url"`
-	CredentialRef string          `json:"credential_ref"`
-	Status        accounts.Status `json:"status"`
-	Priority      *int            `json:"priority"`
-	IsActive      *bool           `json:"is_active"`
+	AccountName       string          `json:"account_name"`
+	BaseURL           string          `json:"base_url"`
+	CredentialRef     string          `json:"credential_ref"`
+	Status            accounts.Status `json:"status"`
+	Priority          *int            `json:"priority"`
+	IsActive          *bool           `json:"is_active"`
+	AllowChatFallback *bool           `json:"allow_chat_fallback"`
 }
 
 type accountTestResponse struct {
@@ -116,12 +118,13 @@ func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) 
 	}
 
 	err := h.repo.Create(accounts.Account{
-		ProviderType:  req.ProviderType,
-		AccountName:   req.AccountName,
-		AuthMode:      req.AuthMode,
-		BaseURL:       req.BaseURL,
-		CredentialRef: req.CredentialRef,
-		Status:        accounts.StatusActive,
+		ProviderType:      req.ProviderType,
+		AccountName:       req.AccountName,
+		AuthMode:          req.AuthMode,
+		BaseURL:           req.BaseURL,
+		CredentialRef:     req.CredentialRef,
+		Status:            accounts.StatusActive,
+		AllowChatFallback: req.AllowChatFallback,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -162,6 +165,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 		SecondaryResetsAt        *time.Time            `json:"secondary_resets_at,omitempty"`
 		Priority                 int                   `json:"priority"`
 		IsActive                 bool                  `json:"is_active"`
+		AllowChatFallback        bool                  `json:"allow_chat_fallback"`
 	}
 
 	response := make([]responseItem, 0, len(accountList))
@@ -176,6 +180,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 			Status:           account.Status,
 			Priority:         account.Priority,
 			IsActive:         account.IsActive,
+			AllowChatFallback: account.AllowChatFallback,
 			Balance:          0,
 			QuotaRemaining:   0,
 			RPMRemaining:     0,
@@ -334,12 +339,13 @@ func (h *AccountsHandler) importLocalAuth(w http.ResponseWriter, r *http.Request
 	}
 
 	err = h.repo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAIOfficial,
-		AccountName:   accountName,
-		AuthMode:      accounts.AuthModeLocalImport,
-		CredentialRef: string(raw),
-		BaseURL:       officialCodexBaseURL,
-		Status:        accounts.StatusActive,
+		ProviderType:      accounts.ProviderOpenAIOfficial,
+		AccountName:       accountName,
+		AuthMode:          accounts.AuthModeLocalImport,
+		CredentialRef:     string(raw),
+		BaseURL:           officialCodexBaseURL,
+		Status:            accounts.StatusActive,
+		AllowChatFallback: false,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -376,12 +382,13 @@ func (h *AccountsHandler) importCurrentAuth(w http.ResponseWriter, r *http.Reque
 	}
 
 	err = h.repo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAIOfficial,
-		AccountName:   accountName,
-		AuthMode:      accounts.AuthModeLocalImport,
-		CredentialRef: string(raw),
-		BaseURL:       officialCodexBaseURL,
-		Status:        accounts.StatusActive,
+		ProviderType:      accounts.ProviderOpenAIOfficial,
+		AccountName:       accountName,
+		AuthMode:          accounts.AuthModeLocalImport,
+		CredentialRef:     string(raw),
+		BaseURL:           officialCodexBaseURL,
+		Status:            accounts.StatusActive,
+		AllowChatFallback: false,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -434,6 +441,9 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 			}
 			log.Printf("accounts: active account updated account_id=%d account_name=%q", current.ID, current.AccountName)
 		}
+	}
+	if req.AllowChatFallback != nil {
+		current.AllowChatFallback = *req.AllowChatFallback
 	}
 
 	if err := h.repo.Update(current); err != nil {

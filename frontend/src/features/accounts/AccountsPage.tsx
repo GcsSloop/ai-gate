@@ -9,6 +9,7 @@ import {
   Modal,
   Select,
   Space,
+  Switch,
   Table,
   Tag,
   Typography,
@@ -88,6 +89,7 @@ export function AccountsPage() {
   const [officialForm] = Form.useForm();
   const [editForm] = Form.useForm();
   const [testForm] = Form.useForm();
+  const editAllowFallback = Form.useWatch("allow_chat_fallback", editForm) ?? false;
 
   useEffect(() => {
     void refreshAll();
@@ -120,13 +122,14 @@ export function AccountsPage() {
     }
   }
 
-  async function handleCreateThirdParty(values: { account_name: string; base_url: string; credential_ref: string }) {
+  async function handleCreateThirdParty(values: { account_name: string; base_url: string; credential_ref: string; allow_chat_fallback?: boolean }) {
     await createAccount({
       provider_type: "openai-compatible",
       account_name: values.account_name,
       auth_mode: "api_key",
       base_url: values.base_url,
       credential_ref: values.credential_ref,
+      allow_chat_fallback: !!values.allow_chat_fallback,
     });
     setAddModalMode(null);
     thirdPartyForm.resetFields();
@@ -148,10 +151,11 @@ export function AccountsPage() {
       account_name: account.account_name,
       base_url: account.base_url,
       credential_ref: "",
+      allow_chat_fallback: !!account.allow_chat_fallback,
     });
   }
 
-  async function handleEdit(values: { account_name: string; base_url: string; credential_ref?: string }) {
+  async function handleEdit(values: { account_name: string; base_url: string; credential_ref?: string; allow_chat_fallback?: boolean }) {
     if (!editingAccount) {
       return;
     }
@@ -159,6 +163,7 @@ export function AccountsPage() {
       account_name: values.account_name,
       base_url: values.base_url,
       credential_ref: values.credential_ref || undefined,
+      allow_chat_fallback: !!values.allow_chat_fallback,
     });
     setEditingAccount(null);
     editForm.resetFields();
@@ -415,7 +420,7 @@ export function AccountsPage() {
         <Form
           form={thirdPartyForm}
           layout="vertical"
-          initialValues={{ base_url: defaultBaseURL }}
+          initialValues={{ base_url: defaultBaseURL, allow_chat_fallback: false }}
           onFinish={(values) => void handleCreateThirdParty(values)}
         >
           <Form.Item label="账户名称" name="account_name" rules={[{ required: true, message: "请输入账户名称" }]}>
@@ -426,6 +431,14 @@ export function AccountsPage() {
           </Form.Item>
           <Form.Item label="API Key" name="credential_ref" rules={[{ required: true, message: "请输入 API Key" }]}>
             <Input.Password />
+          </Form.Item>
+          <Form.Item
+            label="回退配置"
+            name="allow_chat_fallback"
+            valuePropName="checked"
+            extra="默认关闭。关闭时强制使用 /responses；开启后当 /responses 不可用会回退 /chat/completions。"
+          >
+            <Switch checkedChildren="允许回退" unCheckedChildren="强制 responses" />
           </Form.Item>
           <div className="modal-footer">
             <Button onClick={() => setAddModalMode(null)}>取消</Button>
@@ -473,6 +486,19 @@ export function AccountsPage() {
           </Form.Item>
           <Form.Item label="API Key / Token" name="credential_ref">
             <Input.Password placeholder="留空表示不修改" />
+          </Form.Item>
+          <Form.Item label="回退状态">
+            <Button onClick={() => editForm.setFieldValue("allow_chat_fallback", !editAllowFallback)}>
+              {editAllowFallback ? "已开启回退（点击关闭）" : "已关闭回退（点击开启）"}
+            </Button>
+          </Form.Item>
+          <Form.Item
+            label="回退配置"
+            name="allow_chat_fallback"
+            valuePropName="checked"
+            extra="默认关闭。关闭时强制使用 /responses；开启后当 /responses 不可用会回退 /chat/completions。"
+          >
+            <Switch checkedChildren="允许回退" unCheckedChildren="强制 responses" />
           </Form.Item>
           <div className="modal-footer">
             <Button onClick={() => setEditingAccount(null)}>取消</Button>
