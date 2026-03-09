@@ -1,5 +1,7 @@
 # Thin Gateway Third-Party Responses Implementation Plan
 
+> Historical note: this plan records the transition from official-only filtering to native third-party `/responses` support. The current code already implements this behavior; do not treat the step list below as pending work.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 让薄网关模式支持“原生 `/responses`”第三方供应商，且不引入任何协议兼容补偿。

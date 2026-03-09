@@ -1,5 +1,7 @@
 # 官方接口薄网关实施计划
 
+> 历史方案归档：该计划基于“薄网关可切换模式 + 官方上游限定”的旧假设，已被当前“薄网关单一路径 + 第三方仅限原生 `/responses`”实现取代。保留此文档仅作演进记录，不应再作为当前实施依据。
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **目标：** 将当前网关收敛为“真正的薄网关层”，仅负责官方接口的认证管理、路由转发、协议透传和可观测性，不承担本地会话语义、工具编排、多轮补偿和第三方兼容逻辑。

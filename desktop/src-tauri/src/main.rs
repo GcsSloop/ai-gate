@@ -8,11 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Runtime};
 
 static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
@@ -75,7 +73,6 @@ fn main() {
             drop(guard);
 
             setup_tray(app.handle())?;
-            start_tray_sync_task(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -100,8 +97,8 @@ fn main() {
                     Ok(()) => shutdown_sidecar(),
                     Err(message) => {
                         api.prevent_exit();
+                        eprintln!("exit blocked by proxy restore conflict: {message}");
                         show_main_window(app_handle);
-                        emit_exit_conflict(app_handle, &message);
                     }
                 }
             }
@@ -134,20 +131,6 @@ fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .on_menu_event(|app, event| {
             let id = event.id().as_ref().to_string();
             handle_tray_menu_action(app, &id);
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button,
-                button_state,
-                ..
-            } = event
-            {
-                if (button == MouseButton::Left || button == MouseButton::Right)
-                    && button_state == MouseButtonState::Up
-                {
-                    refresh_tray_menu(tray.app_handle());
-                }
-            }
         });
 
     if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/tray-icon.png")) {
@@ -160,13 +143,6 @@ fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .build(app)
         .map_err(|e| format!("build tray icon failed: {e}"))?;
     Ok(())
-}
-
-fn start_tray_sync_task<R: Runtime>(app: AppHandle<R>) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(2));
-        refresh_tray_menu(&app);
-    });
 }
 
 fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, String> {
@@ -244,9 +220,13 @@ fn handle_tray_menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
         }
     }
 
-    if id != MENU_OPEN_MAIN {
+    if should_refresh_tray_after_action(id) {
         refresh_tray_menu(app);
     }
+}
+
+fn should_refresh_tray_after_action(id: &str) -> bool {
+    id != MENU_OPEN_MAIN
 }
 
 fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
@@ -410,20 +390,9 @@ fn shutdown_sidecar() {
     *guard = None;
 }
 
-fn emit_exit_conflict(app: &tauri::AppHandle, message: &str) {
-    let escaped = serde_json::to_string(message).unwrap_or_else(|_| "\"配置冲突\"".to_string());
-    if let Some(window) = app.get_webview_window("main") {
-        let script = format!(
-            "window.dispatchEvent(new CustomEvent('aigate-exit-conflict', {{ detail: {{ message: {} }} }}));",
-            escaped
-        );
-        let _ = window.eval(&script);
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::parse_account_menu_id;
+    use super::{parse_account_menu_id, should_refresh_tray_after_action};
 
     #[test]
     fn parse_account_menu_id_accepts_valid_ids() {
@@ -434,5 +403,18 @@ mod tests {
     fn parse_account_menu_id_rejects_invalid_ids() {
         assert_eq!(parse_account_menu_id("account-select:abc"), None);
         assert_eq!(parse_account_menu_id("proxy-enable"), None);
+    }
+
+    #[test]
+    fn tray_refresh_skips_open_main_action() {
+        assert!(!should_refresh_tray_after_action("open-main"));
+    }
+
+    #[test]
+    fn tray_refresh_runs_for_stateful_actions() {
+        assert!(should_refresh_tray_after_action("proxy-enable"));
+        assert!(should_refresh_tray_after_action("proxy-disable"));
+        assert!(should_refresh_tray_after_action("quit"));
+        assert!(should_refresh_tray_after_action("account-select:7"));
     }
 }

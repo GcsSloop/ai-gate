@@ -1,5 +1,7 @@
 # Thin Gateway Only Implementation Plan
 
+> Historical note: this plan documents the cleanup that removed thick-gateway behavior. It is retained as an execution record; the current source of truth is the live code plus `docs/thin-gateway-mode.md`.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Remove thick-gateway compatibility paths so the router only exposes and executes thin-gateway behavior.
