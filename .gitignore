@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .idea/
+.worktrees/
 .tmp-gocache/
 docs/PP Codex Cli教程.pdf
 node_modules/
