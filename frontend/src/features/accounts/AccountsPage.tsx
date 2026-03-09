@@ -432,7 +432,7 @@ export function AccountsPage() {
         <Form
           form={thirdPartyForm}
           layout="vertical"
-          initialValues={{ base_url: defaultBaseURL, supports_responses: false, allow_chat_fallback: false }}
+          initialValues={{ base_url: defaultBaseURL, supports_responses: true, allow_chat_fallback: false }}
           onFinish={(values) => void handleCreateThirdParty(values)}
         >
           <Form.Item label="账户名称" name="account_name" rules={[{ required: true, message: "请输入账户名称" }]}>

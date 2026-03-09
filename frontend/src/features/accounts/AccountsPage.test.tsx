@@ -49,6 +49,9 @@ describe("AccountsPage", () => {
       if (url === "/ai-router/api/accounts" && init?.method === "POST") {
         return Promise.resolve(new Response(null, { status: 201 }));
       }
+      if (url === "/ai-router/api/accounts/1" && init?.method === "PUT") {
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
       if (url === "/ai-router/api/accounts/1/test" && init?.method === "POST") {
         return Promise.resolve(
           new Response(
@@ -112,7 +115,40 @@ describe("AccountsPage", () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/ai-router/api/accounts",
-        expect.objectContaining({ method: "POST" }),
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            provider_type: "openai-compatible",
+            account_name: "ppchat-main",
+            auth_mode: "api_key",
+            base_url: "https://code.ppchat.vip/v1",
+            credential_ref: "sk-test",
+            supports_responses: true,
+            allow_chat_fallback: false,
+          }),
+        }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
+    const responsesSwitch = within(editModal).getByLabelText("原生 /responses");
+    expect(responsesSwitch).toBeInTheDocument();
+    fireEvent.click(responsesSwitch);
+    fireEvent.click(within(editModal).getByRole("button", { name: /保\s*存/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({
+            account_name: "mirror-east",
+            base_url: "https://code.ppchat.vip/v1",
+            supports_responses: true,
+            allow_chat_fallback: false,
+          }),
+        }),
       );
     });
 

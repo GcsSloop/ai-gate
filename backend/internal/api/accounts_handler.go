@@ -75,7 +75,7 @@ type createAccountRequest struct {
 	AuthMode          accounts.AuthMode     `json:"auth_mode"`
 	BaseURL           string                `json:"base_url"`
 	CredentialRef     string                `json:"credential_ref"`
-	SupportsResponses bool                  `json:"supports_responses"`
+	SupportsResponses *bool                 `json:"supports_responses"`
 	AllowChatFallback bool                  `json:"allow_chat_fallback"`
 }
 
@@ -119,6 +119,14 @@ func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	supportsResponses := true
+	if req.SupportsResponses != nil {
+		supportsResponses = *req.SupportsResponses
+	}
+	if req.ProviderType == accounts.ProviderOpenAIOfficial {
+		supportsResponses = true
+	}
+
 	err := h.repo.Create(accounts.Account{
 		ProviderType:      req.ProviderType,
 		AccountName:       req.AccountName,
@@ -126,7 +134,7 @@ func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) 
 		BaseURL:           req.BaseURL,
 		CredentialRef:     req.CredentialRef,
 		Status:            accounts.StatusActive,
-		SupportsResponses: req.SupportsResponses || req.ProviderType == accounts.ProviderOpenAIOfficial,
+		SupportsResponses: supportsResponses,
 		AllowChatFallback: req.AllowChatFallback,
 	})
 	if err != nil {

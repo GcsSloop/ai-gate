@@ -179,6 +179,85 @@ func TestAccountsHandlerImportLocalCodexAuth(t *testing.T) {
 	}
 }
 
+func TestAccountsHandlerCreateThirdPartyDefaultsResponsesSupport(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts", bytes.NewBufferString(`{
+		"provider_type":"openai-compatible",
+		"account_name":"team3",
+		"auth_mode":"api_key",
+		"base_url":"https://code.ppchat.vip/v1",
+		"credential_ref":"sk-test"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /accounts status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	listed, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("List returned %d accounts, want 1", len(listed))
+	}
+	if !listed[0].SupportsResponses {
+		t.Fatal("SupportsResponses = false, want true by default for third-party accounts")
+	}
+}
+
+func TestAccountsHandlerCreateThirdPartyRespectsExplicitResponsesOptOut(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts", bytes.NewBufferString(`{
+		"provider_type":"openai-compatible",
+		"account_name":"team3",
+		"auth_mode":"api_key",
+		"base_url":"https://code.ppchat.vip/v1",
+		"credential_ref":"sk-test",
+		"supports_responses": false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /accounts status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	listed, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("List returned %d accounts, want 1", len(listed))
+	}
+	if listed[0].SupportsResponses {
+		t.Fatal("SupportsResponses = true, want explicit false to be preserved")
+	}
+}
+
 func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 	t.Parallel()
 
