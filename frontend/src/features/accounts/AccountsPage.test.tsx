@@ -138,7 +138,8 @@ describe("AccountsPage", () => {
       );
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    fireEvent.click(screen.getByRole("button", { name: "更多-mirror-east" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "编辑" }));
     const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
     const responsesSwitch = within(editModal).getByLabelText("原生 /responses");
     expect(responsesSwitch).toBeInTheDocument();
@@ -160,7 +161,14 @@ describe("AccountsPage", () => {
       );
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "测试" }));
+    fireEvent.click(screen.getByRole("button", { name: "详情-mirror-east" }));
+    const detailModal = await screen.findByRole("dialog", { name: "账户详情" });
+    expect(within(detailModal).getByText("https://code.ppchat.vip/v1")).toBeInTheDocument();
+    expect(within(detailModal).getByText("/responses 未启用")).toBeInTheDocument();
+    fireEvent.click(within(detailModal).getByRole("button", { name: "Close" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "更多-mirror-east" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "测试" }));
     const testModal = await screen.findByRole("dialog", { name: "对话测试" });
     fireEvent.change(within(testModal).getByLabelText("输入内容"), {
       target: { value: "ping" },
@@ -251,7 +259,7 @@ describe("AccountsPage", () => {
     const activeRow = screen.getByText("account-b").closest("tr");
     expect(activeRow).toHaveClass("active-account-row");
 
-    fireEvent.click(screen.getAllByRole("button", { name: "设为激活" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "设为激活-account-a" }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/ai-router/api/accounts/1",

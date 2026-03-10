@@ -1,4 +1,4 @@
-import { HolderOutlined, PlusOutlined } from "@ant-design/icons";
+import { CheckCircleOutlined, InfoCircleOutlined, MoreOutlined, PlusOutlined } from "@ant-design/icons";
 import {
   Button,
   Card,
@@ -16,7 +16,7 @@ import {
   message,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useEffect, useRef, useState, type HTMLAttributes } from "react";
+import { useEffect, useState } from "react";
 
 import {
   createAccount,
@@ -86,9 +86,9 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [addModalMode, setAddModalMode] = useState<AddModalMode>(null);
   const [editingAccount, setEditingAccount] = useState<AccountRecord | null>(null);
+  const [detailAccount, setDetailAccount] = useState<AccountRecord | null>(null);
   const [testingAccount, setTestingAccount] = useState<AccountRecord | null>(null);
   const [testResult, setTestResult] = useState<AccountTestResult | null>(null);
-  const dragIndexRef = useRef<number | null>(null);
 
   const [thirdPartyForm] = Form.useForm();
   const [officialForm] = Form.useForm();
@@ -201,28 +201,6 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
     setTestResult(result);
   }
 
-  async function handleReorder(fromIndex: number, toIndex: number) {
-    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) {
-      return;
-    }
-    const previous = [...accounts];
-    const reordered = [...accounts];
-    const [moved] = reordered.splice(fromIndex, 1);
-    reordered.splice(toIndex, 0, moved);
-    setAccounts(reordered);
-    try {
-      for (let index = 0; index < reordered.length; index += 1) {
-        const account = reordered[index];
-        await updateAccount(account.id, { priority: reordered.length - index });
-      }
-      void refreshDesktopTrayState();
-      void messageApi.success("优先级顺序已更新");
-    } catch (error) {
-      setAccounts(previous);
-      void messageApi.error(error instanceof Error ? error.message : "优先级更新失败，已回滚");
-    }
-  }
-
   async function handleSetActive(account: AccountRecord) {
     if (account.is_active) {
       return;
@@ -246,12 +224,6 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
 
   const columns: ColumnsType<AccountRecord> = [
     {
-      title: "",
-      dataIndex: "drag",
-      width: 44,
-      render: () => <HolderOutlined className="drag-handle" />,
-    },
-    {
       title: "账户",
       dataIndex: "account_name",
       render: (_, record) => (
@@ -263,31 +235,8 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
               <Tag color="green">当前激活</Tag>
             </>
           ) : null}
-          <br />
-          <Text type="secondary">{record.base_url || "OpenAI 官方"}</Text>
-          {record.last_total_tokens > 0 || record.primary_used_percent > 0 || record.secondary_used_percent > 0 ? (
-            <>
-              <br />
-              <Text type="secondary">
-                最近 Token {Math.round(record.last_total_tokens)}
-                {record.model_context_window > 0 ? ` / 上下文 ${Math.round(record.model_context_window)}` : ""}
-              </Text>
-              <br />
-              <Text type="secondary">
-                5 小时剩余 {(100 - record.primary_used_percent).toFixed(0)}% · {formatResetAt(record.primary_resets_at)}
-              </Text>
-              <br />
-              <Text type="secondary">
-                1 周剩余 {(100 - record.secondary_used_percent).toFixed(0)}% · {formatResetAt(record.secondary_resets_at)}
-              </Text>
-            </>
-          ) : null}
         </div>
       ),
-    },
-    {
-      title: "平台",
-      dataIndex: "provider_type",
     },
     {
       title: "认证方式",
@@ -295,73 +244,55 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
       render: (value: string) => authModeTextMap[value] ?? value,
     },
     {
-      title: "能力",
-      key: "capabilities",
-      render: (_, record) => (
-        <Space size={4} wrap>
-          {record.supports_responses ? <Tag color="blue">/responses</Tag> : <Tag>/responses 未启用</Tag>}
-        </Space>
-      ),
-    },
-    {
       title: "状态",
       dataIndex: "status",
       render: (value: string) => <Tag color={statusColorMap[value] ?? "default"}>{statusTextMap[value] ?? value}</Tag>,
     },
     {
-      title: "余额",
-      dataIndex: "balance",
-      render: (value: number) => value.toFixed(2),
-    },
-    {
-      title: "额度",
-      dataIndex: "quota_remaining",
-      render: (value: number) => Math.round(value),
-    },
-    {
-      title: "RPM",
-      dataIndex: "rpm_remaining",
-      render: (value: number) => Math.round(value),
-    },
-    {
-      title: "TPM",
-      dataIndex: "tpm_remaining",
-      render: (value: number) => Math.round(value),
-    },
-    {
-      title: "健康分",
-      dataIndex: "health_score",
-      render: (value: number) => value.toFixed(2),
-    },
-    {
-      title: "错误率",
-      dataIndex: "recent_error_rate",
-      render: (value: number) => `${(value * 100).toFixed(1)}%`,
-    },
-    {
       title: "操作",
       key: "actions",
-      width: 220,
+      width: 180,
       render: (_, record) => (
         <Space>
-          <Button type="link" disabled={record.is_active} onClick={() => void handleSetActive(record)}>
-            设为激活
-          </Button>
-          <Button type="link" onClick={() => openEditModal(record)}>
-            编辑
-          </Button>
-          <Button type="link" onClick={() => openTestModal(record)}>
-            测试
-          </Button>
-          <Button danger type="link" onClick={() => void Modal.confirm({
-            title: `确认删除账户「${record.account_name}」吗？`,
-            okText: "删除",
-            cancelText: "取消",
-            okButtonProps: { danger: true },
-            onOk: () => handleDelete(record),
-          })}>
-            删除
-          </Button>
+          <Button
+            type="text"
+            aria-label={`设为激活-${record.account_name}`}
+            icon={<CheckCircleOutlined />}
+            disabled={record.is_active}
+            onClick={() => void handleSetActive(record)}
+          />
+          <Button type="text" aria-label={`详情-${record.account_name}`} icon={<InfoCircleOutlined />} onClick={() => setDetailAccount(record)} />
+          <Dropdown
+            trigger={["click"]}
+            menu={{
+              items: [
+                { key: "edit", label: "编辑" },
+                { key: "test", label: "测试" },
+                { key: "delete", label: "删除", danger: true },
+              ],
+              onClick: ({ key }) => {
+                if (key === "edit") {
+                  openEditModal(record);
+                  return;
+                }
+                if (key === "test") {
+                  openTestModal(record);
+                  return;
+                }
+                if (key === "delete") {
+                  void Modal.confirm({
+                    title: `确认删除账户「${record.account_name}」吗？`,
+                    okText: "删除",
+                    cancelText: "取消",
+                    okButtonProps: { danger: true },
+                    onOk: () => handleDelete(record),
+                  });
+                }
+              },
+            }}
+          >
+            <Button type="text" aria-label={`更多-${record.account_name}`} icon={<MoreOutlined />} />
+          </Dropdown>
         </Space>
       ),
     },
@@ -375,7 +306,7 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
           <Title level={2} style={{ marginBottom: 8 }}>
             账户列表
           </Title>
-          <Text type="secondary">拖拽顺序仅用于故障切换优先级；当前激活账户由手动切换决定。</Text>
+          <Text type="secondary">主表仅展示核心状态，详细信息请通过详情查看。</Text>
         </div>
         <Dropdown
           menu={{
@@ -400,33 +331,37 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
           dataSource={accounts}
           pagination={false}
           rowClassName={(record) => (record.is_active ? "active-account-row" : "")}
-          components={{
-            body: {
-              row: (props: HTMLAttributes<HTMLTableRowElement> & { "data-row-key"?: string }) => {
-                const rowKey = props["data-row-key"];
-                const currentIndex = accounts.findIndex((account) => String(account.id) === String(rowKey));
-                return (
-                  <tr
-                    {...props}
-                    draggable
-                    onDragStart={() => {
-                      dragIndexRef.current = currentIndex;
-                    }}
-                    onDragOver={(event) => {
-                      event.preventDefault();
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      void handleReorder(dragIndexRef.current ?? -1, currentIndex);
-                      dragIndexRef.current = null;
-                    }}
-                  />
-                );
-              },
-            },
-          }}
         />
       </Card>
+
+      <Modal open={!!detailAccount} title="账户详情" onCancel={() => setDetailAccount(null)} footer={null} destroyOnHidden>
+        {detailAccount ? (
+          <Descriptions column={1} size="small">
+            <Descriptions.Item label="账户">{detailAccount.account_name}</Descriptions.Item>
+            <Descriptions.Item label="平台">{detailAccount.provider_type}</Descriptions.Item>
+            <Descriptions.Item label="认证方式">{authModeTextMap[detailAccount.auth_mode] ?? detailAccount.auth_mode}</Descriptions.Item>
+            <Descriptions.Item label="状态">{statusTextMap[detailAccount.status] ?? detailAccount.status}</Descriptions.Item>
+            <Descriptions.Item label="接口地址">{detailAccount.base_url || "OpenAI 官方"}</Descriptions.Item>
+            <Descriptions.Item label="能力">{detailAccount.supports_responses ? "/responses" : "/responses 未启用"}</Descriptions.Item>
+            <Descriptions.Item label="最近 Token">
+              {Math.round(detailAccount.last_total_tokens)}
+              {detailAccount.model_context_window > 0 ? ` / 上下文 ${Math.round(detailAccount.model_context_window)}` : ""}
+            </Descriptions.Item>
+            <Descriptions.Item label="5 小时剩余">
+              {(100 - detailAccount.primary_used_percent).toFixed(0)}% · {formatResetAt(detailAccount.primary_resets_at)}
+            </Descriptions.Item>
+            <Descriptions.Item label="1 周剩余">
+              {(100 - detailAccount.secondary_used_percent).toFixed(0)}% · {formatResetAt(detailAccount.secondary_resets_at)}
+            </Descriptions.Item>
+            <Descriptions.Item label="余额">{detailAccount.balance.toFixed(2)}</Descriptions.Item>
+            <Descriptions.Item label="额度">{Math.round(detailAccount.quota_remaining)}</Descriptions.Item>
+            <Descriptions.Item label="RPM">{Math.round(detailAccount.rpm_remaining)}</Descriptions.Item>
+            <Descriptions.Item label="TPM">{Math.round(detailAccount.tpm_remaining)}</Descriptions.Item>
+            <Descriptions.Item label="健康分">{detailAccount.health_score.toFixed(2)}</Descriptions.Item>
+            <Descriptions.Item label="错误率">{(detailAccount.recent_error_rate * 100).toFixed(1)}%</Descriptions.Item>
+          </Descriptions>
+        ) : null}
+      </Modal>
 
       <Modal
         open={addModalMode === "third_party"}
