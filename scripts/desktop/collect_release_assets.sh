@@ -2,27 +2,135 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERSION="${CI_COMMIT_TAG:-local}"
-SRC_DIR="$ROOT_DIR/desktop/src-tauri/target/universal-apple-darwin/release/bundle"
-OUT_DIR="$ROOT_DIR/release-assets"
+VERSION="${RELEASE_VERSION:-${GITHUB_REF_NAME:-${CI_COMMIT_TAG:-local}}}"
+PLATFORM="${RELEASE_PLATFORM:-auto}"
+TARGET_DIR="${TARGET_DIR:-$ROOT_DIR/desktop/src-tauri/target}"
+OUT_DIR="${RELEASE_ASSET_DIR:-$ROOT_DIR/release-assets}"
+SIDECAR_BIN_DIR="${SIDECAR_BIN_DIR:-$ROOT_DIR/desktop/src-tauri/bin}"
+APP_EXECUTABLE_NAME="${APP_EXECUTABLE_NAME:-aigate-desktop.exe}"
 
 mkdir -p "$OUT_DIR"
 
-APP_PATH="$(find "$SRC_DIR/macos" -maxdepth 1 -name "*.app" -type d | head -n1 || true)"
-DMG_PATH="$(find "$SRC_DIR/dmg" -maxdepth 1 -name "*.dmg" -type f | head -n1 || true)"
+checksum_file() {
+  local file="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  else
+    openssl dgst -sha256 "$file" | awk '{print $NF}'
+  fi
+}
 
-if [[ -n "$APP_PATH" ]]; then
-  APP_ZIP="$OUT_DIR/aigate-${VERSION}-macOS.zip"
-  ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$APP_ZIP"
+write_checksums() {
+  local output_file="$OUT_DIR/SHA256SUMS"
+  : >"$output_file"
+  while IFS= read -r file; do
+    local name
+    name="$(basename "$file")"
+    printf '%s  %s\n' "$(checksum_file "$file")" "$name" >>"$output_file"
+  done < <(find "$OUT_DIR" -maxdepth 1 -type f ! -name 'SHA256SUMS' | sort)
+}
+
+zip_dir() {
+  local source_dir="$1"
+  local dest_zip="$2"
+  rm -f "$dest_zip"
+  if command -v ditto >/dev/null 2>&1; then
+    ditto -c -k --sequesterRsrc --keepParent "$source_dir" "$dest_zip"
+  elif command -v zip >/dev/null 2>&1; then
+    local parent_dir
+    parent_dir="$(dirname "$source_dir")"
+    local dir_name
+    dir_name="$(basename "$source_dir")"
+    (
+      cd "$parent_dir"
+      zip -rq "$dest_zip" "$dir_name"
+    )
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -NoLogo -NoProfile -Command \
+      "Compress-Archive -Path '${source_dir//\//\\}\\*' -DestinationPath '${dest_zip//\//\\}' -Force" \
+      >/dev/null
+  else
+    echo "No zip implementation available" >&2
+    exit 1
+  fi
+}
+
+collect_macos_assets() {
+  local src_dir="$TARGET_DIR/universal-apple-darwin/release/bundle"
+  local app_path
+  local dmg_path
+  app_path="$(find "$src_dir/macos" -maxdepth 1 -name "*.app" -type d | head -n1 || true)"
+  dmg_path="$(find "$src_dir/dmg" -maxdepth 1 -name "*.dmg" -type f | head -n1 || true)"
+
+  [[ -n "$app_path" ]] || {
+    echo "No macOS app bundle found under $src_dir" >&2
+    exit 1
+  }
+
+  zip_dir "$app_path" "$OUT_DIR/aigate-${VERSION}-macOS.zip"
+
+  if [[ -n "$dmg_path" ]]; then
+    cp "$dmg_path" "$OUT_DIR/aigate-${VERSION}-macOS.dmg"
+  fi
+}
+
+collect_windows_assets() {
+  local src_dir="$TARGET_DIR/x86_64-pc-windows-msvc/release"
+  local msi_path
+  local app_path="$src_dir/$APP_EXECUTABLE_NAME"
+  local sidecar_path="$SIDECAR_BIN_DIR/routerd-x86_64-pc-windows-msvc.exe"
+  local stage_dir
+  msi_path="$(find "$src_dir/bundle/msi" -maxdepth 1 -name "*.msi" -type f | head -n1 || true)"
+
+  [[ -n "$msi_path" ]] || {
+    echo "No Windows MSI found under $src_dir/bundle/msi" >&2
+    exit 1
+  }
+  [[ -f "$app_path" ]] || {
+    echo "No Windows desktop executable found at $app_path" >&2
+    exit 1
+  }
+  [[ -f "$sidecar_path" ]] || {
+    echo "No Windows sidecar found at $sidecar_path" >&2
+    exit 1
+  }
+
+  cp "$msi_path" "$OUT_DIR/aigate-${VERSION}-windows.msi"
+
+  stage_dir="$(mktemp -d)"
+  mkdir -p "$stage_dir/aigate-${VERSION}-windows/bin"
+  cp "$app_path" "$stage_dir/aigate-${VERSION}-windows/$APP_EXECUTABLE_NAME"
+  cp "$sidecar_path" "$stage_dir/aigate-${VERSION}-windows/bin/"
+  zip_dir "$stage_dir/aigate-${VERSION}-windows" "$OUT_DIR/aigate-${VERSION}-windows.zip"
+  rm -rf "$stage_dir"
+}
+
+if [[ "$PLATFORM" == "auto" ]]; then
+  if [[ -d "$TARGET_DIR/universal-apple-darwin/release/bundle" ]]; then
+    PLATFORM="macos"
+  elif [[ -d "$TARGET_DIR/x86_64-pc-windows-msvc/release/bundle" ]]; then
+    PLATFORM="windows"
+  else
+    echo "Unable to infer release platform from $TARGET_DIR" >&2
+    exit 1
+  fi
 fi
 
-if [[ -n "$DMG_PATH" ]]; then
-  cp "$DMG_PATH" "$OUT_DIR/aigate-${VERSION}-macOS.dmg"
-fi
+case "$PLATFORM" in
+  macos)
+    collect_macos_assets
+    ;;
+  windows)
+    collect_windows_assets
+    ;;
+  *)
+    echo "Unsupported release platform: $PLATFORM" >&2
+    exit 1
+    ;;
+esac
 
-(
-  cd "$OUT_DIR"
-  shasum -a 256 * > SHA256SUMS
-)
+write_checksums
 
 ls -la "$OUT_DIR"

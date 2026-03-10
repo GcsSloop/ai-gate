@@ -37,6 +37,8 @@ const ABOUT_DESCRIPTION: &str =
 const ABOUT_AUTHOR: &str = "GcsSloop";
 const BACKEND_REQUEST_TIMEOUT_MS: u64 = 1500;
 const SIDECAR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+const SIDECAR_MACOS_NAME: &str = "routerd-universal-apple-darwin";
+const SIDECAR_WINDOWS_NAME: &str = "routerd-x86_64-pc-windows-msvc.exe";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -748,28 +750,68 @@ fn parse_account_menu_id(id: &str) -> Option<i64> {
     id.strip_prefix(MENU_ACCOUNT_PREFIX)?.parse::<i64>().ok()
 }
 
-fn resolve_sidecar_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn sidecar_resource_name(os: &str) -> Option<&'static str> {
+    match os {
+        "macos" => Some(SIDECAR_MACOS_NAME),
+        "windows" => Some(SIDECAR_WINDOWS_NAME),
+        _ => None,
+    }
+}
+
+fn sidecar_candidate_paths(
+    os: &str,
+    manifest_dir: Option<&Path>,
+    resources_dir: Option<&Path>,
+    current_exe: Option<&Path>,
+) -> Vec<PathBuf> {
+    let Some(sidecar_name) = sidecar_resource_name(os) else {
+        return Vec::new();
+    };
+
     let mut candidates: Vec<PathBuf> = Vec::new();
 
-    if cfg!(debug_assertions) {
-        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-            candidates.push(Path::new(&manifest_dir).join("bin/routerd-universal-apple-darwin"));
+    if let Some(manifest_dir) = manifest_dir {
+        candidates.push(manifest_dir.join("bin").join(sidecar_name));
+    }
+
+    if let Some(resources_dir) = resources_dir {
+        candidates.push(resources_dir.join("bin").join(sidecar_name));
+        if os == "windows" {
+            candidates.push(resources_dir.join(sidecar_name));
         }
     }
 
-    if let Ok(resources_dir) = app.path().resource_dir() {
-        candidates.push(resources_dir.join("bin/routerd-universal-apple-darwin"));
-    }
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(macos_dir) = exe.parent() {
-            candidates.push(
-                macos_dir
-                    .join("../Resources/bin/routerd-universal-apple-darwin")
-                    .to_path_buf(),
-            );
+    if let Some(exe) = current_exe {
+        if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.join("bin").join(sidecar_name));
+            if os == "macos" {
+                candidates.push(exe_dir.join("../Resources/bin").join(sidecar_name));
+            } else if os == "windows" {
+                candidates.push(exe_dir.join("resources").join("bin").join(sidecar_name));
+            }
         }
     }
+
+    candidates
+}
+
+fn resolve_sidecar_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let os = std::env::consts::OS;
+    let sidecar_name = sidecar_resource_name(os)
+        .ok_or_else(|| format!("routerd sidecar is not configured for platform {os}"))?;
+    let manifest_dir = if cfg!(debug_assertions) {
+        std::env::var("CARGO_MANIFEST_DIR").ok().map(PathBuf::from)
+    } else {
+        None
+    };
+    let resources_dir = app.path().resource_dir().ok();
+    let current_exe = std::env::current_exe().ok();
+    let candidates = sidecar_candidate_paths(
+        os,
+        manifest_dir.as_deref(),
+        resources_dir.as_deref(),
+        current_exe.as_deref(),
+    );
 
     for candidate in candidates {
         if candidate.exists() {
@@ -777,7 +819,9 @@ fn resolve_sidecar_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         }
     }
 
-    Err("routerd sidecar not found, expected bin/routerd-universal-apple-darwin".to_string())
+    Err(format!(
+        "routerd sidecar not found, expected bin/{sidecar_name}"
+    ))
 }
 
 fn shutdown_sidecar() {
@@ -825,10 +869,11 @@ mod tests {
     use super::{
         build_launch_agent_plist, format_timeout_error, format_tray_title, map_backend_io_error,
         parse_account_menu_id, parse_accounts_response, parse_proxy_status_response,
-        should_refresh_tray_after_action, window_close_action, AppSettingsPayload,
-        DesktopSettingsCache, HttpResponse, WindowCloseAction,
+        should_refresh_tray_after_action, sidecar_candidate_paths, sidecar_resource_name,
+        window_close_action, AppSettingsPayload, DesktopSettingsCache, HttpResponse,
+        WindowCloseAction, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
     };
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn parse_account_menu_id_accepts_valid_ids() {
@@ -883,6 +928,57 @@ mod tests {
     fn tray_title_formats_no_account() {
         assert_eq!(format_tray_title(false, None), "· 无账户");
         assert_eq!(format_tray_title(true, None), "§ 无账户");
+    }
+
+    #[test]
+    fn sidecar_resource_name_matches_supported_platforms() {
+        assert_eq!(sidecar_resource_name("macos"), Some(SIDECAR_MACOS_NAME));
+        assert_eq!(sidecar_resource_name("windows"), Some(SIDECAR_WINDOWS_NAME));
+        assert_eq!(sidecar_resource_name("linux"), None);
+    }
+
+    #[test]
+    fn sidecar_candidates_include_macos_debug_and_bundle_locations() {
+        let manifest_dir = Path::new("/repo/desktop/src-tauri");
+        let resources_dir = Path::new("/Applications/AI Gate.app/Contents/Resources");
+        let current_exe = Path::new("/Applications/AI Gate.app/Contents/MacOS/aigate-desktop");
+
+        let candidates = sidecar_candidate_paths(
+            "macos",
+            Some(manifest_dir),
+            Some(resources_dir),
+            Some(current_exe),
+        );
+
+        assert!(candidates.contains(&manifest_dir.join("bin").join(SIDECAR_MACOS_NAME)));
+        assert!(candidates.contains(&resources_dir.join("bin").join(SIDECAR_MACOS_NAME)));
+        assert!(candidates.contains(&PathBuf::from(
+            "/Applications/AI Gate.app/Contents/MacOS/../Resources/bin/routerd-universal-apple-darwin"
+        )));
+    }
+
+    #[test]
+    fn sidecar_candidates_include_windows_resource_and_portable_locations() {
+        let manifest_dir = Path::new("C:/repo/desktop/src-tauri");
+        let resources_dir = Path::new("C:/Program Files/AI Gate/resources");
+        let current_exe = Path::new("C:/Program Files/AI Gate/aigate-desktop.exe");
+
+        let candidates = sidecar_candidate_paths(
+            "windows",
+            Some(manifest_dir),
+            Some(resources_dir),
+            Some(current_exe),
+        );
+
+        assert!(candidates.contains(&manifest_dir.join("bin").join(SIDECAR_WINDOWS_NAME)));
+        assert!(candidates.contains(&resources_dir.join("bin").join(SIDECAR_WINDOWS_NAME)));
+        assert!(candidates.contains(&resources_dir.join(SIDECAR_WINDOWS_NAME)));
+        assert!(candidates.contains(&PathBuf::from(
+            "C:/Program Files/AI Gate/bin/routerd-x86_64-pc-windows-msvc.exe"
+        )));
+        assert!(candidates.contains(&PathBuf::from(
+            "C:/Program Files/AI Gate/resources/bin/routerd-x86_64-pc-windows-msvc.exe"
+        )));
     }
 
     #[test]

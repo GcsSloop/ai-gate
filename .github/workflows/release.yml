@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Install desktop dependencies
+        run: npm --prefix desktop ci
+
+      - name: Backend tests
+        run: go test ./...
+        working-directory: backend
+
+      - name: Frontend tests
+        run: npm --prefix frontend run test
+
+      - name: Release asset script test
+        run: bash scripts/test/collect_release_assets_test.sh
+
+  build:
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release_platform: macos
+            runner: macos-latest
+            tauri_target: universal-apple-darwin
+            bundles: app,dmg
+            sidecar_script: scripts/desktop/build_sidecar_macos.sh
+            artifact_name: release-assets-macos
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - release_platform: windows
+            runner: windows-latest
+            tauri_target: x86_64-pc-windows-msvc
+            bundles: msi
+            sidecar_script: scripts/desktop/build_sidecar_windows.sh
+            artifact_name: release-assets-windows
+            rust_targets: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Install desktop dependencies
+        run: npm --prefix desktop ci
+
+      - name: Build sidecar
+        run: bash "${{ matrix.sidecar_script }}"
+
+      - name: Desktop sidecar tests
+        run: |
+          cd desktop/src-tauri
+          cargo test sidecar_ -q
+
+      - name: Build desktop bundles
+        run: |
+          npm --prefix desktop run tauri build -- \
+            --target "${{ matrix.tauri_target }}" \
+            --bundles "${{ matrix.bundles }}"
+
+      - name: Prepare notarization key
+        if: matrix.release_platform == 'macos' && secrets.APPLE_API_KEY != ''
+        run: |
+          key_path="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "${{ secrets.APPLE_API_KEY }}" >"$key_path"
+          echo "APPLE_API_KEY_PATH=$key_path" >>"$GITHUB_ENV"
+
+      - name: Notarize macOS bundle
+        if: matrix.release_platform == 'macos'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash scripts/desktop/notarize_macos.sh
+
+      - name: Collect release assets
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_PLATFORM: ${{ matrix.release_platform }}
+        run: bash scripts/desktop/collect_release_assets.sh
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**/*.zip
+            dist/**/*.dmg
+            dist/**/*.msi
+            dist/**/SHA256SUMS
+          fail_on_unmatched_files: true

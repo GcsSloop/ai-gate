@@ -27,7 +27,10 @@
       "icons/icon.icns"
     ],
     "targets": ["app", "dmg"],
-    "resources": ["bin/routerd-universal-apple-darwin"],
+    "resources": [
+      "bin/routerd-universal-apple-darwin",
+      "bin/routerd-x86_64-pc-windows-msvc.exe"
+    ],
     "macOS": {
       "minimumSystemVersion": "12.0"
     }

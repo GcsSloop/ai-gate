@@ -8,6 +8,7 @@ mkdir -p "$OUT_DIR"
 ARM64_BIN="$OUT_DIR/routerd-darwin-arm64"
 AMD64_BIN="$OUT_DIR/routerd-darwin-amd64"
 UNIVERSAL_BIN="$OUT_DIR/routerd-universal-apple-darwin"
+WINDOWS_PLACEHOLDER="$OUT_DIR/routerd-x86_64-pc-windows-msvc.exe"
 
 echo "Building Go sidecar for macOS arm64..."
 (
@@ -24,6 +25,10 @@ echo "Building Go sidecar for macOS amd64..."
 echo "Creating universal sidecar binary..."
 lipo -create -output "$UNIVERSAL_BIN" "$ARM64_BIN" "$AMD64_BIN"
 chmod +x "$UNIVERSAL_BIN"
+
+if [[ ! -f "$WINDOWS_PLACEHOLDER" ]]; then
+  : >"$WINDOWS_PLACEHOLDER"
+fi
 
 echo "Sidecar ready: $UNIVERSAL_BIN"
 file "$UNIVERSAL_BIN"
