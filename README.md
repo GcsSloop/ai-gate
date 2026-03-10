@@ -56,6 +56,16 @@ flowchart LR
     B --> F["Local SQLite<br/>audit + monitoring"]
 ```
 
+## Screenshots
+
+### Main Dashboard
+
+![AI Gate main dashboard](assets/screenshot-main.png)
+
+### Proxy Settings
+
+![AI Gate proxy settings](assets/screenshot-proxy.png)
+
 ## What It Does
 
 - Routes `POST /responses` and `GET /models` through a local gateway endpoint.
@@ -194,7 +204,7 @@ Artifacts are collected into `release-assets/`:
 
 - `aigate-<tag>-macOS.dmg`
 - `aigate-<tag>-macOS.zip`
-- `SHA256SUMS`
+- `aigate-<tag>-<platform>-SHA256SUMS.txt`
 
 GitLab CI supports macOS packaging on tags and can optionally sign/notarize when the required Apple credentials are present.
 

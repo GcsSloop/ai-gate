@@ -44,6 +44,16 @@ flowchart LR
     B --> F["本地 SQLite<br/>审计与监控"]
 ```
 
+## 界面预览
+
+### 首页总览
+
+![AI Gate 首页](../assets/screenshot-main.png)
+
+### 代理配置页
+
+![AI Gate 代理配置页](../assets/screenshot-proxy.png)
+
 ## 当前能力
 
 - 通过本地网关暴露 `POST /responses` 与 `GET /models`
@@ -180,7 +190,7 @@ bash scripts/desktop/collect_release_assets.sh
 
 - `aigate-<tag>-macOS.dmg`
 - `aigate-<tag>-macOS.zip`
-- `SHA256SUMS`
+- `aigate-<tag>-<platform>-SHA256SUMS.txt`
 
 ## 仓库结构
 
