@@ -585,12 +585,13 @@ body {
   gap: 8px;
 }
 
-:where(.css-dev-only-do-not-override-1enej14).ant-avatar > img {
+.account-source-icon.ant-avatar > img,
+.source-option .ant-avatar > img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  padding: 8px;
+  padding: 6px;
 }
 
 .edit-test-panel {

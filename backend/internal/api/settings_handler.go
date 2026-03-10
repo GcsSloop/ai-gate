@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/secrets"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 )
 
@@ -32,6 +34,12 @@ type SettingsHandler struct {
 	settings SettingsRepository
 	db       *sql.DB
 	dbPath   string
+	accounts settingsAccountsReader
+	cipher   *secrets.Cipher
+}
+
+type settingsAccountsReader interface {
+	GetByID(id int64) (accounts.Account, error)
 }
 
 var proxyToggleMu sync.Mutex
@@ -42,6 +50,18 @@ func WithSettingsDatabase(db *sql.DB, dbPath string) SettingsHandlerOption {
 	return func(handler *SettingsHandler) {
 		handler.db = db
 		handler.dbPath = dbPath
+	}
+}
+
+func WithSettingsAccounts(repo settingsAccountsReader) SettingsHandlerOption {
+	return func(handler *SettingsHandler) {
+		handler.accounts = repo
+	}
+}
+
+func WithSettingsCredentialCipher(cipher *secrets.Cipher) SettingsHandlerOption {
+	return func(handler *SettingsHandler) {
+		handler.cipher = cipher
 	}
 }
 
@@ -624,7 +644,25 @@ func (h *SettingsHandler) sqlTransfer() (*settings.SQLTransfer, error) {
 	if h.db == nil {
 		return nil, errors.New("database is not configured")
 	}
-	return settings.NewSQLTransfer(h.db), nil
+	opts := make([]settings.SQLTransferOption, 0, 2)
+	if h.accounts != nil {
+		opts = append(opts, settings.WithAccountCredentialReader(func(accountID int64, stored string) (string, error) {
+			account, err := h.accounts.GetByID(accountID)
+			if err != nil {
+				return stored, err
+			}
+			return account.CredentialRef, nil
+		}))
+	}
+	if h.cipher != nil {
+		opts = append(opts, settings.WithAccountCredentialWriter(func(plain string) (string, error) {
+			if strings.TrimSpace(plain) == "" {
+				return plain, nil
+			}
+			return h.cipher.EncryptString(plain)
+		}))
+	}
+	return settings.NewSQLTransfer(h.db, opts...), nil
 }
 
 func (h *SettingsHandler) dbBackupManager() (*settings.DBBackupManager, error) {

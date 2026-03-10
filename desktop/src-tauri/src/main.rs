@@ -724,12 +724,59 @@ fn request_backend_with_timeout(
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse::<u16>().ok())
         .unwrap_or(0);
-    let body = response
+    let (headers, raw_body) = response
         .split_once("\r\n\r\n")
-        .map(|(_, body)| body.to_string())
-        .unwrap_or_default();
+        .map(|(head, body)| (head, body.to_string()))
+        .unwrap_or(("", String::new()));
+    let is_chunked = headers.lines().any(|line| {
+        let mut parts = line.splitn(2, ':');
+        let Some(name) = parts.next() else {
+            return false;
+        };
+        let Some(value) = parts.next() else {
+            return false;
+        };
+        name.eq_ignore_ascii_case("Transfer-Encoding")
+            && value.to_ascii_lowercase().contains("chunked")
+    });
+    let body = if is_chunked {
+        decode_chunked_body(&raw_body).unwrap_or(raw_body)
+    } else {
+        raw_body
+    };
 
     Ok(HttpResponse { status, body })
+}
+
+fn decode_chunked_body(raw: &str) -> Result<String, String> {
+    let mut remaining = raw;
+    let mut output = String::new();
+
+    loop {
+        let Some((size_line, rest)) = remaining.split_once("\r\n") else {
+            return Err("invalid chunked body: missing chunk size line".to_string());
+        };
+        let size_token = size_line
+            .split(';')
+            .next()
+            .map(str::trim)
+            .unwrap_or_default();
+        let size = usize::from_str_radix(size_token, 16)
+            .map_err(|_| "invalid chunked body: bad chunk size".to_string())?;
+        if size == 0 {
+            break;
+        }
+        if rest.len() < size + 2 {
+            return Err("invalid chunked body: truncated chunk".to_string());
+        }
+        output.push_str(&rest[..size]);
+        if &rest[size..size + 2] != "\r\n" {
+            return Err("invalid chunked body: missing chunk terminator".to_string());
+        }
+        remaining = &rest[size + 2..];
+    }
+
+    Ok(output)
 }
 
 fn map_backend_io_error(stage: &str, error: std::io::Error) -> String {
@@ -868,11 +915,11 @@ fn start_sidecar_heartbeat(mut stdin: ChildStdin) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_launch_agent_plist, format_timeout_error, format_tray_title, map_backend_io_error,
-        parse_account_menu_id, parse_accounts_response, parse_proxy_status_response,
-        should_refresh_tray_after_action, sidecar_candidate_paths, sidecar_resource_name,
-        window_close_action, AppSettingsPayload, DesktopSettingsCache, HttpResponse,
-        WindowCloseAction, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
+        build_launch_agent_plist, decode_chunked_body, format_timeout_error, format_tray_title,
+        map_backend_io_error, parse_account_menu_id, parse_accounts_response,
+        parse_proxy_status_response, should_refresh_tray_after_action, sidecar_candidate_paths,
+        sidecar_resource_name, window_close_action, AppSettingsPayload, DesktopSettingsCache,
+        HttpResponse, WindowCloseAction, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
     };
     use std::path::{Path, PathBuf};
 
@@ -1085,5 +1132,12 @@ mod tests {
             body: "{\"id\":1}".to_string(),
         };
         assert!(parse_accounts_response(&response).is_err());
+    }
+
+    #[test]
+    fn decode_chunked_body_decodes_json_payload() {
+        let raw = "1d\r\n[{\"id\":1,\"account_name\":\"a\"}]\r\n0\r\n\r\n";
+        let decoded = decode_chunked_body(raw).expect("decode chunked body");
+        assert_eq!(decoded, "[{\"id\":1,\"account_name\":\"a\"}]");
     }
 }

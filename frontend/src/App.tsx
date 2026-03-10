@@ -192,7 +192,8 @@ export function App() {
 
   async function handleSettingsChanged(next: AppSettings) {
     setAppSettings(next);
-    await refreshProxyState();
+    await Promise.all([refreshProxyState(), refreshDesktopTrayState()]);
+    setAccountsSyncToken((value) => value + 1);
   }
 
   const showProxySwitch = appSettings?.show_proxy_switch_on_home ?? true;

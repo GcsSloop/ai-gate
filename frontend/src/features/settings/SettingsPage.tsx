@@ -15,9 +15,9 @@ import {
   SwapOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
-import { Avatar, Button, Card, Input, InputNumber, Switch, Tabs, Tag, Typography, message } from "antd";
+import { Avatar, Button, Card, Input, InputNumber, Modal, Switch, Tabs, Tag, Typography, message } from "antd";
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   type AccountRecord,
@@ -106,6 +106,18 @@ function triggerTextDownload(filename: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
+function validateExchangePayload(raw: string): void {
+  let payload: { format?: string; version?: number };
+  try {
+    payload = JSON.parse(raw) as { format?: string; version?: number };
+  } catch {
+    throw new Error("当前后端导出格式不受支持，请升级后端后重试");
+  }
+  if (payload.format !== "aigate-db-exchange" || payload.version !== 1) {
+    throw new Error("当前后端导出格式不受支持，请升级后端后重试");
+  }
+}
+
 function SectionHeader(props: { icon: ReactNode; title: string; description: string }) {
   return (
     <div className="settings-section-header">
@@ -170,7 +182,8 @@ export function SettingsPage({
   const [proxySwitchBusy, setProxySwitchBusy] = useState(false);
   const [backupBusy, setBackupBusy] = useState("");
   const [importingSQL, setImportingSQL] = useState(false);
-  const sqlInputRef = useRef<HTMLInputElement | null>(null);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
 
   useEffect(() => {
     setDraftSettings(initialSettings);
@@ -263,6 +276,7 @@ export function SettingsPage({
   async function handleExportSQL() {
     try {
       const raw = await exportDatabaseSQL();
+      validateExchangePayload(raw);
       const filename = `aigate-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
       triggerTextDownload(filename, raw);
       void messageApi.success("JSON 已导出");
@@ -271,30 +285,41 @@ export function SettingsPage({
     }
   }
 
-  async function handleImportSQL(file: File | null) {
-    if (!file) {
+  async function handleImportSQL() {
+    if (!importFile) {
+      void messageApi.error("请选择导入文件");
       return;
     }
     setImportingSQL(true);
     try {
-      const raw = await file.text();
+      const raw = await importFile.text();
+      validateExchangePayload(raw);
       await importDatabaseSQL(raw);
+      const [latestAccounts, latestQueue, latestBackups] = await Promise.all([
+        listAccounts(),
+        getFailoverQueue(),
+        listDatabaseBackups(),
+      ]);
+      setAccounts(latestAccounts);
+      setFailoverQueue(normalizeQueue(latestAccounts, latestQueue));
+      setDbBackups(latestBackups);
+
+      let nextSettings = draftSettings;
       try {
         const refreshed = await getAppSettings();
         setDraftSettings(refreshed);
-        await onSettingsChanged(refreshed);
+        nextSettings = refreshed;
       } catch {
-        // Keep the current draft when the imported payload doesn't include app settings yet.
+        // Import payload currently focuses on account-domain tables. Keep existing settings if fetch fails.
       }
-      setDbBackups(await listDatabaseBackups());
+      await onSettingsChanged(nextSettings);
       void messageApi.success("JSON 导入完成");
+      setImportModalOpen(false);
+      setImportFile(null);
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : "导入 JSON 失败");
     } finally {
       setImportingSQL(false);
-      if (sqlInputRef.current) {
-        sqlInputRef.current.value = "";
-      }
     }
   }
 
@@ -521,21 +546,14 @@ export function SettingsPage({
             children: (
               <div className="settings-grid">
                 <Card className="settings-card" variant="borderless">
-                  <SectionHeader icon={<DatabaseOutlined />} title="数据管理" description="直接导出或导入 JSON，以便迁移或排查数据。" />
+                  <SectionHeader icon={<DatabaseOutlined />} title="数据管理" description="导出与导入均为明文 JSON（仅账户域数据）。" />
                   <div className="settings-action-row">
                     <Button icon={<CloudDownloadOutlined />} onClick={() => void handleExportSQL()}>
                       导出 JSON
                     </Button>
-                    <Button icon={<CloudUploadOutlined />} loading={importingSQL} onClick={() => sqlInputRef.current?.click()}>
+                    <Button icon={<CloudUploadOutlined />} loading={importingSQL} onClick={() => setImportModalOpen(true)}>
                       导入 JSON
                     </Button>
-                    <input
-                      ref={sqlInputRef}
-                      type="file"
-                      accept=".json,application/json,text/plain"
-                      style={{ display: "none" }}
-                      onChange={(event) => void handleImportSQL(event.target.files?.[0] || null)}
-                    />
                   </div>
                 </Card>
 
@@ -625,6 +643,24 @@ export function SettingsPage({
           },
         ]}
       />
+      <Modal
+        title="导入 JSON"
+        open={importModalOpen}
+        okText="验证并导入"
+        confirmLoading={importingSQL}
+        onOk={() => void handleImportSQL()}
+        onCancel={() => {
+          if (importingSQL) {
+            return;
+          }
+          setImportModalOpen(false);
+          setImportFile(null);
+        }}
+      >
+        <div style={{ display: "grid", gap: 12 }}>
+          <Input type="file" accept=".json,application/json,text/plain" onChange={(event) => setImportFile(event.target.files?.[0] || null)} />
+        </div>
+      </Modal>
     </div>
   );
 }

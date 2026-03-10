@@ -28,7 +28,23 @@ var accountExchangeTableNames = []string{
 const accountUsageSnapshotExportLimit = 2000
 
 type SQLTransfer struct {
-	db *sql.DB
+	db                    *sql.DB
+	accountCredentialRead func(accountID int64, stored string) (string, error)
+	accountCredentialWrite func(plain string) (string, error)
+}
+
+type SQLTransferOption func(*SQLTransfer)
+
+func WithAccountCredentialReader(reader func(accountID int64, stored string) (string, error)) SQLTransferOption {
+	return func(transfer *SQLTransfer) {
+		transfer.accountCredentialRead = reader
+	}
+}
+
+func WithAccountCredentialWriter(writer func(plain string) (string, error)) SQLTransferOption {
+	return func(transfer *SQLTransfer) {
+		transfer.accountCredentialWrite = writer
+	}
 }
 
 type databaseExchangePayload struct {
@@ -47,8 +63,14 @@ type databaseExchangeValue struct {
 	Value any    `json:"value,omitempty"`
 }
 
-func NewSQLTransfer(db *sql.DB) *SQLTransfer {
-	return &SQLTransfer{db: db}
+func NewSQLTransfer(db *sql.DB, opts ...SQLTransferOption) *SQLTransfer {
+	transfer := &SQLTransfer{db: db}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(transfer)
+		}
+	}
+	return transfer
 }
 
 func (t *SQLTransfer) Export() ([]byte, error) {
@@ -116,6 +138,9 @@ func (t *SQLTransfer) Export() ([]byte, error) {
 				rows.Close()
 				return nil, fmt.Errorf("scan %s export row: %w", table, err)
 			}
+			if table == "accounts" && t.accountCredentialRead != nil {
+				normalizeAccountCredential(scanValues, columns, t.accountCredentialRead)
+			}
 			rowPayload := make([]databaseExchangeValue, 0, len(scanValues))
 			for _, value := range scanValues {
 				rowPayload = append(rowPayload, encodeExchangeValue(value))
@@ -150,7 +175,7 @@ func (t *SQLTransfer) Import(raw []byte) error {
 	if payload.Version != 1 {
 		return fmt.Errorf("unsupported import version: %d", payload.Version)
 	}
-	return replaceOwnedTablesFromPayload(t.db, payload.Tables, accountExchangeTableNames)
+	return mergeAccountTablesFromPayload(t.db, payload.Tables, t.accountCredentialWrite)
 }
 
 func lookupTableColumns(db *sql.DB, table string) ([]string, error) {
@@ -194,10 +219,14 @@ func scanTableColumns(rows *sql.Rows, table string) ([]string, error) {
 	return columns, nil
 }
 
-func replaceOwnedTablesFromPayload(target *sql.DB, sourceTables map[string]databaseExchangeTable, tableNames []string) (err error) {
+func mergeAccountTablesFromPayload(
+	target *sql.DB,
+	sourceTables map[string]databaseExchangeTable,
+	credentialWriter func(plain string) (string, error),
+) (err error) {
 	tx, err := target.Begin()
 	if err != nil {
-		return fmt.Errorf("begin replace owned tables: %w", err)
+		return fmt.Errorf("begin merge account tables: %w", err)
 	}
 	defer func() {
 		if err != nil {
@@ -205,69 +234,192 @@ func replaceOwnedTablesFromPayload(target *sql.DB, sourceTables map[string]datab
 		}
 	}()
 
-	for index := len(tableNames) - 1; index >= 0; index-- {
-		table := tableNames[index]
-		if _, err = tx.Exec(fmt.Sprintf("DELETE FROM %s", quoteIdentifier(table))); err != nil {
-			return fmt.Errorf("clear %s before import: %w", table, err)
-		}
+	accountTable, ok := sourceTables["accounts"]
+	if !ok {
+		return fmt.Errorf("import payload missing accounts table")
 	}
-	for _, table := range tableNames {
-		sourceTable, ok := sourceTables[table]
-		if !ok {
+	targetAccountColumns, colErr := lookupTableColumnsInSchema(tx, "", "accounts")
+	if colErr != nil {
+		return colErr
+	}
+	accountColumnIndex := buildColumnIndex(accountTable.Columns)
+	accountIDSourceIndex, hasSourceAccountID := accountColumnIndex["id"]
+	accountInsertColumns := make([]string, 0, len(targetAccountColumns))
+	for _, column := range commonTableColumns(targetAccountColumns, accountTable.Columns) {
+		if column == "id" {
 			continue
 		}
-		targetColumns, colErr := lookupTableColumnsInSchema(tx, "", table)
+		accountInsertColumns = append(accountInsertColumns, column)
+	}
+	if len(accountInsertColumns) == 0 {
+		return fmt.Errorf("accounts table has no importable columns")
+	}
+	accountInsertSQL := buildInsertSQL("accounts", accountInsertColumns)
+	accountIDMap := make(map[int64]int64, len(accountTable.Rows))
+	for rowIndex, row := range accountTable.Rows {
+		decoded, decodeErr := decodeRowByColumns(row, accountTable.Columns)
+		if decodeErr != nil {
+			return fmt.Errorf("decode accounts row %d: %w", rowIndex, decodeErr)
+		}
+		if credentialWriter != nil {
+			rawCredential, hasCredential := anyToString(decoded["credential_ref"])
+			if hasCredential && strings.TrimSpace(rawCredential) != "" {
+				storedCredential, writeErr := credentialWriter(rawCredential)
+				if writeErr != nil {
+					return fmt.Errorf("prepare accounts row %d credential_ref: %w", rowIndex, writeErr)
+				}
+				decoded["credential_ref"] = storedCredential
+			}
+		}
+		insertValues := make([]any, 0, len(accountInsertColumns))
+		for _, column := range accountInsertColumns {
+			insertValues = append(insertValues, decoded[column])
+		}
+		result, execErr := tx.Exec(accountInsertSQL, insertValues...)
+		if execErr != nil {
+			return fmt.Errorf("merge accounts row %d: %w", rowIndex, execErr)
+		}
+		if !hasSourceAccountID || accountIDSourceIndex >= len(row) {
+			continue
+		}
+		sourceAccountID, convErr := decodeExchangeInteger(row[accountIDSourceIndex])
+		if convErr != nil {
+			continue
+		}
+		newAccountID, idErr := result.LastInsertId()
+		if idErr == nil {
+			accountIDMap[sourceAccountID] = newAccountID
+		}
+	}
+
+	if snapshotsTable, hasSnapshots := sourceTables["account_usage_snapshots"]; hasSnapshots {
+		targetSnapshotColumns, colErr := lookupTableColumnsInSchema(tx, "", "account_usage_snapshots")
 		if colErr != nil {
 			return colErr
 		}
-		sourceColumns := sourceTable.Columns
-		commonColumns := commonTableColumns(targetColumns, sourceColumns)
-		if len(commonColumns) == 0 {
-			return fmt.Errorf("copy imported rows into %s: no common columns found", table)
+		snapshotColumnIndex := buildColumnIndex(snapshotsTable.Columns)
+		snapshotAccountIDSourceIndex, hasSnapshotAccountID := snapshotColumnIndex["account_id"]
+		snapshotInsertColumns := make([]string, 0, len(targetSnapshotColumns))
+		for _, column := range commonTableColumns(targetSnapshotColumns, snapshotsTable.Columns) {
+			if column == "id" {
+				continue
+			}
+			snapshotInsertColumns = append(snapshotInsertColumns, column)
 		}
-		columnIndex := make(map[string]int, len(sourceColumns))
-		for idx, column := range sourceColumns {
-			columnIndex[column] = idx
-		}
-
-		insertColumns := make([]string, 0, len(commonColumns))
-		for _, column := range commonColumns {
-			insertColumns = append(insertColumns, quoteIdentifier(column))
-		}
-		placeholders := make([]string, 0, len(commonColumns))
-		for range commonColumns {
-			placeholders = append(placeholders, "?")
-		}
-		insertSQL := fmt.Sprintf(
-			"INSERT INTO %s (%s) VALUES (%s)",
-			quoteIdentifier(table),
-			strings.Join(insertColumns, ", "),
-			strings.Join(placeholders, ", "),
-		)
-
-		for rowIndex, row := range sourceTable.Rows {
-			values := make([]any, 0, len(commonColumns))
-			for _, column := range commonColumns {
-				sourceIndex := columnIndex[column]
-				if sourceIndex >= len(row) {
-					values = append(values, nil)
+		if hasSnapshotAccountID {
+			snapshotInsertSQL := buildInsertSQL("account_usage_snapshots", snapshotInsertColumns)
+			for rowIndex, row := range snapshotsTable.Rows {
+				if snapshotAccountIDSourceIndex >= len(row) {
 					continue
 				}
-				decoded, decodeErr := decodeExchangeValue(row[sourceIndex])
-				if decodeErr != nil {
-					return fmt.Errorf("decode %s row %d column %s: %w", table, rowIndex, column, decodeErr)
+				sourceAccountID, convErr := decodeExchangeInteger(row[snapshotAccountIDSourceIndex])
+				if convErr != nil {
+					continue
 				}
-				values = append(values, decoded)
-			}
-			if _, err = tx.Exec(insertSQL, values...); err != nil {
-				return fmt.Errorf("copy imported rows into %s: %w", table, err)
+				newAccountID, mapped := accountIDMap[sourceAccountID]
+				if !mapped {
+					continue
+				}
+				decoded, decodeErr := decodeRowByColumns(row, snapshotsTable.Columns)
+				if decodeErr != nil {
+					return fmt.Errorf("decode account_usage_snapshots row %d: %w", rowIndex, decodeErr)
+				}
+				decoded["account_id"] = newAccountID
+				insertValues := make([]any, 0, len(snapshotInsertColumns))
+				for _, column := range snapshotInsertColumns {
+					insertValues = append(insertValues, decoded[column])
+				}
+				if _, execErr := tx.Exec(snapshotInsertSQL, insertValues...); execErr != nil {
+					return fmt.Errorf("merge account_usage_snapshots row %d: %w", rowIndex, execErr)
+				}
 			}
 		}
 	}
+
+	if queueTable, hasQueue := sourceTables["failover_queue_items"]; hasQueue {
+		queueColumnIndex := buildColumnIndex(queueTable.Columns)
+		queueAccountIDSourceIndex, hasQueueAccountID := queueColumnIndex["account_id"]
+		if hasQueueAccountID {
+			var maxPosition int64
+			if scanErr := tx.QueryRow(`SELECT COALESCE(MAX(position), 0) FROM failover_queue_items`).Scan(&maxPosition); scanErr != nil {
+				return fmt.Errorf("query failover_queue_items max position: %w", scanErr)
+			}
+			nextPosition := maxPosition + 1
+			queueInsertSQL := `INSERT INTO failover_queue_items (account_id, position) VALUES (?, ?)`
+			for _, row := range queueTable.Rows {
+				if queueAccountIDSourceIndex >= len(row) {
+					continue
+				}
+				sourceAccountID, convErr := decodeExchangeInteger(row[queueAccountIDSourceIndex])
+				if convErr != nil {
+					continue
+				}
+				newAccountID, mapped := accountIDMap[sourceAccountID]
+				if !mapped {
+					continue
+				}
+				if _, execErr := tx.Exec(queueInsertSQL, newAccountID, nextPosition); execErr != nil {
+					return fmt.Errorf("merge failover_queue_items: %w", execErr)
+				}
+				nextPosition++
+			}
+		}
+	}
+
 	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("commit imported data: %w", err)
+		return fmt.Errorf("commit merged account tables: %w", err)
 	}
 	return nil
+}
+
+func buildColumnIndex(columns []string) map[string]int {
+	index := make(map[string]int, len(columns))
+	for i, column := range columns {
+		index[column] = i
+	}
+	return index
+}
+
+func buildInsertSQL(table string, columns []string) string {
+	insertColumns := make([]string, 0, len(columns))
+	placeholders := make([]string, 0, len(columns))
+	for _, column := range columns {
+		insertColumns = append(insertColumns, quoteIdentifier(column))
+		placeholders = append(placeholders, "?")
+	}
+	return fmt.Sprintf(
+		"INSERT INTO %s (%s) VALUES (%s)",
+		quoteIdentifier(table),
+		strings.Join(insertColumns, ", "),
+		strings.Join(placeholders, ", "),
+	)
+}
+
+func normalizeAccountCredential(
+	rowValues []any,
+	columns []string,
+	reader func(accountID int64, stored string) (string, error),
+) {
+	columnIndex := buildColumnIndex(columns)
+	idIndex, hasID := columnIndex["id"]
+	credentialIndex, hasCredential := columnIndex["credential_ref"]
+	if !hasID || !hasCredential || idIndex >= len(rowValues) || credentialIndex >= len(rowValues) {
+		return
+	}
+
+	accountID, ok := anyToInt64(rowValues[idIndex])
+	if !ok || accountID <= 0 {
+		return
+	}
+	storedCredential, ok := anyToString(rowValues[credentialIndex])
+	if !ok || strings.TrimSpace(storedCredential) == "" {
+		return
+	}
+	credential, err := reader(accountID, storedCredential)
+	if err != nil || strings.TrimSpace(credential) == "" {
+		return
+	}
+	rowValues[credentialIndex] = credential
 }
 
 func quoteIdentifiers(values []string) []string {
@@ -354,6 +506,81 @@ func decodeExchangeValue(value databaseExchangeValue) (any, error) {
 		return raw, nil
 	default:
 		return nil, fmt.Errorf("unknown value type %q", value.Type)
+	}
+}
+
+func decodeRowByColumns(row []databaseExchangeValue, columns []string) (map[string]any, error) {
+	decoded := make(map[string]any, len(columns))
+	for columnIndex, column := range columns {
+		if columnIndex >= len(row) {
+			decoded[column] = nil
+			continue
+		}
+		value, err := decodeExchangeValue(row[columnIndex])
+		if err != nil {
+			return nil, fmt.Errorf("decode column %s: %w", column, err)
+		}
+		decoded[column] = value
+	}
+	return decoded, nil
+}
+
+func decodeExchangeInteger(value databaseExchangeValue) (int64, error) {
+	decoded, err := decodeExchangeValue(value)
+	if err != nil {
+		return 0, err
+	}
+	switch typed := decoded.(type) {
+	case int64:
+		return typed, nil
+	case float64:
+		return int64(typed), nil
+	case string:
+		parsed, parseErr := strconv.ParseInt(typed, 10, 64)
+		if parseErr != nil {
+			return 0, parseErr
+		}
+		return parsed, nil
+	default:
+		return 0, fmt.Errorf("unsupported integer type %T", decoded)
+	}
+}
+
+func anyToInt64(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int64:
+		return typed, true
+	case int:
+		return int64(typed), true
+	case int32:
+		return int64(typed), true
+	case float64:
+		return int64(typed), true
+	case []byte:
+		parsed, err := strconv.ParseInt(string(typed), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	case string:
+		parsed, err := strconv.ParseInt(typed, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		return 0, false
+	}
+}
+
+func anyToString(value any) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		return typed, true
+	case []byte:
+		return string(typed), true
+	default:
+		return "", false
 	}
 }
 

@@ -75,7 +75,12 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/dashboard/account-stats", api.NewDashboardHandler(conversationRepo))
 	apiMux.Handle("/conversations", conversationsHandler)
 	apiMux.Handle("/conversations/", conversationsHandler)
-	settingsHandler := api.NewSettingsHandler(settingsRepo, api.WithSettingsDatabase(store.DB(), cfg.DatabasePath))
+	settingsHandler := api.NewSettingsHandler(
+		settingsRepo,
+		api.WithSettingsDatabase(store.DB(), cfg.DatabasePath),
+		api.WithSettingsAccounts(accountRepo),
+		api.WithSettingsCredentialCipher(credentialCipher),
+	)
 	apiMux.Handle("/settings/codex/backup", settingsHandler)
 	apiMux.Handle("/settings/codex/backups", settingsHandler)
 	apiMux.Handle("/settings/codex/backups/", settingsHandler)

@@ -195,8 +195,8 @@ func TestSettingsHandlerExportsAndImportsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListFailoverQueue(after import) returned error: %v", err)
 	}
-	if len(restoredQueue) != 0 {
-		t.Fatalf("restored queue should be overwritten by exported empty queue, got %v", restoredQueue)
+	if !equalInt64s(restoredQueue, []int64{3, 5, 8}) {
+		t.Fatalf("restored queue should keep existing entries when export has no queue rows, got %v", restoredQueue)
 	}
 }
 
