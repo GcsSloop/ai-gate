@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -253,6 +254,7 @@ func TestSettingsHandlerBackupAndList(t *testing.T) {
 	assertFileContains(t, filepath.Join(backupDir, "config.toml"), `provider = "router"`)
 	assertFileContains(t, filepath.Join(backupDir, "auth.json"), `"token-a"`)
 	assertFileContains(t, filepath.Join(backupDir, "manifest.json"), `"source":"~/.codex/config.toml"`)
+	assertFileContains(t, filepath.Join(backupDir, "manifest.json"), `"backup_source":"manual"`)
 
 	listReq := httptest.NewRequest(http.MethodGet, "/settings/codex/backups", nil)
 	listRec := httptest.NewRecorder()
@@ -288,6 +290,54 @@ func TestSettingsHandlerBackupAndList(t *testing.T) {
 	}
 	if files["config.toml"] == "" || files["auth.json"] == "" || files["manifest.json"] == "" {
 		t.Fatalf("backup files content missing: %#v", files)
+	}
+}
+
+func TestSettingsHandlerBackupRetentionBySource(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	prepareCodexFiles(t, home, "provider = \"router\"\n", `{"access_token":"token-a"}`)
+
+	backupRoot := filepath.Join(home, ".aigate", "data", "codex", "backup")
+	if err := os.MkdirAll(backupRoot, 0o755); err != nil {
+		t.Fatalf("mkdir backup root: %v", err)
+	}
+	for i := 0; i < 11; i++ {
+		seedCodexBackupDir(t, backupRoot, "20260101-00000"+strconv.Itoa(i)+".000", "auto")
+		seedCodexBackupDir(t, backupRoot, "20260101-10000"+strconv.Itoa(i)+".000", "proxy_enable")
+	}
+	for i := 0; i < 3; i++ {
+		seedCodexBackupDir(t, backupRoot, "20260102-20000"+strconv.Itoa(i)+".000", "manual")
+	}
+
+	handler, _ := newSettingsHandler(t)
+	backupReq := httptest.NewRequest(http.MethodPost, "/settings/codex/backup", nil)
+	backupRec := httptest.NewRecorder()
+	handler.ServeHTTP(backupRec, backupReq)
+	if backupRec.Code != http.StatusCreated {
+		t.Fatalf("manual backup status = %d, want %d", backupRec.Code, http.StatusCreated)
+	}
+
+	autoCount, err := countBackupsBySource(backupRoot, "auto")
+	if err != nil {
+		t.Fatalf("count auto backups: %v", err)
+	}
+	if autoCount != 10 {
+		t.Fatalf("auto backup count = %d, want 10", autoCount)
+	}
+	proxyCount, err := countBackupsBySource(backupRoot, "proxy_enable")
+	if err != nil {
+		t.Fatalf("count proxy_enable backups: %v", err)
+	}
+	if proxyCount != 10 {
+		t.Fatalf("proxy_enable backup count = %d, want 10", proxyCount)
+	}
+	manualCount, err := countBackupsBySource(backupRoot, "manual")
+	if err != nil {
+		t.Fatalf("count manual backups: %v", err)
+	}
+	if manualCount != 4 {
+		t.Fatalf("manual backup count = %d, want 4", manualCount)
 	}
 }
 
@@ -387,6 +437,36 @@ func TestSettingsHandlerProxyEnableDisable(t *testing.T) {
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
 }
 
+func TestSettingsHandlerProxyDisableRestoreDoesNotRestoreAuthJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	prepareCodexFiles(t, home, "model_provider = \"openai\"\n", `{"access_token":"token-before"}`)
+
+	handler, _ := newSettingsHandler(t)
+
+	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
+	enableRec := httptest.NewRecorder()
+	handler.ServeHTTP(enableRec, enableReq)
+	if enableRec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/proxy/enable status = %d, want %d", enableRec.Code, http.StatusOK)
+	}
+
+	if err := os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte(`{"access_token":"token-updated"}`), 0o600); err != nil {
+		t.Fatalf("write auth.json after enable: %v", err)
+	}
+
+	disableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/disable", nil)
+	disableRec := httptest.NewRecorder()
+	handler.ServeHTTP(disableRec, disableReq)
+	if disableRec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/proxy/disable status = %d, want %d", disableRec.Code, http.StatusOK)
+	}
+
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
+	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-updated"`)
+	assertFileNotContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
+}
+
 func TestSettingsHandlerUpdatingProxyAddressRewritesEnabledConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -436,7 +516,13 @@ func TestSettingsHandlerProxyDisableConflictWhenConfigChanged(t *testing.T) {
 		t.Fatalf("enable status = %d, want %d", enableRec.Code, http.StatusOK)
 	}
 
-	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte("model_provider = \"changed\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(`model_provider = "aigate"
+
+[model_providers.aigate]
+name = "aigate"
+base_url = "http://127.0.0.1:6789/ai-router/api"
+wire_api = "responses"
+`), 0o600); err != nil {
 		t.Fatalf("write config for conflict: %v", err)
 	}
 
@@ -453,7 +539,8 @@ func TestSettingsHandlerProxyDisableConflictWhenConfigChanged(t *testing.T) {
 	if skipRec.Code != http.StatusOK {
 		t.Fatalf("skip-restore disable status = %d, want %d", skipRec.Code, http.StatusOK)
 	}
-	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "changed"`)
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
+	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `[model_providers.aigate]`)
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
 }
 
@@ -642,6 +729,55 @@ func assertFileContains(t *testing.T, path string, expected string) {
 	if !strings.Contains(body, expected) {
 		t.Fatalf("%s does not contain %q. got=%q", path, expected, body)
 	}
+}
+
+func assertFileNotContains(t *testing.T, path string, unwanted string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	body := string(raw)
+	if strings.Contains(body, unwanted) {
+		t.Fatalf("%s unexpectedly contains %q. got=%q", path, unwanted, body)
+	}
+}
+
+func seedCodexBackupDir(t *testing.T, backupRoot string, backupID string, backupSource string) {
+	t.Helper()
+	backupDir := filepath.Join(backupRoot, backupID)
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		t.Fatalf("mkdir backup dir %s: %v", backupDir, err)
+	}
+	manifest := `{"backup_id":"` + backupID + `","kind":"backup","backup_source":"` + backupSource + `","created_at":"2026-01-01T00:00:00Z","files":[{"name":"config.toml","source":"~/.codex/config.toml"},{"name":"auth.json","source":"~/.codex/auth.json"}]}`
+	if err := os.WriteFile(filepath.Join(backupDir, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+}
+
+func countBackupsBySource(backupRoot string, source string) (int, error) {
+	entries, err := os.ReadDir(backupRoot)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(backupRoot, entry.Name(), "manifest.json"))
+		if err != nil {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			continue
+		}
+		if payload["backup_source"] == source {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func newSettingsHandler(t *testing.T) (*api.SettingsHandler, *settings.SQLiteRepository) {

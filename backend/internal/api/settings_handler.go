@@ -56,10 +56,11 @@ func NewSettingsHandler(repo SettingsRepository, opts ...SettingsHandlerOption) 
 }
 
 type codexBackupManifest struct {
-	BackupID  string                    `json:"backup_id"`
-	Kind      string                    `json:"kind"`
-	CreatedAt string                    `json:"created_at"`
-	Files     []codexBackupManifestFile `json:"files"`
+	BackupID     string                    `json:"backup_id"`
+	Kind         string                    `json:"kind"`
+	BackupSource string                    `json:"backup_source,omitempty"`
+	CreatedAt    string                    `json:"created_at"`
+	Files        []codexBackupManifestFile `json:"files"`
 }
 
 type codexBackupManifestFile struct {
@@ -68,8 +69,9 @@ type codexBackupManifestFile struct {
 }
 
 type codexBackupItem struct {
-	BackupID  string `json:"backup_id"`
-	CreatedAt string `json:"created_at"`
+	BackupID     string `json:"backup_id"`
+	BackupSource string `json:"backup_source,omitempty"`
+	CreatedAt    string `json:"created_at"`
 }
 
 type codexRestoreRequest struct {
@@ -110,6 +112,19 @@ type proxyStatusResponse struct {
 	Host           string `json:"host"`
 	Port           int    `json:"port"`
 }
+
+const defaultModelProvider = "openai"
+
+const (
+	codexBackupKindRegular    = "backup"
+	codexBackupKindPreRestore = "pre_restore"
+	backupSourceManual        = "manual"
+	backupSourceAuto          = "auto"
+	backupSourceProxyEnable   = "proxy_enable"
+	backupSourcePreRestore    = "pre_restore"
+	maxAutoBackups            = 10
+	maxProxyEnableBackups     = 10
+)
 
 func (h *SettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
@@ -156,7 +171,7 @@ func (h *SettingsHandler) createCodexBackup(w http.ResponseWriter) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	backupID, _, err := createCodexBackupSnapshot(home, "backup")
+	backupID, _, err := createCodexBackupSnapshot(home, codexBackupKindRegular, backupSourceManual)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -316,12 +331,13 @@ func (h *SettingsHandler) saveFailoverQueue(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, payload)
 }
 
-func createCodexBackupSnapshot(home string, kind string) (string, string, error) {
+func createCodexBackupSnapshot(home string, kind string, backupSource string) (string, string, error) {
 	backupID := time.Now().Format("20060102-150405.000")
 	targetRoot := codexBackupRoot(home)
-	if kind == "pre_restore" {
+	if kind == codexBackupKindPreRestore {
 		targetRoot = codexPreRestoreRoot(home)
 	}
+	backupSource = normalizeBackupSource(kind, backupSource)
 	targetDir := filepath.Join(targetRoot, backupID)
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return "", "", err
@@ -334,7 +350,7 @@ func createCodexBackupSnapshot(home string, kind string) (string, string, error)
 	for _, file := range files {
 		source := filepath.Join(home, ".codex", file.Name)
 		target := filepath.Join(targetDir, file.Name)
-		if kind == "pre_restore" {
+		if kind == codexBackupKindPreRestore {
 			if err := copyOptionalFile(source, target); err != nil {
 				return "", "", err
 			}
@@ -345,12 +361,18 @@ func createCodexBackupSnapshot(home string, kind string) (string, string, error)
 		}
 	}
 	if err := writeManifest(targetDir, codexBackupManifest{
-		BackupID:  backupID,
-		Kind:      kind,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-		Files:     files,
+		BackupID:     backupID,
+		Kind:         kind,
+		BackupSource: backupSource,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		Files:        files,
 	}); err != nil {
 		return "", "", err
+	}
+	if kind == codexBackupKindRegular {
+		if err := enforceCodexBackupRetention(home); err != nil {
+			return "", "", err
+		}
 	}
 	return backupID, targetDir, nil
 }
@@ -369,7 +391,7 @@ func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
 		return
 	}
 
-	backupID, _, err := createCodexBackupSnapshot(home, "backup")
+	backupID, _, err := createCodexBackupSnapshot(home, codexBackupKindRegular, backupSourceProxyEnable)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -465,10 +487,15 @@ func (h *SettingsHandler) disableProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if disableMode == "detach" {
-		// User chose "close without overwrite": keep current config untouched.
+		updated := setModelProvider(string(raw), defaultModelProvider)
+		updated = removeAigateProviderDefinitions(updated)
+		if err := writeAtomic(configPath, []byte(updated), 0o600); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	} else {
 		backupDir := filepath.Join(codexBackupRoot(home), session.BackupID)
-		for _, name := range []string{"config.toml", "auth.json"} {
+		for _, name := range []string{"config.toml"} {
 			source := filepath.Join(backupDir, name)
 			target := filepath.Join(home, ".codex", name)
 			if err := copyRequiredFile(source, target); err != nil {
@@ -649,8 +676,9 @@ func (h *SettingsHandler) listCodexBackups(w http.ResponseWriter) {
 			continue
 		}
 		items = append(items, codexBackupItem{
-			BackupID:  backupID,
-			CreatedAt: manifest.CreatedAt,
+			BackupID:     backupID,
+			BackupSource: normalizeBackupSource(manifest.Kind, manifest.BackupSource),
+			CreatedAt:    manifest.CreatedAt,
 		})
 	}
 
@@ -684,7 +712,7 @@ func (h *SettingsHandler) restoreCodexBackup(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	preRestoreID, _, err := createCodexBackupSnapshot(home, "pre_restore")
+	preRestoreID, _, err := createCodexBackupSnapshot(home, codexBackupKindPreRestore, backupSourcePreRestore)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1086,6 +1114,80 @@ func writeManifest(dir string, manifest codexBackupManifest) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "manifest.json"), raw, 0o600)
+}
+
+func normalizeBackupSource(kind string, backupSource string) string {
+	value := strings.ToLower(strings.TrimSpace(backupSource))
+	switch value {
+	case backupSourceManual, backupSourceAuto, backupSourceProxyEnable, backupSourcePreRestore:
+		return value
+	}
+	if kind == codexBackupKindPreRestore {
+		return backupSourcePreRestore
+	}
+	// Historical backups without source are treated as manual so they are never deleted.
+	return backupSourceManual
+}
+
+func enforceCodexBackupRetention(home string) error {
+	root := codexBackupRoot(home)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	type backupEntry struct {
+		id     string
+		path   string
+		source string
+	}
+	grouped := map[string][]backupEntry{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, entry.Name())
+		raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+		if err != nil {
+			continue
+		}
+		var manifest codexBackupManifest
+		if err := json.Unmarshal(raw, &manifest); err != nil {
+			continue
+		}
+		if manifest.Kind != "" && manifest.Kind != codexBackupKindRegular {
+			continue
+		}
+		source := normalizeBackupSource(codexBackupKindRegular, manifest.BackupSource)
+		grouped[source] = append(grouped[source], backupEntry{
+			id:     entry.Name(),
+			path:   dir,
+			source: source,
+		})
+	}
+
+	limits := map[string]int{
+		backupSourceAuto:        maxAutoBackups,
+		backupSourceProxyEnable: maxProxyEnableBackups,
+	}
+	for source, limit := range limits {
+		items := grouped[source]
+		if len(items) <= limit {
+			continue
+		}
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].id > items[j].id
+		})
+		for _, item := range items[limit:] {
+			if err := os.RemoveAll(item.path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func copyRequiredFile(source string, target string) error {
