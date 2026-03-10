@@ -12,3 +12,20 @@ desktop/src-tauri/target/
 *.db
 *.sqlite
 *.sqlite3
+
+# Local one-off/generated artifacts
+.tmp-app-server-hooks.prettier.js
+.tmp-app-server-hooks.pretty.js
+app-server-manager-hooks-*.js
+links-*.js
+use-navigate-to-local-conversation-*.js
+
+# Raw asset scratch files (source copies are under frontend/src/assets)
+assets/openai.png
+assets/claude-code.png
+assets/ppchat.png
+frontend/src/assets/providers/img.png
+frontend/src/assets/providers/openai.svg
+frontend/src/assets/providers/claude-code.svg
+frontend/src/assets/source-openai.svg
+frontend/src/assets/source-claude-code.svg
