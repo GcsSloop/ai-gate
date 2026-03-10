@@ -20,14 +20,39 @@ import {
   Modal,
   Select,
   Skeleton,
-  Space,
   Statistic,
-  Switch,
   Tag,
   Typography,
   message,
 } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import {
+  DndContext,
+  DragOverlay,
+  MouseSensor,
+  PointerSensor,
+  closestCenter,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ButtonHTMLAttributes,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 
 import {
   createAccount,
@@ -96,6 +121,10 @@ function inferSourceIconByBaseURL(baseURL: string): SourceIcon {
   return "openai";
 }
 
+function sameAccountOrder(left: AccountRecord[], right: AccountRecord[]): boolean {
+  return left.length === right.length && left.every((item, index) => item.id === right[index]?.id);
+}
+
 function formatResetAt(value?: string) {
   if (!value) {
     return "--";
@@ -122,6 +151,41 @@ type AccountsPageProps = {
   showAddButton?: boolean;
 };
 
+type AccountCardRenderOptions = {
+  className?: string;
+  actionsDisabled?: boolean;
+  cardRef?: (node: HTMLDivElement | null) => void;
+  handleAttributes?: Record<string, unknown>;
+  handleListeners?: Record<string, unknown>;
+  setHandleRef?: (node: HTMLButtonElement | null) => void;
+  style?: CSSProperties;
+};
+
+type SortableAccountCardProps = {
+  id: number;
+  record: AccountRecord;
+  renderCard: (record: AccountRecord, options?: AccountCardRenderOptions) => ReactNode;
+};
+
+function SortableAccountCard({ id, record, renderCard }: SortableAccountCardProps) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
+    useSortable({ id });
+
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return renderCard(record, {
+    cardRef: setNodeRef,
+    className: isDragging ? "account-card-item-placeholder" : undefined,
+    handleAttributes: attributes as Record<string, unknown>,
+    handleListeners: listeners as Record<string, unknown>,
+    setHandleRef: setActivatorNodeRef,
+    style,
+  });
+}
+
 export function AccountsPage({
   syncToken = 0,
   addModalMode: externalAddModalMode,
@@ -137,12 +201,30 @@ export function AccountsPage({
   const [detailLogsLoading, setDetailLogsLoading] = useState(false);
   const [detailLogs, setDetailLogs] = useState<PPChatTokenLogsPayload["data"] | null>(null);
   const [draggingAccountID, setDraggingAccountID] = useState<number | null>(null);
-  const [dragOverAccountID, setDragOverAccountID] = useState<number | null>(null);
 
   const [thirdPartyForm] = Form.useForm();
   const [officialForm] = Form.useForm();
   const [editForm] = Form.useForm();
   const [testForm] = Form.useForm();
+  const accountsRef = useRef<AccountRecord[]>([]);
+  const dragSnapshotRef = useRef<AccountRecord[] | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 4 },
+    }),
+    useSensor(MouseSensor, {
+      activationConstraint: { distance: 4 },
+    }),
+  );
+
+  function setAccountsState(next: AccountRecord[] | ((items: AccountRecord[]) => AccountRecord[])) {
+    setAccounts((items) => {
+      const resolved = typeof next === "function" ? next(items) : next;
+      accountsRef.current = resolved;
+      return resolved;
+    });
+  }
+
   useEffect(() => {
     void refreshAll();
   }, [syncToken]);
@@ -192,6 +274,7 @@ export function AccountsPage({
 
   async function refreshAll() {
     const accountItems = await listAccounts();
+    accountsRef.current = accountItems;
     setAccounts(accountItems);
     void refreshUsage();
   }
@@ -200,7 +283,7 @@ export function AccountsPage({
     try {
       const usageItems = await listAccountUsage();
       const usageByAccount = new Map(usageItems.map((item) => [item.account_id, item]));
-      setAccounts((items) =>
+      setAccountsState((items) =>
         items.map((item) => {
           const usage = usageByAccount.get(item.id);
           if (!usage) {
@@ -217,7 +300,7 @@ export function AccountsPage({
     }
   }
 
-  async function handleCreateThirdParty(values: { account_name: string; base_url: string; credential_ref: string; supports_responses?: boolean }) {
+  async function handleCreateThirdParty(values: { account_name: string; base_url: string; credential_ref: string }) {
     await createAccount({
       provider_type: "openai-compatible",
       account_name: values.account_name,
@@ -225,7 +308,7 @@ export function AccountsPage({
       auth_mode: "api_key",
       base_url: values.base_url,
       credential_ref: values.credential_ref,
-      supports_responses: !!values.supports_responses,
+      supports_responses: true,
     });
     setInternalAddModalMode(null);
     thirdPartyForm.resetFields();
@@ -251,7 +334,6 @@ export function AccountsPage({
       source_icon: normalizeSourceIcon(account.source_icon),
       base_url: account.base_url,
       credential_ref: "",
-      supports_responses: !!account.supports_responses,
     });
     testForm.setFieldsValue({
       model: getDefaultTestModel(account),
@@ -264,7 +346,6 @@ export function AccountsPage({
     source_icon: SourceIcon;
     base_url: string;
     credential_ref?: string;
-    supports_responses?: boolean;
   }) {
     if (!editingAccount) {
       return;
@@ -274,7 +355,7 @@ export function AccountsPage({
       source_icon: normalizeSourceIcon(values.source_icon),
       base_url: values.base_url,
       credential_ref: values.credential_ref || undefined,
-      supports_responses: !!values.supports_responses,
+      supports_responses: true,
     });
     setEditingAccount(null);
     editForm.resetFields();
@@ -303,7 +384,7 @@ export function AccountsPage({
       return;
     }
     const previous = [...accounts];
-    setAccounts((items) =>
+    setAccountsState((items) =>
       items.map((item) => ({
         ...item,
         is_active: item.id === account.id,
@@ -314,7 +395,7 @@ export function AccountsPage({
       void refreshDesktopTrayState();
       void messageApi.success(`已切换当前激活账户为 ${account.account_name}`);
     } catch (error) {
-      setAccounts(previous);
+      setAccountsState(previous);
       void messageApi.error(error instanceof Error ? error.message : "切换激活账户失败");
     }
   }
@@ -329,46 +410,84 @@ export function AccountsPage({
     }
   }
 
-  function moveAccountCard(fromID: number, toID: number) {
-    if (fromID === toID) {
+  function handleDragStart(event: DragStartEvent) {
+    const activeID = Number(event.active.id);
+    dragSnapshotRef.current = accountsRef.current;
+    setDraggingAccountID(activeID);
+  }
+
+  function handleDragOver(event: DragOverEvent) {
+    const overID = event.over ? Number(event.over.id) : null;
+    if (overID === null) {
       return;
     }
-    setAccounts((items) => {
-      const fromIndex = items.findIndex((item) => item.id === fromID);
-      const toIndex = items.findIndex((item) => item.id === toID);
-      if (fromIndex < 0 || toIndex < 0) {
+
+    setAccountsState((items) => {
+      const activeIndex = items.findIndex((item) => item.id === Number(event.active.id));
+      const overIndex = items.findIndex((item) => item.id === overID);
+      if (activeIndex < 0 || overIndex < 0 || activeIndex === overIndex) {
         return items;
       }
-      const next = [...items];
-      const [moved] = next.splice(fromIndex, 1);
-      next.splice(toIndex, 0, moved);
-      void persistAccountPriority(next);
-      return next;
+      return arrayMove(items, activeIndex, overIndex);
     });
   }
 
-  async function persistAccountPriority(items: AccountRecord[]) {
+  async function finishDragSort() {
+    const snapshot = dragSnapshotRef.current;
+    const current = accountsRef.current;
+    dragSnapshotRef.current = null;
+    setDraggingAccountID(null);
+
+    if (!snapshot || sameAccountOrder(snapshot, current)) {
+      return;
+    }
+
     try {
-      for (let index = 0; index < items.length; index += 1) {
-        const item = items[index];
-        const priority = items.length - index;
-        let attempt = 0;
-        let saved = false;
-        while (attempt < 3 && !saved) {
-          try {
-            await updateAccount(item.id, { priority });
-            saved = true;
-          } catch (error) {
-            attempt += 1;
-            if (attempt >= 3) {
-              throw error;
-            }
-            await sleep(120 * attempt);
+      await persistAccountPriority(current);
+    } catch {
+      setAccountsState(snapshot);
+      void messageApi.warning("排序已更新到界面，但保存顺序失败，请稍后重试");
+    }
+  }
+
+  async function handleDragEnd(event: DragEndEvent) {
+    if (!event.over) {
+      if (dragSnapshotRef.current) {
+        setAccountsState(dragSnapshotRef.current);
+      }
+      dragSnapshotRef.current = null;
+      setDraggingAccountID(null);
+      return;
+    }
+    await finishDragSort();
+  }
+
+  function handleDragCancel() {
+    if (dragSnapshotRef.current) {
+      setAccountsState(dragSnapshotRef.current);
+    }
+    dragSnapshotRef.current = null;
+    setDraggingAccountID(null);
+  }
+
+  async function persistAccountPriority(items: AccountRecord[]) {
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      const priority = items.length - index;
+      let attempt = 0;
+      let saved = false;
+      while (attempt < 3 && !saved) {
+        try {
+          await updateAccount(item.id, { priority });
+          saved = true;
+        } catch (error) {
+          attempt += 1;
+          if (attempt >= 3) {
+            throw error;
           }
+          await sleep(120 * attempt);
         }
       }
-    } catch {
-      void messageApi.warning("排序已更新到界面，但保存顺序失败，请稍后重试");
     }
   }
 
@@ -397,6 +516,108 @@ export function AccountsPage({
       { key: "big", title: "今日大TOKEN请求数", value: `${info.today_big_token_requests ?? 0}` },
     ];
   }, [detailLogs]);
+
+  const draggingAccount =
+    draggingAccountID === null
+      ? null
+      : accounts.find((item) => item.id === draggingAccountID) ??
+        dragSnapshotRef.current?.find((item) => item.id === draggingAccountID) ??
+        null;
+
+  function renderAccountCard(record: AccountRecord, options: AccountCardRenderOptions = {}) {
+    const sourceIcon = sourceIconMap[normalizeSourceIcon(record.source_icon)];
+
+    return (
+      <div
+        ref={options.cardRef}
+        className={`account-card-item ${record.is_active ? "active-account-card" : ""} ${options.className ?? ""}`.trim()}
+        style={options.style}
+      >
+        <Card variant="borderless" className="account-card-surface">
+          <div className="account-card-shell">
+            <button
+              type="button"
+              ref={options.setHandleRef}
+              className="account-drag-handle"
+              aria-label={`拖拽排序-${record.account_name}`}
+              {...(options.handleAttributes as ButtonHTMLAttributes<HTMLButtonElement> | undefined)}
+              {...(options.handleListeners as ButtonHTMLAttributes<HTMLButtonElement> | undefined)}
+            >
+              <HolderOutlined />
+            </button>
+            <div className="account-main">
+              <Avatar src={sourceIcon.icon} size={36} shape="square" className="account-source-icon" />
+              <div className="account-main-text">
+                <div className="account-title-row">
+                  <Text strong>{record.account_name}</Text>
+                  <Tag color={statusColorMap[record.status] ?? "default"}>
+                    {statusTextMap[record.status] ?? record.status}
+                  </Tag>
+                  {record.is_active ? <Tag color="green">当前激活</Tag> : null}
+                </div>
+                <Text type="secondary" className="account-base-url">
+                  {record.base_url || "OpenAI 官方"}
+                </Text>
+              </div>
+            </div>
+          </div>
+          <div className="account-actions">
+            <Button
+              type="primary"
+              className="account-enable-button"
+              aria-label={`设为激活-${record.account_name}`}
+              icon={<CheckCircleOutlined />}
+              disabled={record.is_active || options.actionsDisabled}
+              onClick={() => void handleSetActive(record)}
+            >
+              启用
+            </Button>
+            <Button
+              type="text"
+              className="account-action-button"
+              aria-label={`编辑-${record.account_name}`}
+              icon={<EditOutlined />}
+              disabled={options.actionsDisabled}
+              onClick={() => openEditModal(record)}
+            />
+            <Button
+              type="text"
+              className="account-action-button"
+              aria-label={`复制-${record.account_name}`}
+              icon={<CopyOutlined />}
+              disabled={options.actionsDisabled}
+              onClick={() => void handleCopyAccount(record)}
+            />
+            <Button
+              type="text"
+              className="account-action-button"
+              aria-label={`详情-${record.account_name}`}
+              icon={<InfoCircleOutlined />}
+              disabled={options.actionsDisabled}
+              onClick={() => setDetailAccount(record)}
+            />
+            <Button
+              type="text"
+              danger
+              className="account-action-button"
+              aria-label={`删除-${record.account_name}`}
+              icon={<DeleteOutlined />}
+              disabled={options.actionsDisabled}
+              onClick={() =>
+                void Modal.confirm({
+                  title: `确认删除账户「${record.account_name}」吗？`,
+                  okText: "删除",
+                  cancelText: "取消",
+                  okButtonProps: { danger: true },
+                  onOk: () => handleDelete(record),
+                })
+              }
+            />
+          </div>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="dashboard-page">
@@ -433,100 +654,32 @@ export function AccountsPage({
           </div>
         </Card>
       ) : (
-        <div className="account-cards">
-          {accounts.map((record) => {
-            const sourceIcon = sourceIconMap[normalizeSourceIcon(record.source_icon)];
-            return (
-              <Card
-                key={record.id}
-                className={`account-card-item ${record.is_active ? "active-account-card" : ""} ${
-                  dragOverAccountID === record.id ? "drag-over-account-card" : ""
-                }`}
-                variant="borderless"
-                draggable
-                onDragStart={() => setDraggingAccountID(record.id)}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  if (draggingAccountID && draggingAccountID !== record.id) {
-                    setDragOverAccountID(record.id);
-                  }
-                }}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  if (draggingAccountID) {
-                    moveAccountCard(draggingAccountID, record.id);
-                  }
-                  setDraggingAccountID(null);
-                  setDragOverAccountID(null);
-                }}
-                onDragEnd={() => {
-                  setDraggingAccountID(null);
-                  setDragOverAccountID(null);
-                }}
-              >
-                <div className="account-card-shell">
-                  <Button type="text" icon={<HolderOutlined />} className="account-drag-handle" aria-label={`拖拽排序-${record.account_name}`} />
-                  <div className="account-main">
-                    <Avatar src={sourceIcon.icon} size={42} shape="square" className="account-source-icon" />
-                    <div className="account-main-text">
-                      <div className="account-title-row">
-                        <Text strong>{record.account_name}</Text>
-                        <Tag color={statusColorMap[record.status] ?? "default"}>{statusTextMap[record.status] ?? record.status}</Tag>
-                        {record.is_active ? <Tag color="green">当前激活</Tag> : null}
-                      </div>
-                      <Text type="secondary" className="account-base-url">
-                        {record.base_url || "OpenAI 官方"}
-                      </Text>
-                    </div>
-                  </div>
-                  <div className="account-actions">
-                    <Button
-                      type="primary"
-                      className="account-enable-button"
-                      aria-label={`设为激活-${record.account_name}`}
-                      icon={<CheckCircleOutlined />}
-                      disabled={record.is_active}
-                      onClick={() => void handleSetActive(record)}
-                    >
-                      启用
-                    </Button>
-                    <Button type="text" className="account-action-button" aria-label={`编辑-${record.account_name}`} icon={<EditOutlined />} onClick={() => openEditModal(record)} />
-                    <Button
-                      type="text"
-                      className="account-action-button"
-                      aria-label={`复制-${record.account_name}`}
-                      icon={<CopyOutlined />}
-                      onClick={() => void handleCopyAccount(record)}
-                    />
-                    <Button
-                      type="text"
-                      className="account-action-button"
-                      aria-label={`详情-${record.account_name}`}
-                      icon={<InfoCircleOutlined />}
-                      onClick={() => setDetailAccount(record)}
-                    />
-                    <Button
-                      type="text"
-                      danger
-                      className="account-action-button"
-                      aria-label={`删除-${record.account_name}`}
-                      icon={<DeleteOutlined />}
-                      onClick={() =>
-                        void Modal.confirm({
-                          title: `确认删除账户「${record.account_name}」吗？`,
-                          okText: "删除",
-                          cancelText: "取消",
-                          okButtonProps: { danger: true },
-                          onOk: () => handleDelete(record),
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={(event) => void handleDragEnd(event)}
+          onDragCancel={handleDragCancel}
+        >
+          <SortableContext items={accounts.map((record) => record.id)} strategy={verticalListSortingStrategy}>
+            <div className="account-cards">
+              {accounts.map((record) => (
+                <SortableAccountCard
+                  key={record.id}
+                  id={record.id}
+                  record={record}
+                  renderCard={renderAccountCard}
+                />
+              ))}
+            </div>
+          </SortableContext>
+          <DragOverlay>
+            {draggingAccount ? (
+              <div className="account-drag-overlay">{renderAccountCard(draggingAccount, { actionsDisabled: true })}</div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
       )}
 
       <Modal open={!!detailAccount} title="账户详情" onCancel={() => setDetailAccount(null)} footer={null} destroyOnHidden width={880}>
@@ -628,7 +781,7 @@ export function AccountsPage({
         <Form
           form={thirdPartyForm}
           layout="vertical"
-          initialValues={{ base_url: defaultBaseURL, supports_responses: true }}
+          initialValues={{ base_url: defaultBaseURL }}
           onFinish={(values) => void handleCreateThirdParty(values)}
         >
           <Form.Item label="账户名称" name="account_name" rules={[{ required: true, message: "请输入账户名称" }]}>
@@ -639,14 +792,6 @@ export function AccountsPage({
           </Form.Item>
           <Form.Item label="API Key" name="credential_ref" rules={[{ required: true, message: "请输入 API Key" }]}>
             <Input.Password />
-          </Form.Item>
-          <Form.Item
-            label="原生 /responses"
-            name="supports_responses"
-            valuePropName="checked"
-            extra="仅在第三方供应商原生支持 /responses 时开启。薄网关模式不会做任何协议补偿。"
-          >
-            <Switch checkedChildren="已支持" unCheckedChildren="未支持" />
           </Form.Item>
           <div className="modal-footer">
             <Button onClick={() => setInternalAddModalMode(null)}>取消</Button>
@@ -695,7 +840,7 @@ export function AccountsPage({
                 value: key,
                 label: (
                   <span className="source-option">
-                    <Avatar src={sourceIconMap[key].icon} size={20} shape="square" />
+                    <Avatar src={sourceIconMap[key].icon} size={16} shape="square" />
                     <span>{sourceIconMap[key].label}</span>
                   </span>
                 ),
@@ -707,14 +852,6 @@ export function AccountsPage({
           </Form.Item>
           <Form.Item label="API Key / Token" name="credential_ref">
             <Input.Password placeholder="留空表示不修改" />
-          </Form.Item>
-          <Form.Item
-            label="原生 /responses"
-            name="supports_responses"
-            valuePropName="checked"
-            extra="仅在供应商原生支持 /responses 时开启。薄网关模式不会做任何协议补偿。"
-          >
-            <Switch checkedChildren="已支持" unCheckedChildren="未支持" />
           </Form.Item>
           <div className="modal-footer">
             <Button onClick={() => setEditingAccount(null)}>取消</Button>
