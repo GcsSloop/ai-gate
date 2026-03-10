@@ -151,6 +151,7 @@ export type AppSettings = {
   auto_backup_interval_hours: number;
   backup_retention_count: number;
   language: "zh-CN" | "en-US";
+  theme_mode: "system" | "light" | "dark";
 };
 
 export type DatabaseBackupItem = {

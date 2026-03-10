@@ -16,6 +16,7 @@ type AppSettings struct {
 	AutoBackupIntervalHours int    `json:"auto_backup_interval_hours"`
 	BackupRetentionCount    int    `json:"backup_retention_count"`
 	Language                string `json:"language"`
+	ThemeMode               string `json:"theme_mode"`
 }
 
 type ReadRepository interface {
@@ -46,12 +47,13 @@ func DefaultAppSettings() AppSettings {
 		AutoBackupIntervalHours: 24,
 		BackupRetentionCount:    10,
 		Language:                "zh-CN",
+		ThemeMode:               "system",
 	}
 }
 
 func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	row := r.db.QueryRow(
-		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language
+		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language, theme_mode
 		 FROM app_settings WHERE id = 1`,
 	)
 
@@ -65,6 +67,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	var autoBackupIntervalHours int
 	var backupRetentionCount int
 	var language string
+	var themeMode string
 
 	if err := row.Scan(
 		&launchAtLogin,
@@ -77,6 +80,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		&autoBackupIntervalHours,
 		&backupRetentionCount,
 		&language,
+		&themeMode,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return DefaultAppSettings(), nil
@@ -95,6 +99,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		AutoBackupIntervalHours: autoBackupIntervalHours,
 		BackupRetentionCount:    backupRetentionCount,
 		Language:                language,
+		ThemeMode:               themeMode,
 	}), nil
 }
 
@@ -102,8 +107,8 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 	value = sanitize(value)
 	_, err := r.db.Exec(
 		`INSERT INTO app_settings (
-			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language, theme_mode, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			launch_at_login = excluded.launch_at_login,
 			silent_start = excluded.silent_start,
@@ -115,6 +120,7 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 			auto_backup_interval_hours = excluded.auto_backup_interval_hours,
 			backup_retention_count = excluded.backup_retention_count,
 			language = excluded.language,
+			theme_mode = excluded.theme_mode,
 			updated_at = CURRENT_TIMESTAMP`,
 		1,
 		boolToInt(value.LaunchAtLogin),
@@ -127,6 +133,7 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 		value.AutoBackupIntervalHours,
 		value.BackupRetentionCount,
 		value.Language,
+		value.ThemeMode,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert app settings: %w", err)
@@ -200,6 +207,9 @@ func sanitize(value AppSettings) AppSettings {
 	}
 	if value.Language != "en-US" {
 		value.Language = defaults.Language
+	}
+	if value.ThemeMode != "light" && value.ThemeMode != "dark" {
+		value.ThemeMode = defaults.ThemeMode
 	}
 	return value
 }

@@ -470,6 +470,22 @@ export function SettingsPage({
                         disabled={autoSavingPreference}
                       />
                     </label>
+                    <label className="settings-field">
+                      <span className="settings-field-label">{language === "en-US" ? "Theme" : "主题模式"}</span>
+                      <Radio.Group
+                        aria-label={language === "en-US" ? "Theme" : "主题模式"}
+                        buttonStyle="solid"
+                        optionType="button"
+                        options={[
+                          { label: t("跟随系统"), value: "system" },
+                          { label: t("浅色模式"), value: "light" },
+                          { label: t("深色模式"), value: "dark" },
+                        ]}
+                        value={draftSettings.theme_mode}
+                        onChange={(event) => void handleAutoSavePreference({ theme_mode: event.target.value })}
+                        disabled={autoSavingPreference}
+                      />
+                    </label>
                   </div>
                 </Card>
               </div>

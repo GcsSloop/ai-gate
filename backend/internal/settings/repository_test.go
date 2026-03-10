@@ -64,6 +64,7 @@ func TestRepositoryPersistsAppSettingsAndQueue(t *testing.T) {
 		AutoBackupIntervalHours: 12,
 		BackupRetentionCount:    7,
 		Language:                "en-US",
+		ThemeMode:               "dark",
 	}
 
 	if err := repo.SaveAppSettings(wantSettings); err != nil {

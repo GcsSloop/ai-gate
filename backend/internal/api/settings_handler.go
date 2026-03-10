@@ -601,6 +601,9 @@ func normalizeAppSettings(value settings.AppSettings) settings.AppSettings {
 	if value.Language != "en-US" {
 		value.Language = defaults.Language
 	}
+	if value.ThemeMode != "light" && value.ThemeMode != "dark" {
+		value.ThemeMode = defaults.ThemeMode
+	}
 	return value
 }
 

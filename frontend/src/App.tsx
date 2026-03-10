@@ -1,5 +1,5 @@
 import { ArrowLeftOutlined, PlusOutlined, SaveOutlined, SettingOutlined } from "@ant-design/icons";
-import { App as AntApp, Button, ConfigProvider, Dropdown, Modal, Spin, Switch, message } from "antd";
+import { App as AntApp, Button, ConfigProvider, Dropdown, Modal, Spin, Switch, message, theme as antdTheme } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -29,9 +29,12 @@ export function App() {
   const [accountsSyncToken, setAccountsSyncToken] = useState(0);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const [shellReady, setShellReady] = useState(false);
+  const [systemPrefersDark, setSystemPrefersDark] = useState(false);
   const settingsSaveActionRef = useRef<(() => void) | null>(null);
   const language = normalizeLanguage(appSettings?.language);
   const t = createTranslator(language);
+  const themeMode = appSettings?.theme_mode ?? "system";
+  const resolvedThemeMode = themeMode === "system" ? (systemPrefersDark ? "dark" : "light") : themeMode;
 
   async function refreshProxyState() {
     try {
@@ -95,6 +98,21 @@ export function App() {
       disposed = true;
     };
   }, [messageApi]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    setSystemPrefersDark(media.matches);
+    const handleChange = (event: MediaQueryListEvent) => {
+      setSystemPrefersDark(event.matches);
+    };
+    media.addEventListener("change", handleChange);
+    return () => {
+      media.removeEventListener("change", handleChange);
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -211,24 +229,26 @@ export function App() {
     <ConfigProvider
       locale={getAntdLocale(language)}
       theme={{
+        algorithm: resolvedThemeMode === "dark" ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
         token: {
           colorPrimary: "#3e5be8",
           borderRadius: 14,
-          colorBgLayout: "#ffffff",
-          colorBgContainer: "#ffffff",
-          colorBorderSecondary: "#e5e7eb",
+          colorBgLayout: resolvedThemeMode === "dark" ? "#0f172a" : "#ffffff",
+          colorBgContainer: resolvedThemeMode === "dark" ? "#111827" : "#ffffff",
+          colorBorderSecondary: resolvedThemeMode === "dark" ? "#334155" : "#e5e7eb",
         },
       }}
     >
       <AntApp>
-        {contextHolder}
-        {!shellReady || !appSettings ? (
-          <div className="app-loading">
+        <div data-theme-mode={resolvedThemeMode} data-theme-preference={themeMode}>
+          {contextHolder}
+          {!shellReady || !appSettings ? (
+            <div className="app-loading">
             <Spin size="large" />
             <span>{t("正在载入设置中心…")}</span>
-          </div>
-        ) : view === "settings" ? (
-          <div className="settings-screen">
+            </div>
+          ) : view === "settings" ? (
+            <div className="settings-screen">
             <header className="settings-top-bar">
               <div className="settings-top-left">
                 <Button type="text" icon={<ArrowLeftOutlined />} aria-label={t("返回首页")} onClick={() => setView("accounts")} />
@@ -302,8 +322,9 @@ export function App() {
               addModalMode={addModalMode}
               onAddModalModeConsumed={() => setAddModalMode(null)}
             />
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </AntApp>
     </ConfigProvider>
   );

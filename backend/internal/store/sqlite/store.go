@@ -80,6 +80,7 @@ func (s *Store) migrate() error {
 		{table: "accounts", name: "supports_responses", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "accounts", name: "source_icon", definition: "TEXT NOT NULL DEFAULT 'openai'"},
 		{table: "app_settings", name: "language", definition: "TEXT NOT NULL DEFAULT 'zh-CN'"},
+		{table: "app_settings", name: "theme_mode", definition: "TEXT NOT NULL DEFAULT 'system'"},
 		{table: "runs", name: "model", definition: "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := s.addColumnIfMissing(column.table, column.name, column.definition); err != nil {

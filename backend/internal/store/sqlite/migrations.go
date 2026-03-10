@@ -60,6 +60,7 @@ var schemaStatements = []string{
 		auto_backup_interval_hours INTEGER NOT NULL DEFAULT 24,
 		backup_retention_count INTEGER NOT NULL DEFAULT 10,
 		language TEXT NOT NULL DEFAULT 'zh-CN',
+		theme_mode TEXT NOT NULL DEFAULT 'system',
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,
 	`CREATE TABLE IF NOT EXISTS failover_queue_items (

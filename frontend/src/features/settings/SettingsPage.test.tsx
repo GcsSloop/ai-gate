@@ -20,6 +20,7 @@ const baseSettings = {
   auto_backup_interval_hours: 24,
   backup_retention_count: 10,
   language: "zh-CN",
+  theme_mode: "system",
 };
 
 describe("SettingsPage", () => {
@@ -227,5 +228,54 @@ describe("SettingsPage", () => {
     });
 
     expect(onSettingsChanged).toHaveBeenCalledWith({ ...baseSettings, language: "en-US" });
+  });
+
+  it("auto-saves theme changes immediately", async () => {
+    const onSettingsChanged = vi.fn();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/failover-queue") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/database/backups") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/app" && init?.method === "PUT") {
+        return Promise.resolve(
+          new Response(String(init.body), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(getAppMetadata).mockResolvedValue({
+      name: "AI Gate",
+      version: "0.1.0",
+      description: "桌面代理与路由控制台",
+      author: "GcsSloop",
+    });
+    vi.mocked(applyDesktopAppSettings).mockResolvedValue(null);
+
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={onSettingsChanged} />);
+
+    fireEvent.click(await screen.findByRole("radio", { name: "深色模式" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/settings/app",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ ...baseSettings, theme_mode: "dark" }),
+        }),
+      );
+    });
+
+    expect(onSettingsChanged).toHaveBeenCalledWith({ ...baseSettings, theme_mode: "dark" });
   });
 });
