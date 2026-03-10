@@ -4,6 +4,7 @@ export type AccountRecord = {
   id: number;
   provider_type: string;
   account_name: string;
+  source_icon?: "openai" | "claude_code" | "ppchat";
   auth_mode: string;
   base_url: string;
   status: string;
@@ -48,6 +49,7 @@ export type AccountUsageRecord = {
 export type CreateAccountPayload = {
   provider_type: string;
   account_name: string;
+  source_icon?: "openai" | "claude_code" | "ppchat";
   auth_mode: string;
   base_url: string;
   credential_ref: string;
@@ -72,6 +74,48 @@ export type AccountTestResult = {
   message: string;
   details?: string;
   content?: string;
+};
+
+export type PPChatTokenLogsPayload = {
+  data: {
+    logs: Array<{
+      cache_creation_input_tokens: number;
+      cache_read_input_tokens: number;
+      completion_tokens: number;
+      created_at: number;
+      created_time: string;
+      model_name: string;
+      prompt_tokens: number;
+      quota: number;
+    }>;
+    pagination: {
+      page: number;
+      page_size: number;
+      total: number;
+      total_pages: number;
+    };
+    token_info: {
+      name: string;
+      today_usage_count: number;
+      today_used_quota: number;
+      remain_quota_display: number;
+      today_added_quota?: number;
+      today_opus_usage?: number;
+      today_big_token_requests?: number;
+      expired_time_formatted: string;
+      expiry?: {
+        raw_timestamp: number;
+        status: string;
+        time: string;
+      };
+      status?: {
+        code: number;
+        text: string;
+        type: string;
+      };
+    };
+  };
+  success: boolean;
 };
 
 export type AccountChatTestPayload = {
@@ -188,6 +232,15 @@ export async function testAccount(id: number, payload: AccountChatTestPayload): 
     };
   }
   return data;
+}
+
+export async function fetchPPChatTokenLogs(accountID: number, page = 1, pageSize = 10): Promise<PPChatTokenLogsPayload> {
+  const response = await fetch(apiPath(`/accounts/${accountID}/ppchat-token-logs?page=${page}&page_size=${pageSize}`));
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to fetch ppchat token logs");
+  }
+  return response.json();
 }
 
 export async function deleteAccount(id: number): Promise<void> {

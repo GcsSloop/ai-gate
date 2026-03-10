@@ -1,10 +1,11 @@
-import { ArrowLeftOutlined, PlusOutlined, SettingOutlined } from "@ant-design/icons";
+import { ArrowLeftOutlined, PlusOutlined, SaveOutlined, SettingOutlined } from "@ant-design/icons";
 import { App as AntApp, Button, ConfigProvider, Dropdown, Modal, Spin, Switch, message } from "antd";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { AccountsPage } from "./features/accounts/AccountsPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
+import appLogo from "./assets/aigate_1024_1024.png";
 import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus } from "./lib/api";
 import { loadDesktopShellContext, refreshDesktopTrayState, subscribeDesktopBackendStateChanged } from "./lib/desktop-shell";
 import { setAPIBase } from "./lib/paths";
@@ -27,6 +28,7 @@ export function App() {
   const [accountsSyncToken, setAccountsSyncToken] = useState(0);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const [shellReady, setShellReady] = useState(false);
+  const settingsSaveActionRef = useRef<(() => void) | null>(null);
 
   async function refreshProxyState() {
     try {
@@ -217,26 +219,46 @@ export function App() {
         ) : view === "settings" ? (
           <div className="settings-screen">
             <header className="settings-top-bar">
-              <Button type="text" icon={<ArrowLeftOutlined />} aria-label="返回首页" onClick={() => setView("accounts")} />
-              <span className="settings-top-title">设置</span>
+              <div className="settings-top-left">
+                <Button type="text" icon={<ArrowLeftOutlined />} aria-label="返回首页" onClick={() => setView("accounts")} />
+                <span className="settings-top-title">设置</span>
+              </div>
+              <Button
+                aria-label="保存设置"
+                type="primary"
+                size="large"
+                icon={<SaveOutlined />}
+                onClick={() => settingsSaveActionRef.current?.()}
+              >
+                保存设置
+              </Button>
             </header>
-            <SettingsPage
-              initialSettings={appSettings}
-              proxyEnabled={proxyEnabled}
-              onSettingsChanged={(next) => void handleSettingsChanged(next)}
-              onToggleProxy={(checked) => handleToggleProxy(checked)}
-            />
+            <div className="settings-content-scroll">
+              <SettingsPage
+                initialSettings={appSettings}
+                proxyEnabled={proxyEnabled}
+                onSettingsChanged={(next) => void handleSettingsChanged(next)}
+                onToggleProxy={(checked) => handleToggleProxy(checked)}
+                hideLocalSaveButton
+                onRegisterSaveHandler={(handler) => {
+                  settingsSaveActionRef.current = handler;
+                }}
+              />
+            </div>
           </div>
         ) : (
           <div className="app-shell">
             <header className="top-menu">
               <div className="brand-block">
-                <img src="/aigate_1024_1024.png" alt="AI Gate" className="brand-logo" />
-                <div>
-                  <div className="brand">AI Gate</div>
-                  <div className="brand-subtitle">简洁 · 本地 · 可控</div>
-                </div>
-                <Button type="text" icon={<SettingOutlined />} aria-label="打开设置" onClick={() => setView("settings")} />
+                <img src={appLogo} alt="AI Gate" className="brand-logo" />
+                <div className="brand">AI Gate</div>
+                <Button
+                  type="text"
+                  icon={<SettingOutlined />}
+                  aria-label="打开设置"
+                  className="top-settings-button"
+                  onClick={() => setView("settings")}
+                />
               </div>
               <div className="top-menu-right">
                 {showProxySwitch ? (

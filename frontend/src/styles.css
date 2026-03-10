@@ -36,7 +36,7 @@ body {
 .top-menu {
   width: min(1480px, calc(100vw - 40px));
   margin: 0 auto;
-  padding: 26px 0 0;
+  padding: 18px 0 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -46,29 +46,43 @@ body {
 .brand-block {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
 }
 
 .brand-logo {
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
+  width: 36px;
+  height: 36px;
+  border-radius: 14px;
   object-fit: cover;
 }
 
 .brand {
-  font-size: 30px;
+  font-size: 32px;
   line-height: 1;
   font-weight: 700;
   letter-spacing: -0.03em;
   color: #3e5be8;
 }
 
-.brand-subtitle {
-  margin-top: 4px;
-  font-size: 12px;
-  color: #6b7280;
-  letter-spacing: 0.02em;
+.top-settings-button {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  color: #3e5be8;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.top-settings-button .anticon {
+  font-size: 1.6em;
+}
+
+.top-settings-button:hover,
+.top-settings-button:focus {
+  color: #2f49c8 !important;
+  background: #f3f6ff !important;
 }
 
 .top-menu-right {
@@ -107,8 +121,11 @@ body {
 }
 
 .settings-screen {
-  min-height: 100vh;
+  height: 100vh;
   background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .settings-top-bar {
@@ -116,6 +133,13 @@ body {
   margin: 0 auto;
   padding: 24px 0 6px;
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+}
+
+.settings-top-left {
+  display: inline-flex;
   align-items: center;
   gap: 10px;
 }
@@ -127,11 +151,16 @@ body {
   color: #111827;
 }
 
+.settings-content-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
 .dashboard-page,
 .settings-page {
   width: min(1480px, calc(100vw - 40px));
   margin: 0 auto;
-  padding: 20px 0 48px;
+  padding: 24px 0 48px;
 }
 
 .dashboard-header {
@@ -146,9 +175,9 @@ body {
 .summary-card,
 .settings-card,
 .about-card {
-  border-radius: 20px;
+  border-radius: 18px;
   border: 1px solid #e5e7eb;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
   margin-bottom: 20px;
   overflow: hidden;
 }
@@ -200,8 +229,14 @@ body {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 20px;
+}
+
+.settings-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 14px;
 }
 
 .settings-section-header {
@@ -404,13 +439,17 @@ body {
 }
 
 .about-brand {
-  display: grid;
-  align-content: start;
-  gap: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 14px;
   padding: 22px;
   border-radius: 26px;
-  color: #ffffff;
-  background: linear-gradient(165deg, #3e5be8 0%, #5c74ea 100%);
+  color: #111827;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
 }
 
 .about-logo {
@@ -418,9 +457,9 @@ body {
   height: 112px;
   object-fit: cover;
   border-radius: 20px;
-  background: rgba(255, 255, 255, 0.92);
+  background: #f8fafc;
   padding: 12px;
-  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
 }
 
 .about-meta {
@@ -439,16 +478,227 @@ body {
   color: #24453b;
 }
 
-.ant-table-tbody > tr:hover > td {
-  background: #f8faff !important;
+.account-cards {
+  display: grid;
+  gap: 14px;
 }
 
-.ant-table-tbody > tr.active-account-row > td {
-  background: #eef2ff !important;
+.accounts-empty {
+  padding: 28px 16px;
 }
 
-.ant-table-tbody > tr.active-account-row:hover > td {
-  background: #e5ecff !important;
+.account-card-item {
+  border-radius: 18px;
+  border: 1px solid #e6e9f2;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
+}
+
+.account-card-item.drag-over-account-card {
+  border-color: #3e5be8;
+  box-shadow: 0 0 0 2px rgba(62, 91, 232, 0.16);
+}
+
+.account-card-item.active-account-card {
+  background: #eef2ff;
+}
+
+.account-card-shell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.account-drag-handle {
+  color: #9aa3b2;
+  cursor: grab;
+}
+
+.account-drag-handle:active {
+  cursor: grabbing;
+}
+
+.account-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.account-source-icon {
+  background: #f7f8fb;
+  border: 1px solid #e9edf5;
+}
+
+.account-main-text {
+  min-width: 0;
+}
+
+.account-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-base-url {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.account-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+.account-card-item:hover .account-actions,
+.account-card-item:focus-within .account-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.account-enable-button {
+  border-radius: 12px;
+  height: 36px;
+  margin-right: 6px;
+}
+
+.account-action-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: #4b5563;
+}
+
+.account-action-button:hover {
+  background: #f3f5fb !important;
+  color: #263046 !important;
+}
+
+.source-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+:where(.css-dev-only-do-not-override-1enej14).ant-avatar > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  padding: 8px;
+}
+
+.edit-test-panel {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed #e5e7eb;
+}
+
+.account-detail-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.account-detail-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.account-detail-stats .ant-card-body {
+  padding: 14px;
+}
+
+.account-detail-meta .ant-card-body {
+  padding: 14px 16px;
+}
+
+.account-detail-chart-card .ant-card-body {
+  padding: 14px 16px;
+}
+
+.ppchat-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ppchat-metric-card {
+  border-radius: 14px;
+  border: 1px solid #e5e7eb;
+  box-shadow: none;
+}
+
+.ppchat-metric-card .ant-card-body {
+  padding: 14px 16px;
+}
+
+.ppchat-stat-title {
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(15, 23, 42, 0.62);
+}
+
+.ppchat-stat-value {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+
+.ppchat-stat-value.is-text {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+.ppchat-stat-value.is-datetime {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: #1f2937;
+  letter-spacing: 0;
+}
+
+.token-log-list {
+  display: grid;
+  gap: 10px;
+}
+
+.token-log-row {
+  display: grid;
+  gap: 6px;
+}
+
+.token-log-meta,
+.token-log-values {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.token-log-bar-bg {
+  width: 100%;
+  height: 8px;
+  background: #e8ecf6;
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.token-log-bar {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #3e5be8, #6c84ff);
 }
 
 .modal-footer {
@@ -486,6 +736,14 @@ body {
   .about-layout {
     grid-template-columns: 1fr;
   }
+
+  .account-detail-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ppchat-metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 900px) {
@@ -516,7 +774,7 @@ body {
   }
 
   .brand {
-    font-size: 32px;
+    font-size: 30px;
   }
 
   .settings-field-grid,
@@ -528,6 +786,17 @@ body {
   .backup-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .account-card-shell {
+    flex-wrap: wrap;
+  }
+
+  .account-actions {
+    width: 100%;
+    justify-content: flex-end;
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .queue-row-actions {

@@ -36,14 +36,17 @@ import {
 } from "../../lib/api";
 import { applyDesktopAppSettings, getAppMetadata, type AppMetadata } from "../../lib/desktop-shell";
 import { setAPIBase } from "../../lib/paths";
+import appLogo from "../../assets/aigate_1024_1024.png";
 
-const { Paragraph, Text, Title } = Typography;
+const { Text, Title } = Typography;
 
 type SettingsPageProps = {
   initialSettings: AppSettings;
   proxyEnabled: boolean;
   onSettingsChanged: (next: AppSettings) => void | Promise<void>;
   onToggleProxy?: (checked: boolean) => void | Promise<void>;
+  hideLocalSaveButton?: boolean;
+  onRegisterSaveHandler?: (handler: () => void) => void;
 };
 
 function formatDateTime(value: string): string {
@@ -148,6 +151,8 @@ export function SettingsPage({
   proxyEnabled,
   onSettingsChanged,
   onToggleProxy,
+  hideLocalSaveButton = false,
+  onRegisterSaveHandler,
 }: SettingsPageProps) {
   const [messageApi, contextHolder] = message.useMessage();
   const [draftSettings, setDraftSettings] = useState<AppSettings>(initialSettings);
@@ -330,29 +335,29 @@ export function SettingsPage({
     }
   }
 
+  useEffect(() => {
+    onRegisterSaveHandler?.(() => {
+      void handleSaveSettings();
+    });
+  }, [onRegisterSaveHandler, draftSettings]);
+
   return (
     <div className="settings-page">
       {contextHolder}
-      <div className="settings-hero">
-        <div>
-          <Title level={2} style={{ marginBottom: 6 }}>
-            设置中心
-          </Title>
-          <Paragraph className="settings-hero-copy">
-            把应用启动行为、本地代理、自动故障转移和数据备份集中管理，所有变更都会持久化到本地数据库与桌面壳。
-          </Paragraph>
+      {!hideLocalSaveButton ? (
+        <div className="settings-toolbar">
+          <Button
+            aria-label="保存设置"
+            type="primary"
+            size="large"
+            icon={<SaveOutlined />}
+            loading={savingSettings}
+            onClick={() => void handleSaveSettings()}
+          >
+            保存设置
+          </Button>
         </div>
-        <Button
-          aria-label="保存设置"
-          type="primary"
-          size="large"
-          icon={<SaveOutlined />}
-          loading={savingSettings}
-          onClick={() => void handleSaveSettings()}
-        >
-          保存设置
-        </Button>
-      </div>
+      ) : null}
 
       <Tabs
         className="settings-tabs"
@@ -593,7 +598,7 @@ export function SettingsPage({
               <Card className="settings-card about-card" variant="borderless">
                 <div className="about-layout">
                   <div className="about-brand">
-                    <img src="/aigate_1024_1024.png" alt="AI Gate icon" className="about-logo" />
+                    <img src={appLogo} alt="AI Gate icon" className="about-logo" />
                     <div>
                       <Title level={3} style={{ marginBottom: 4 }}>
                         {metadata.name}

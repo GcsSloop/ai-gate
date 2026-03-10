@@ -18,6 +18,7 @@ describe("AccountsPage", () => {
         id: 1,
         provider_type: "openai-compatible",
         account_name: "mirror-east",
+        source_icon: "ppchat",
         auth_mode: "api_key",
         base_url: "https://code.ppchat.vip/v1",
         status: "active",
@@ -77,6 +78,9 @@ describe("AccountsPage", () => {
           ),
         );
       }
+      if (url.startsWith("/ai-router/api/accounts/1/ppchat-token-logs") && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify({ success: true, data: { logs: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 0 }, token_info: { name: "ppchat", today_usage_count: 0, today_used_quota: 0, remain_quota_display: 0, expired_time_formatted: "2099-01-01 00:00:00" } } }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
       return Promise.resolve(new Response(null, { status: 404 }));
     });
 
@@ -129,6 +133,7 @@ describe("AccountsPage", () => {
           body: JSON.stringify({
             provider_type: "openai-compatible",
             account_name: "ppchat-main",
+            source_icon: "ppchat",
             auth_mode: "api_key",
             base_url: "https://code.ppchat.vip/v1",
             credential_ref: "sk-test",
@@ -138,8 +143,7 @@ describe("AccountsPage", () => {
       );
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "更多-mirror-east" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "编辑" }));
+    fireEvent.click(screen.getByRole("button", { name: "编辑-mirror-east" }));
     const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
     const responsesSwitch = within(editModal).getByLabelText("原生 /responses");
     expect(responsesSwitch).toBeInTheDocument();
@@ -154,6 +158,7 @@ describe("AccountsPage", () => {
           method: "PUT",
           body: JSON.stringify({
             account_name: "mirror-east",
+            source_icon: "ppchat",
             base_url: "https://code.ppchat.vip/v1",
             supports_responses: true,
           }),
@@ -163,17 +168,16 @@ describe("AccountsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "详情-mirror-east" }));
     const detailModal = await screen.findByRole("dialog", { name: "账户详情" });
-    expect(within(detailModal).getByText("https://code.ppchat.vip/v1")).toBeInTheDocument();
-    expect(within(detailModal).getByText("/responses 未启用")).toBeInTheDocument();
+    expect(within(detailModal).getByText("TOKEN 名称")).toBeInTheDocument();
+    expect(within(detailModal).getByText("PPChat Token 日志")).toBeInTheDocument();
     fireEvent.click(within(detailModal).getByRole("button", { name: "Close" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "更多-mirror-east" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "测试" }));
-    const testModal = await screen.findByRole("dialog", { name: "对话测试" });
-    fireEvent.change(within(testModal).getByLabelText("输入内容"), {
+    fireEvent.click(screen.getByRole("button", { name: "编辑-mirror-east" }));
+    const editTestModal = await screen.findByRole("dialog", { name: "编辑账户" });
+    fireEvent.change(within(editTestModal).getByLabelText("输入内容"), {
       target: { value: "ping" },
     });
-    fireEvent.click(within(testModal).getByRole("button", { name: "发送测试" }));
+    fireEvent.click(within(editTestModal).getByRole("button", { name: /测\s*试/ }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -185,8 +189,8 @@ describe("AccountsPage", () => {
       );
     });
 
-    expect(await within(testModal).findByText("远端连通性测试成功")).toBeInTheDocument();
-    expect(within(testModal).getByText("pong")).toBeInTheDocument();
+    expect(await within(editTestModal).findByText("远端连通性测试成功")).toBeInTheDocument();
+    expect(within(editTestModal).getByText("pong")).toBeInTheDocument();
   });
 
   it("highlights active account and allows manual activation", async () => {
@@ -195,6 +199,7 @@ describe("AccountsPage", () => {
         id: 1,
         provider_type: "openai-compatible",
         account_name: "account-a",
+        source_icon: "openai",
         auth_mode: "api_key",
         base_url: "https://a.example/v1",
         status: "active",
@@ -217,6 +222,7 @@ describe("AccountsPage", () => {
         id: 2,
         provider_type: "openai-compatible",
         account_name: "account-b",
+        source_icon: "claude_code",
         auth_mode: "api_key",
         base_url: "https://b.example/v1",
         status: "active",
@@ -256,8 +262,8 @@ describe("AccountsPage", () => {
     render(<AccountsPage />);
 
     expect(await screen.findByText("account-a")).toBeInTheDocument();
-    const activeRow = screen.getByText("account-b").closest("tr");
-    expect(activeRow).toHaveClass("active-account-row");
+    const activeRow = screen.getByText("account-b").closest(".account-card-item");
+    expect(activeRow).toHaveClass("active-account-card");
 
     fireEvent.click(screen.getByRole("button", { name: "设为激活-account-a" }));
     await waitFor(() => {
