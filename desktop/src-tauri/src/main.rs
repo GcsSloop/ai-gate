@@ -4,11 +4,11 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder};
 use tauri::tray::TrayIconBuilder;
@@ -17,7 +17,6 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
 static DESKTOP_RUNTIME: Lazy<Mutex<DesktopRuntime>> =
     Lazy::new(|| Mutex::new(DesktopRuntime::default()));
-static ALLOW_DIRECT_EXIT: AtomicBool = AtomicBool::new(false);
 
 const DEFAULT_PROXY_HOST: &str = "127.0.0.1";
 const DEFAULT_PROXY_PORT: u16 = 6789;
@@ -34,6 +33,7 @@ const BACKEND_STATE_CHANGED_EVENT: &str = "aigate-backend-state-changed";
 const ABOUT_DESCRIPTION: &str =
     "AI Gate 是一个本地桌面代理与账号编排工具，用于统一管理路由、故障转移与数据备份。";
 const ABOUT_AUTHOR: &str = "GcsSloop";
+const BACKEND_REQUEST_TIMEOUT_MS: u64 = 1500;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -188,35 +188,6 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
-            tauri::RunEvent::WindowEvent { label, event, .. } => {
-                if label == "main" {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        if current_settings_cache().close_to_tray {
-                            api.prevent_close();
-                            if let Some(window) = app_handle.get_webview_window("main") {
-                                let _ = window.hide();
-                            }
-                        } else {
-                            api.prevent_close();
-                            request_app_exit(app_handle);
-                        }
-                    }
-                }
-            }
-            tauri::RunEvent::ExitRequested { api, .. } => {
-                if ALLOW_DIRECT_EXIT.load(Ordering::Relaxed) {
-                    shutdown_sidecar();
-                    return;
-                }
-                match try_disable_proxy_before_exit() {
-                    Ok(()) => shutdown_sidecar(),
-                    Err(message) => {
-                        api.prevent_exit();
-                        eprintln!("exit blocked by proxy restore conflict: {message}");
-                        show_main_window(app_handle);
-                    }
-                }
-            }
             tauri::RunEvent::Reopen { .. } => {
                 show_main_window(app_handle);
             }
@@ -229,7 +200,8 @@ fn main() {
 
 #[tauri::command]
 fn force_exit_app<R: Runtime>(app: AppHandle<R>) {
-    request_app_exit(&app);
+    shutdown_sidecar();
+    app.exit(0);
 }
 
 #[tauri::command]
@@ -436,11 +408,6 @@ fn escape_xml(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn request_app_exit<R: Runtime>(app: &AppHandle<R>) {
-    ALLOW_DIRECT_EXIT.store(true, Ordering::Relaxed);
-    app.exit(0);
-}
-
 fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let tray_state = build_tray_state();
     let tray_menu = build_tray_menu(app, &tray_state)?;
@@ -544,7 +511,8 @@ fn handle_tray_menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
             );
         }
         MENU_QUIT => {
-            request_app_exit(app);
+            shutdown_sidecar();
+            app.exit(0);
         }
         _ => {
             if let Some(account_id) = parse_account_menu_id(id) {
@@ -574,31 +542,6 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
-}
-
-fn try_disable_proxy_before_exit() -> Result<(), String> {
-    let response = request_backend("POST", "/ai-router/api/settings/proxy/disable", "")
-        .map_err(|e| format!("无法连接后端，无法自动恢复配置：{e}"))?;
-    if response.status == 200 {
-        return Ok(());
-    }
-    if response.status == 409 {
-        let body = response.body.trim().to_string();
-        if body == "proxy is not enabled" {
-            return Ok(());
-        }
-        let message = if body.is_empty() {
-            "config.toml changed externally; skip auto-restore to avoid overwrite".to_string()
-        } else {
-            body
-        };
-        return Err(message);
-    }
-    let body = response.body.trim();
-    if body.is_empty() {
-        return Err(format!("退出前关闭代理失败（HTTP {}）", response.status));
-    }
-    Err(body.to_string())
 }
 
 fn fetch_proxy_status() -> ProxyStatusSnapshot {
@@ -679,21 +622,48 @@ fn emit_backend_state_changed<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn request_backend(method: &str, path: &str, body: &str) -> Result<HttpResponse, String> {
-    let backend_addr = current_backend_addr();
-    let mut stream =
-        TcpStream::connect(&backend_addr).map_err(|e| format!("connect backend failed: {e}"))?;
+    request_backend_with_timeout(
+        &current_backend_addr(),
+        method,
+        path,
+        body,
+        Duration::from_millis(BACKEND_REQUEST_TIMEOUT_MS),
+    )
+}
+
+fn request_backend_with_timeout(
+    backend_addr: &str,
+    method: &str,
+    path: &str,
+    body: &str,
+    timeout: Duration,
+) -> Result<HttpResponse, String> {
+    let mut addrs = backend_addr
+        .to_socket_addrs()
+        .map_err(|e| format!("resolve backend address failed: {e}"))?;
+    let socket_addr = addrs
+        .next()
+        .ok_or_else(|| format!("resolve backend address failed: {backend_addr}"))?;
+    let mut stream = TcpStream::connect_timeout(&socket_addr, timeout)
+        .map_err(|e| map_backend_io_error("connect", e))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| format!("configure backend read timeout failed: {e}"))?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|e| format!("configure backend write timeout failed: {e}"))?;
     let request = format!(
         "{method} {path} HTTP/1.1\r\nHost: {backend_addr}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
     stream
         .write_all(request.as_bytes())
-        .map_err(|e| format!("write request failed: {e}"))?;
+        .map_err(|e| map_backend_io_error("write", e))?;
 
     let mut response = String::new();
     stream
         .read_to_string(&mut response)
-        .map_err(|e| format!("read response failed: {e}"))?;
+        .map_err(|e| map_backend_io_error("read", e))?;
 
     let status = response
         .lines()
@@ -707,6 +677,21 @@ fn request_backend(method: &str, path: &str, body: &str) -> Result<HttpResponse,
         .unwrap_or_default();
 
     Ok(HttpResponse { status, body })
+}
+
+fn map_backend_io_error(stage: &str, error: std::io::Error) -> String {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ) {
+        format_timeout_error(stage)
+    } else {
+        format!("{stage} backend failed: {error}")
+    }
+}
+
+fn format_timeout_error(stage: &str) -> String {
+    format!("{stage} backend timed out while waiting for the sidecar")
 }
 
 fn parse_account_menu_id(id: &str) -> Option<i64> {
@@ -761,8 +746,9 @@ fn shutdown_sidecar() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_launch_agent_plist, format_tray_title, parse_account_menu_id,
-        should_refresh_tray_after_action, AppSettingsPayload, DesktopSettingsCache,
+        build_launch_agent_plist, format_timeout_error, format_tray_title, map_backend_io_error,
+        parse_account_menu_id, should_refresh_tray_after_action, AppSettingsPayload,
+        DesktopSettingsCache,
     };
     use std::path::Path;
 
@@ -879,5 +865,22 @@ mod tests {
         assert!(plist
             .contains("<string>/Applications/AI Gate.app/Contents/MacOS/aigate-desktop</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
+    }
+
+    #[test]
+    fn timeout_errors_are_formatted_for_humans() {
+        assert_eq!(
+            format_timeout_error("read"),
+            "read backend timed out while waiting for the sidecar"
+        );
+    }
+
+    #[test]
+    fn timeout_io_errors_are_mapped_consistently() {
+        let error = std::io::Error::new(std::io::ErrorKind::TimedOut, "test timeout");
+        assert_eq!(
+            map_backend_io_error("read", error),
+            "read backend timed out while waiting for the sidecar"
+        );
     }
 }
