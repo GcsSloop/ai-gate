@@ -31,6 +31,7 @@ type Account struct {
 	ID                int64
 	ProviderType      ProviderType
 	AccountName       string
+	SourceIcon        string
 	AuthMode          AuthMode
 	CredentialRef     string
 	BaseURL           string

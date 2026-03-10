@@ -104,6 +104,9 @@ func TestAccountsHandler(t *testing.T) {
 	if _, ok := listed[0]["allow_chat_fallback"]; ok {
 		t.Fatalf("GET /accounts item = %+v, want no allow_chat_fallback field", listed[0])
 	}
+	if listed[0]["source_icon"] != "openai" {
+		t.Fatalf("source_icon = %v, want openai", listed[0]["source_icon"])
+	}
 	if listed[1]["cooldown_remaining_seconds"] == nil {
 		t.Fatal("cooldown_remaining_seconds missing from cooldown account")
 	}
@@ -306,6 +309,7 @@ func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 
 	updateReq := httptest.NewRequest(http.MethodPut, "/accounts/1", bytes.NewBufferString(`{
 		"account_name":"edited-name",
+		"source_icon":"claude_code",
 		"base_url":"`+upstream.URL+`/v1",
 		"credential_ref":"sk-updated",
 		"status":"cooldown",
@@ -338,6 +342,9 @@ func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 	}
 	if !listed[0].SupportsResponses {
 		t.Fatal("SupportsResponses = false, want true")
+	}
+	if listed[0].SourceIcon != "claude_code" {
+		t.Fatalf("SourceIcon = %q, want claude_code", listed[0].SourceIcon)
 	}
 
 	testReq := httptest.NewRequest(http.MethodPost, "/accounts/1/test", bytes.NewBufferString(`{

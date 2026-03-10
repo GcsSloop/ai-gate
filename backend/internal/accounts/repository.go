@@ -41,10 +41,11 @@ func (r *SQLiteRepository) Create(account Account) error {
 	}
 
 	_, err = r.db.Exec(
-		`INSERT INTO accounts (provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, cooldown_until)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO accounts (provider_type, account_name, source_icon, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, cooldown_until)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		account.ProviderType,
 		account.AccountName,
+		account.SourceIcon,
 		account.AuthMode,
 		credentialRef,
 		account.BaseURL,
@@ -62,7 +63,7 @@ func (r *SQLiteRepository) Create(account Account) error {
 
 func (r *SQLiteRepository) List() ([]Account, error) {
 	records, err := r.db.Query(
-		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, cooldown_until, created_at
+		`SELECT id, provider_type, account_name, source_icon, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, cooldown_until, created_at
 		 FROM accounts
 		 ORDER BY priority DESC, id ASC`,
 	)
@@ -82,6 +83,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 			&account.ID,
 			&account.ProviderType,
 			&account.AccountName,
+			&account.SourceIcon,
 			&account.AuthMode,
 			&account.CredentialRef,
 			&account.BaseURL,
@@ -120,7 +122,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 
 func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 	row := r.db.QueryRow(
-		`SELECT id, provider_type, account_name, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, cooldown_until, created_at
+		`SELECT id, provider_type, account_name, source_icon, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses, cooldown_until, created_at
 		 FROM accounts WHERE id = ?`,
 		id,
 	)
@@ -133,6 +135,7 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 		&account.ID,
 		&account.ProviderType,
 		&account.AccountName,
+		&account.SourceIcon,
 		&account.AuthMode,
 		&account.CredentialRef,
 		&account.BaseURL,
@@ -171,9 +174,10 @@ func (r *SQLiteRepository) Update(account Account) error {
 
 	_, err = r.db.Exec(
 		`UPDATE accounts
-		 SET account_name = ?, base_url = ?, credential_ref = ?, status = ?, priority = ?, is_active = ?, supports_responses = ?, cooldown_until = ?
+		 SET account_name = ?, source_icon = ?, base_url = ?, credential_ref = ?, status = ?, priority = ?, is_active = ?, supports_responses = ?, cooldown_until = ?
 		 WHERE id = ?`,
 		account.AccountName,
+		account.SourceIcon,
 		account.BaseURL,
 		credentialRef,
 		account.Status,

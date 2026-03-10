@@ -10,6 +10,7 @@ var schemaStatements = []string{
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		provider_type TEXT NOT NULL,
 		account_name TEXT NOT NULL,
+		source_icon TEXT NOT NULL DEFAULT 'openai',
 		auth_mode TEXT NOT NULL,
 		credential_ref TEXT NOT NULL,
 		base_url TEXT NOT NULL DEFAULT '',

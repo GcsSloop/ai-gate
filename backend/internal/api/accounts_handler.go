@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -62,6 +63,8 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.deleteAccount(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/test"):
 		h.testAccount(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/ppchat-token-logs"):
+		h.getPPChatTokenLogs(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/disable"):
 		h.disableAccount(w, r)
 	default:
@@ -72,6 +75,7 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type createAccountRequest struct {
 	ProviderType      accounts.ProviderType `json:"provider_type"`
 	AccountName       string                `json:"account_name"`
+	SourceIcon        string                `json:"source_icon"`
 	AuthMode          accounts.AuthMode     `json:"auth_mode"`
 	BaseURL           string                `json:"base_url"`
 	CredentialRef     string                `json:"credential_ref"`
@@ -90,6 +94,7 @@ type importCurrentAuthRequest struct {
 
 type updateAccountRequest struct {
 	AccountName       string          `json:"account_name"`
+	SourceIcon        string          `json:"source_icon"`
 	BaseURL           string          `json:"base_url"`
 	CredentialRef     string          `json:"credential_ref"`
 	Status            accounts.Status `json:"status"`
@@ -128,6 +133,7 @@ func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) 
 	err := h.repo.Create(accounts.Account{
 		ProviderType:      req.ProviderType,
 		AccountName:       req.AccountName,
+		SourceIcon:        normalizeAccountSourceIcon(req.SourceIcon),
 		AuthMode:          req.AuthMode,
 		BaseURL:           req.BaseURL,
 		CredentialRef:     req.CredentialRef,
@@ -154,6 +160,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 		ProviderType             accounts.ProviderType `json:"provider_type"`
 		AccountName              string                `json:"account_name"`
 		AuthMode                 accounts.AuthMode     `json:"auth_mode"`
+		SourceIcon               string                `json:"source_icon"`
 		BaseURL                  string                `json:"base_url"`
 		Status                   accounts.Status       `json:"status"`
 		CooldownRemainingSeconds *int64                `json:"cooldown_remaining_seconds,omitempty"`
@@ -184,6 +191,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 			ProviderType:         account.ProviderType,
 			AccountName:          account.AccountName,
 			AuthMode:             account.AuthMode,
+			SourceIcon:           normalizeAccountSourceIcon(account.SourceIcon),
 			BaseURL:              account.BaseURL,
 			Status:               account.Status,
 			Priority:             account.Priority,
@@ -349,6 +357,7 @@ func (h *AccountsHandler) importLocalAuth(w http.ResponseWriter, r *http.Request
 	err = h.repo.Create(accounts.Account{
 		ProviderType:      accounts.ProviderOpenAIOfficial,
 		AccountName:       accountName,
+		SourceIcon:        "openai",
 		AuthMode:          accounts.AuthModeLocalImport,
 		CredentialRef:     string(raw),
 		BaseURL:           officialCodexBaseURL,
@@ -392,6 +401,7 @@ func (h *AccountsHandler) importCurrentAuth(w http.ResponseWriter, r *http.Reque
 	err = h.repo.Create(accounts.Account{
 		ProviderType:      accounts.ProviderOpenAIOfficial,
 		AccountName:       accountName,
+		SourceIcon:        "openai",
 		AuthMode:          accounts.AuthModeLocalImport,
 		CredentialRef:     string(raw),
 		BaseURL:           officialCodexBaseURL,
@@ -427,6 +437,9 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 
 	if req.AccountName != "" {
 		current.AccountName = req.AccountName
+	}
+	if req.SourceIcon != "" {
+		current.SourceIcon = normalizeAccountSourceIcon(req.SourceIcon)
 	}
 	if req.BaseURL != "" {
 		current.BaseURL = req.BaseURL
@@ -507,6 +520,81 @@ func (h *AccountsHandler) testAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, h.runAccountTest(r.Context(), account, credential, reqBody.Model, reqBody.Input))
+}
+
+func (h *AccountsHandler) getPPChatTokenLogs(w http.ResponseWriter, r *http.Request) {
+	id, err := accountIDFromPath(strings.TrimSuffix(strings.TrimSuffix(r.URL.Path, "/ppchat-token-logs"), "/"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	account, err := h.repo.GetByID(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if !strings.Contains(strings.ToLower(account.BaseURL), "ppchat.vip") {
+		http.Error(w, "account is not a ppchat provider", http.StatusBadRequest)
+		return
+	}
+
+	credential, err := resolveCredential(account)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	credential = strings.TrimSpace(strings.TrimPrefix(credential, "Bearer "))
+	if credential == "" {
+		http.Error(w, "missing credential token", http.StatusBadRequest)
+		return
+	}
+
+	page := strings.TrimSpace(r.URL.Query().Get("page"))
+	if page == "" {
+		page = "1"
+	}
+	pageSize := strings.TrimSpace(r.URL.Query().Get("page_size"))
+	if pageSize == "" {
+		pageSize = "10"
+	}
+
+	endpoint := (&url.URL{
+		Scheme: "https",
+		Host:   "his.ppchat.vip",
+		Path:   "/api/token-logs",
+		RawQuery: url.Values{
+			"token_key": []string{credential},
+			"page":      []string{page},
+			"page_size": []string{pageSize},
+		}.Encode(),
+	}).String()
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if resp.StatusCode >= 400 {
+		http.Error(w, string(body), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 func (h *AccountsHandler) runAccountTest(ctx context.Context, account accounts.Account, credential string, requestedModel string, input string) accountTestResponse {
@@ -936,6 +1024,17 @@ func decodeLocalImportRequest(r *http.Request) (string, []byte, error) {
 		return "", nil, err
 	}
 	return req.AccountName, raw, nil
+}
+
+func normalizeAccountSourceIcon(raw string) string {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "claude_code":
+		return "claude_code"
+	case "ppchat":
+		return "ppchat"
+	default:
+		return "openai"
+	}
 }
 
 func resolveAccountBaseURL(account accounts.Account) string {
