@@ -82,11 +82,7 @@ version = "1.0.1"
 edition = "2021"
 TOML
 
-cat >"$tmp_dir/desktop/src-tauri/Cargo.lock" <<'LOCK'
-[[package]]
-name = "aigate-desktop"
-version = "1.0.1"
-LOCK
+printf '[[package]]\r\nname = "aigate-desktop"\r\nversion = "1.0.1"\r\n' >"$tmp_dir/desktop/src-tauri/Cargo.lock"
 
 printf 'ico-bytes' >"$tmp_dir/assets/aigate_1024_1024.ico"
 

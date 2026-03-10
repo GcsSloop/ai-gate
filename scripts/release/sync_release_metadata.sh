@@ -102,11 +102,11 @@ update_cargo_lock_version() {
     const file = process.argv[1];
     const version = process.env.VERSION;
     const raw = fs.readFileSync(file, "utf8");
-    const next = raw.replace(
-      /name = "aigate-desktop"\nversion = "[^"]+"/m,
-      `name = "aigate-desktop"\nversion = "${version}"`
-    );
-    if (!/name = "aigate-desktop"\nversion = "[^"]+"/m.test(raw)) {
+    const pattern = /name = "aigate-desktop"(\r?\n)version = "[^"]+"/m;
+    const next = raw.replace(pattern, (_, newline) => {
+      return `name = "aigate-desktop"${newline}version = "${version}"`;
+    });
+    if (!pattern.test(raw)) {
       console.error(`No replacement made for ${file}`);
       process.exit(1);
     }
