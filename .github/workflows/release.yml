@@ -29,6 +29,9 @@ jobs:
             frontend/package-lock.json
             desktop/package-lock.json
 
+      - name: Sync release metadata
+        run: bash scripts/release/sync_release_metadata.sh --tag "${{ github.ref_name }}"
+
       - name: Install frontend dependencies
         run: npm --prefix frontend ci
 
@@ -91,6 +94,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_targets }}
+
+      - name: Sync release metadata
+        run: bash scripts/release/sync_release_metadata.sh --tag "${{ github.ref_name }}"
 
       - name: Install frontend dependencies
         run: npm --prefix frontend ci

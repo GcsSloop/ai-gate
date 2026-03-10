@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AI Gate",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "identifier": "com.aigate.desktop",
   "build": {
     "frontendDist": "../../frontend/dist",
-    "beforeBuildCommand": "npm --prefix ../frontend run build:desktop",
+    "beforeBuildCommand": "npm --prefix ../frontend run build -- --mode desktop",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm --prefix ../frontend run dev"
   },
@@ -24,9 +24,13 @@
     "active": true,
     "icon": [
       "icons/icon.png",
-      "icons/icon.icns"
+      "icons/icon.icns",
+      "icons/icon.ico"
     ],
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "resources": [
       "bin/routerd-universal-apple-darwin",
       "bin/routerd-x86_64-pc-windows-msvc.exe"

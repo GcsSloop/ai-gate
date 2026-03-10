@@ -1,12 +1,12 @@
 {
   "name": "aigate-frontend",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:desktop": "DESKTOP_BUILD=1 vite build",
+    "build:desktop": "vite build --mode desktop",
     "test": "vitest run"
   },
   "dependencies": {
