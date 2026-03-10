@@ -456,7 +456,7 @@ fn escape_xml(value: &str) -> String {
 }
 
 fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let tray_state = build_tray_state();
+    let tray_state = build_tray_state().unwrap_or_default();
     let tray_menu = build_tray_menu(app, &tray_state)?;
     let tray_title = format_tray_title(
         tray_state.proxy.enabled,
@@ -524,7 +524,9 @@ fn build_tray_menu<R: Runtime>(
 }
 
 fn refresh_tray_state_from_backend<R: Runtime>(app: &AppHandle<R>) {
-    let tray_state = build_tray_state();
+    let Ok(tray_state) = build_tray_state() else {
+        return;
+    };
     apply_tray_state(app, &tray_state);
 }
 
@@ -591,39 +593,35 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-fn fetch_proxy_status() -> ProxyStatusSnapshot {
-    let Ok(resp) = request_backend("GET", "/ai-router/api/settings/proxy/status", "") else {
-        return ProxyStatusSnapshot::default();
-    };
+fn parse_proxy_status_response(resp: &HttpResponse) -> Result<ProxyStatusSnapshot, String> {
     if resp.status != 200 {
-        return ProxyStatusSnapshot::default();
+        return Err(format!("unexpected proxy status code {}", resp.status));
     }
-    let Ok(value) = serde_json::from_str::<Value>(&resp.body) else {
-        return ProxyStatusSnapshot::default();
-    };
-    ProxyStatusSnapshot {
-        enabled: value
-            .get("enabled")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-    }
+    let value =
+        serde_json::from_str::<Value>(&resp.body).map_err(|e| format!("parse proxy status: {e}"))?;
+    let enabled = value
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| "proxy status payload missing enabled field".to_string())?;
+    Ok(ProxyStatusSnapshot { enabled })
 }
 
-fn fetch_accounts() -> Vec<AccountSummary> {
-    let Ok(resp) = request_backend("GET", "/ai-router/api/accounts", "") else {
-        return Vec::new();
-    };
-    if resp.status != 200 {
-        return Vec::new();
-    }
-    let Ok(value) = serde_json::from_str::<Value>(&resp.body) else {
-        return Vec::new();
-    };
-    let Some(items) = value.as_array() else {
-        return Vec::new();
-    };
+fn fetch_proxy_status() -> Result<ProxyStatusSnapshot, String> {
+    let resp = request_backend("GET", "/ai-router/api/settings/proxy/status", "")?;
+    parse_proxy_status_response(&resp)
+}
 
-    items
+fn parse_accounts_response(resp: &HttpResponse) -> Result<Vec<AccountSummary>, String> {
+    if resp.status != 200 {
+        return Err(format!("unexpected accounts status code {}", resp.status));
+    }
+    let value =
+        serde_json::from_str::<Value>(&resp.body).map_err(|e| format!("parse accounts: {e}"))?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| "accounts payload must be an array".to_string())?;
+
+    Ok(items
         .iter()
         .filter_map(|item| {
             let id = item.get("id")?.as_i64()?;
@@ -638,21 +636,26 @@ fn fetch_accounts() -> Vec<AccountSummary> {
                 is_active,
             })
         })
-        .collect()
+        .collect())
 }
 
-fn build_tray_state() -> TrayStateSnapshot {
-    let proxy = fetch_proxy_status();
-    let accounts = fetch_accounts();
+fn fetch_accounts() -> Result<Vec<AccountSummary>, String> {
+    let resp = request_backend("GET", "/ai-router/api/accounts", "")?;
+    parse_accounts_response(&resp)
+}
+
+fn build_tray_state() -> Result<TrayStateSnapshot, String> {
+    let proxy = fetch_proxy_status()?;
+    let accounts = fetch_accounts()?;
     let active_account_name = accounts
         .iter()
         .find(|account| account.is_active)
         .map(|account| account.name.clone());
-    TrayStateSnapshot {
+    Ok(TrayStateSnapshot {
         proxy,
         accounts,
         active_account_name,
-    }
+    })
 }
 
 fn format_tray_title(proxy_enabled: bool, active_account_name: Option<&str>) -> String {
@@ -821,8 +824,9 @@ fn start_sidecar_heartbeat(mut stdin: ChildStdin) -> Result<(), String> {
 mod tests {
     use super::{
         build_launch_agent_plist, format_timeout_error, format_tray_title, map_backend_io_error,
-        parse_account_menu_id, should_refresh_tray_after_action, window_close_action,
-        AppSettingsPayload, DesktopSettingsCache, WindowCloseAction,
+        parse_account_menu_id, parse_accounts_response, parse_proxy_status_response,
+        should_refresh_tray_after_action, window_close_action, AppSettingsPayload,
+        DesktopSettingsCache, HttpResponse, WindowCloseAction,
     };
     use std::path::Path;
 
@@ -966,5 +970,23 @@ mod tests {
             map_backend_io_error("read", error),
             "read backend timed out while waiting for the sidecar"
         );
+    }
+
+    #[test]
+    fn parse_proxy_status_response_rejects_invalid_json() {
+        let response = HttpResponse {
+            status: 200,
+            body: "{\"enabled\":".to_string(),
+        };
+        assert!(parse_proxy_status_response(&response).is_err());
+    }
+
+    #[test]
+    fn parse_accounts_response_rejects_non_array_payload() {
+        let response = HttpResponse {
+            status: 200,
+            body: "{\"id\":1}".to_string(),
+        };
+        assert!(parse_accounts_response(&response).is_err());
     }
 }
