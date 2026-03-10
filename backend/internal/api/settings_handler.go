@@ -136,10 +136,10 @@ func (h *SettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.getFailoverQueue(w)
 	case r.Method == http.MethodPut && r.URL.Path == "/settings/failover-queue":
 		h.saveFailoverQueue(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/settings/database/sql-export":
-		h.exportDatabaseSQL(w)
-	case r.Method == http.MethodPost && r.URL.Path == "/settings/database/sql-import":
-		h.importDatabaseSQL(w, r)
+	case r.Method == http.MethodGet && (r.URL.Path == "/settings/database/json-export" || r.URL.Path == "/settings/database/sql-export"):
+		h.exportDatabaseJSON(w)
+	case r.Method == http.MethodPost && (r.URL.Path == "/settings/database/json-import" || r.URL.Path == "/settings/database/sql-import"):
+		h.importDatabaseJSON(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/settings/database/backups":
 		h.listDatabaseBackups(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/settings/database/backup":
@@ -182,7 +182,7 @@ func (h *SettingsHandler) createCodexBackup(w http.ResponseWriter) {
 	})
 }
 
-func (h *SettingsHandler) exportDatabaseSQL(w http.ResponseWriter) {
+func (h *SettingsHandler) exportDatabaseJSON(w http.ResponseWriter) {
 	transfer, err := h.sqlTransfer()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -193,12 +193,12 @@ func (h *SettingsHandler) exportDatabaseSQL(w http.ResponseWriter) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
 }
 
-func (h *SettingsHandler) importDatabaseSQL(w http.ResponseWriter, r *http.Request) {
+func (h *SettingsHandler) importDatabaseJSON(w http.ResponseWriter, r *http.Request) {
 	transfer, err := h.sqlTransfer()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

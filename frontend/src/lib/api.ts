@@ -377,23 +377,23 @@ export async function saveFailoverQueue(accountIDs: number[]): Promise<void> {
 }
 
 export async function exportDatabaseSQL(): Promise<string> {
-  const response = await fetch(apiPath("/settings/database/sql-export"));
+  const response = await fetch(apiPath("/settings/database/json-export"));
   if (!response.ok) {
     const details = await response.text();
-    throw new Error(details || "failed to export database sql");
+    throw new Error(details || "failed to export database json");
   }
   return response.text();
 }
 
 export async function importDatabaseSQL(raw: string): Promise<void> {
-  const response = await fetch(apiPath("/settings/database/sql-import"), {
+  const response = await fetch(apiPath("/settings/database/json-import"), {
     method: "POST",
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
+    headers: { "Content-Type": "application/json; charset=utf-8" },
     body: raw,
   });
   if (!response.ok) {
     const details = await response.text();
-    throw new Error(details || "failed to import database sql");
+    throw new Error(details || "failed to import database json");
   }
 }
 

@@ -84,6 +84,8 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/settings/failover-queue", settingsHandler)
 	apiMux.Handle("/settings/database/sql-export", settingsHandler)
 	apiMux.Handle("/settings/database/sql-import", settingsHandler)
+	apiMux.Handle("/settings/database/json-export", settingsHandler)
+	apiMux.Handle("/settings/database/json-import", settingsHandler)
 	apiMux.Handle("/settings/database/backups", settingsHandler)
 	apiMux.Handle("/settings/database/backup", settingsHandler)
 	apiMux.Handle("/settings/database/restore", settingsHandler)

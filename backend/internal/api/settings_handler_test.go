@@ -123,7 +123,7 @@ func TestSettingsHandlerProxyStatusIncludesConfiguredAddress(t *testing.T) {
 	}
 }
 
-func TestSettingsHandlerExportsAndImportsSQL(t *testing.T) {
+func TestSettingsHandlerExportsAndImportsJSON(t *testing.T) {
 	handler, repo := newSettingsHandler(t)
 
 	initial := settings.DefaultAppSettings()
@@ -132,15 +132,42 @@ func TestSettingsHandlerExportsAndImportsSQL(t *testing.T) {
 		t.Fatalf("SaveAppSettings(initial) returned error: %v", err)
 	}
 
-	exportReq := httptest.NewRequest(http.MethodGet, "/settings/database/sql-export", nil)
+	exportReq := httptest.NewRequest(http.MethodGet, "/settings/database/json-export", nil)
 	exportRec := httptest.NewRecorder()
 	handler.ServeHTTP(exportRec, exportReq)
 	if exportRec.Code != http.StatusOK {
-		t.Fatalf("GET /settings/database/sql-export status = %d, want %d; body=%s", exportRec.Code, http.StatusOK, exportRec.Body.String())
+		t.Fatalf("GET /settings/database/json-export status = %d, want %d; body=%s", exportRec.Code, http.StatusOK, exportRec.Body.String())
+	}
+	if got := exportRec.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("export content-type = %q, want application/json", got)
 	}
 	exported := exportRec.Body.Bytes()
-	if !bytes.Contains(exported, []byte(`INSERT INTO "app_settings"`)) {
-		t.Fatalf("exported SQL missing app_settings insert: %s", string(exported))
+	var payload map[string]any
+	if err := json.Unmarshal(exported, &payload); err != nil {
+		t.Fatalf("exported payload is not valid JSON: %v", err)
+	}
+	tables, ok := payload["tables"].(map[string]any)
+	if !ok {
+		t.Fatalf("exported payload tables = %T, want map", payload["tables"])
+	}
+	if len(tables) != 3 {
+		t.Fatalf("len(exported tables) = %d, want 3 account-domain tables", len(tables))
+	}
+	if _, ok := tables["accounts"]; !ok {
+		t.Fatalf("exported JSON missing accounts table: %s", string(exported))
+	}
+	if _, ok := tables["account_usage_snapshots"]; !ok {
+		t.Fatalf("exported JSON missing account_usage_snapshots table: %s", string(exported))
+	}
+	if _, ok := tables["failover_queue_items"]; !ok {
+		t.Fatalf("exported JSON missing failover_queue_items table: %s", string(exported))
+	}
+	if _, ok := tables["app_settings"]; ok {
+		t.Fatalf("exported JSON should not include app_settings table: %s", string(exported))
+	}
+
+	if err := repo.SaveFailoverQueue([]int64{3, 5, 8}); err != nil {
+		t.Fatalf("SaveFailoverQueue(before import) returned error: %v", err)
 	}
 
 	changed := initial
@@ -149,19 +176,27 @@ func TestSettingsHandlerExportsAndImportsSQL(t *testing.T) {
 		t.Fatalf("SaveAppSettings(changed) returned error: %v", err)
 	}
 
-	importReq := httptest.NewRequest(http.MethodPost, "/settings/database/sql-import", bytes.NewReader(exported))
+	importReq := httptest.NewRequest(http.MethodPost, "/settings/database/json-import", bytes.NewReader(exported))
 	importRec := httptest.NewRecorder()
 	handler.ServeHTTP(importRec, importReq)
 	if importRec.Code != http.StatusOK {
-		t.Fatalf("POST /settings/database/sql-import status = %d, want %d; body=%s", importRec.Code, http.StatusOK, importRec.Body.String())
+		t.Fatalf("POST /settings/database/json-import status = %d, want %d; body=%s", importRec.Code, http.StatusOK, importRec.Body.String())
 	}
 
 	restored, err := repo.GetAppSettings()
 	if err != nil {
 		t.Fatalf("GetAppSettings returned error: %v", err)
 	}
-	if restored.ProxyPort != 15721 {
-		t.Fatalf("restored ProxyPort = %d, want 15721", restored.ProxyPort)
+	if restored.ProxyPort != 16888 {
+		t.Fatalf("restored ProxyPort = %d, want 16888 (app settings should not be part of account-only import)", restored.ProxyPort)
+	}
+
+	restoredQueue, err := repo.ListFailoverQueue()
+	if err != nil {
+		t.Fatalf("ListFailoverQueue(after import) returned error: %v", err)
+	}
+	if len(restoredQueue) != 0 {
+		t.Fatalf("restored queue should be overwritten by exported empty queue, got %v", restoredQueue)
 	}
 }
 

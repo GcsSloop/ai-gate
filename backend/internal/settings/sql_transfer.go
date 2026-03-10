@@ -2,11 +2,11 @@ package settings
 
 import (
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
-	"os"
+	"strconv"
 	"strings"
-
-	_ "modernc.org/sqlite"
 )
 
 var ownedTableNames = []string{
@@ -19,8 +19,32 @@ var ownedTableNames = []string{
 	"failover_queue_items",
 }
 
+var accountExchangeTableNames = []string{
+	"accounts",
+	"account_usage_snapshots",
+	"failover_queue_items",
+}
+
+const accountUsageSnapshotExportLimit = 2000
+
 type SQLTransfer struct {
 	db *sql.DB
+}
+
+type databaseExchangePayload struct {
+	Format  string                           `json:"format"`
+	Version int                              `json:"version"`
+	Tables  map[string]databaseExchangeTable `json:"tables"`
+}
+
+type databaseExchangeTable struct {
+	Columns []string                  `json:"columns"`
+	Rows    [][]databaseExchangeValue `json:"rows"`
+}
+
+type databaseExchangeValue struct {
+	Type  string `json:"type"`
+	Value any    `json:"value,omitempty"`
 }
 
 func NewSQLTransfer(db *sql.DB) *SQLTransfer {
@@ -28,113 +52,105 @@ func NewSQLTransfer(db *sql.DB) *SQLTransfer {
 }
 
 func (t *SQLTransfer) Export() ([]byte, error) {
-	var builder strings.Builder
-	builder.WriteString("BEGIN TRANSACTION;\n")
-
-	for _, table := range ownedTableNames {
-		createSQL, err := lookupCreateTableSQL(t.db, table)
-		if err != nil {
-			return nil, err
-		}
-		builder.WriteString(createSQL)
-		builder.WriteString(";\n")
-
+	payload := databaseExchangePayload{
+		Format:  "aigate-db-exchange",
+		Version: 1,
+		Tables:  make(map[string]databaseExchangeTable, len(accountExchangeTableNames)),
+	}
+	for _, table := range accountExchangeTableNames {
 		columns, err := lookupTableColumns(t.db, table)
 		if err != nil {
 			return nil, err
 		}
-		queryParts := make([]string, 0, len(columns))
-		columnNames := make([]string, 0, len(columns))
-		for _, column := range columns {
-			queryParts = append(queryParts, fmt.Sprintf("quote(%s)", quoteIdentifier(column)))
-			columnNames = append(columnNames, quoteIdentifier(column))
+		rowsPayload := make([][]databaseExchangeValue, 0)
+		query := fmt.Sprintf("SELECT %s FROM %s ORDER BY rowid ASC", strings.Join(quoteIdentifiers(columns), ", "), quoteIdentifier(table))
+		if table == "account_usage_snapshots" {
+			query = fmt.Sprintf(
+				`WITH ranked AS (
+					SELECT %s,
+						CASE
+							WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime('now', '-7 day') THEN 'recent:' || CAST(id AS TEXT)
+							WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime('now', '-30 day') THEN 'mid:' || strftime('%%Y-%%m-%%d', COALESCE(checked_at, '1970-01-01T00:00:00Z')) || ':' || printf('%%02d', (CAST(strftime('%%H', COALESCE(checked_at, '1970-01-01T00:00:00Z')) AS INTEGER) / 6) * 6)
+							ELSE 'old:' || strftime('%%Y-%%m-%%d', COALESCE(checked_at, '1970-01-01T00:00:00Z'))
+						END AS bucket_key,
+						ROW_NUMBER() OVER (
+							PARTITION BY
+								CASE
+									WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime('now', '-7 day') THEN 'recent:' || CAST(id AS TEXT)
+									WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime('now', '-30 day') THEN 'mid:' || strftime('%%Y-%%m-%%d', COALESCE(checked_at, '1970-01-01T00:00:00Z')) || ':' || printf('%%02d', (CAST(strftime('%%H', COALESCE(checked_at, '1970-01-01T00:00:00Z')) AS INTEGER) / 6) * 6)
+									ELSE 'old:' || strftime('%%Y-%%m-%%d', COALESCE(checked_at, '1970-01-01T00:00:00Z'))
+								END
+							ORDER BY datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) DESC, id DESC
+						) AS bucket_rank
+					FROM %s
+				),
+				sampled AS (
+					SELECT %s
+					FROM ranked
+					WHERE bucket_rank = 1
+					ORDER BY datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) DESC, id DESC
+					LIMIT %d
+				)
+				SELECT %s
+				FROM sampled
+				ORDER BY datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) ASC, id ASC`,
+				strings.Join(quoteIdentifiers(columns), ", "),
+				quoteIdentifier(table),
+				strings.Join(quoteIdentifiers(columns), ", "),
+				accountUsageSnapshotExportLimit,
+				strings.Join(quoteIdentifiers(columns), ", "),
+			)
 		}
-
-		rows, err := t.db.Query(
-			fmt.Sprintf("SELECT %s FROM %s ORDER BY rowid ASC", strings.Join(queryParts, ", "), quoteIdentifier(table)),
-		)
+		rows, err := t.db.Query(query)
 		if err != nil {
 			return nil, fmt.Errorf("query %s rows for export: %w", table, err)
 		}
 
 		for rows.Next() {
-			values := make([]sql.NullString, len(columns))
+			scanValues := make([]any, len(columns))
 			targets := make([]any, len(columns))
-			for index := range values {
-				targets[index] = &values[index]
+			for index := range scanValues {
+				targets[index] = &scanValues[index]
 			}
 			if err := rows.Scan(targets...); err != nil {
 				rows.Close()
 				return nil, fmt.Errorf("scan %s export row: %w", table, err)
 			}
-
-			literals := make([]string, 0, len(values))
-			for _, value := range values {
-				if !value.Valid {
-					literals = append(literals, "NULL")
-					continue
-				}
-				literals = append(literals, value.String)
+			rowPayload := make([]databaseExchangeValue, 0, len(scanValues))
+			for _, value := range scanValues {
+				rowPayload = append(rowPayload, encodeExchangeValue(value))
 			}
-
-			builder.WriteString(fmt.Sprintf(
-				"INSERT INTO %s (%s) VALUES (%s);\n",
-				quoteIdentifier(table),
-				strings.Join(columnNames, ", "),
-				strings.Join(literals, ", "),
-			))
+			rowsPayload = append(rowsPayload, rowPayload)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("iterate %s export rows: %w", table, err)
 		}
 		rows.Close()
+		payload.Tables[table] = databaseExchangeTable{
+			Columns: columns,
+			Rows:    rowsPayload,
+		}
 	}
-
-	builder.WriteString("COMMIT;\n")
-	return []byte(builder.String()), nil
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal exchange payload: %w", err)
+	}
+	return raw, nil
 }
 
 func (t *SQLTransfer) Import(raw []byte) error {
-	tempFile, err := os.CreateTemp("", "aigate-import-*.sqlite")
-	if err != nil {
-		return fmt.Errorf("create temp import db path: %w", err)
+	var payload databaseExchangePayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return fmt.Errorf("decode import JSON: %w", err)
 	}
-	tempPath := tempFile.Name()
-	if err := tempFile.Close(); err != nil {
-		return fmt.Errorf("close temp import db path: %w", err)
+	if payload.Format != "aigate-db-exchange" {
+		return fmt.Errorf("unsupported import format: %s", payload.Format)
 	}
-	_ = os.Remove(tempPath)
-	defer os.Remove(tempPath)
-
-	tempDB, err := sql.Open("sqlite", tempPath)
-	if err != nil {
-		return fmt.Errorf("open temp import db: %w", err)
+	if payload.Version != 1 {
+		return fmt.Errorf("unsupported import version: %d", payload.Version)
 	}
-	defer tempDB.Close()
-
-	if _, err := tempDB.Exec(string(raw)); err != nil {
-		return fmt.Errorf("exec import SQL: %w", err)
-	}
-
-	for _, table := range ownedTableNames {
-		if _, err := lookupCreateTableSQL(tempDB, table); err != nil {
-			return err
-		}
-	}
-
-	return replaceOwnedTablesFromDatabase(t.db, tempPath)
-}
-
-func lookupCreateTableSQL(db *sql.DB, table string) (string, error) {
-	var createSQL string
-	if err := db.QueryRow(
-		`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`,
-		table,
-	).Scan(&createSQL); err != nil {
-		return "", fmt.Errorf("lookup create SQL for %s: %w", table, err)
-	}
-	return createSQL, nil
+	return replaceOwnedTablesFromPayload(t.db, payload.Tables, accountExchangeTableNames)
 }
 
 func lookupTableColumns(db *sql.DB, table string) ([]string, error) {
@@ -176,6 +192,169 @@ func scanTableColumns(rows *sql.Rows, table string) ([]string, error) {
 		return nil, fmt.Errorf("iterate table info for %s: %w", table, err)
 	}
 	return columns, nil
+}
+
+func replaceOwnedTablesFromPayload(target *sql.DB, sourceTables map[string]databaseExchangeTable, tableNames []string) (err error) {
+	tx, err := target.Begin()
+	if err != nil {
+		return fmt.Errorf("begin replace owned tables: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	for index := len(tableNames) - 1; index >= 0; index-- {
+		table := tableNames[index]
+		if _, err = tx.Exec(fmt.Sprintf("DELETE FROM %s", quoteIdentifier(table))); err != nil {
+			return fmt.Errorf("clear %s before import: %w", table, err)
+		}
+	}
+	for _, table := range tableNames {
+		sourceTable, ok := sourceTables[table]
+		if !ok {
+			continue
+		}
+		targetColumns, colErr := lookupTableColumnsInSchema(tx, "", table)
+		if colErr != nil {
+			return colErr
+		}
+		sourceColumns := sourceTable.Columns
+		commonColumns := commonTableColumns(targetColumns, sourceColumns)
+		if len(commonColumns) == 0 {
+			return fmt.Errorf("copy imported rows into %s: no common columns found", table)
+		}
+		columnIndex := make(map[string]int, len(sourceColumns))
+		for idx, column := range sourceColumns {
+			columnIndex[column] = idx
+		}
+
+		insertColumns := make([]string, 0, len(commonColumns))
+		for _, column := range commonColumns {
+			insertColumns = append(insertColumns, quoteIdentifier(column))
+		}
+		placeholders := make([]string, 0, len(commonColumns))
+		for range commonColumns {
+			placeholders = append(placeholders, "?")
+		}
+		insertSQL := fmt.Sprintf(
+			"INSERT INTO %s (%s) VALUES (%s)",
+			quoteIdentifier(table),
+			strings.Join(insertColumns, ", "),
+			strings.Join(placeholders, ", "),
+		)
+
+		for rowIndex, row := range sourceTable.Rows {
+			values := make([]any, 0, len(commonColumns))
+			for _, column := range commonColumns {
+				sourceIndex := columnIndex[column]
+				if sourceIndex >= len(row) {
+					values = append(values, nil)
+					continue
+				}
+				decoded, decodeErr := decodeExchangeValue(row[sourceIndex])
+				if decodeErr != nil {
+					return fmt.Errorf("decode %s row %d column %s: %w", table, rowIndex, column, decodeErr)
+				}
+				values = append(values, decoded)
+			}
+			if _, err = tx.Exec(insertSQL, values...); err != nil {
+				return fmt.Errorf("copy imported rows into %s: %w", table, err)
+			}
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit imported data: %w", err)
+	}
+	return nil
+}
+
+func quoteIdentifiers(values []string) []string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, quoteIdentifier(value))
+	}
+	return quoted
+}
+
+func encodeExchangeValue(value any) databaseExchangeValue {
+	switch typed := value.(type) {
+	case nil:
+		return databaseExchangeValue{Type: "null"}
+	case int64:
+		return databaseExchangeValue{Type: "integer", Value: strconv.FormatInt(typed, 10)}
+	case float64:
+		return databaseExchangeValue{Type: "real", Value: typed}
+	case bool:
+		return databaseExchangeValue{Type: "bool", Value: typed}
+	case []byte:
+		return databaseExchangeValue{Type: "bytes", Value: base64.StdEncoding.EncodeToString(typed)}
+	case string:
+		return databaseExchangeValue{Type: "text", Value: typed}
+	default:
+		return databaseExchangeValue{Type: "text", Value: fmt.Sprint(typed)}
+	}
+}
+
+func decodeExchangeValue(value databaseExchangeValue) (any, error) {
+	switch value.Type {
+	case "null":
+		return nil, nil
+	case "integer":
+		switch raw := value.Value.(type) {
+		case string:
+			parsed, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				return nil, err
+			}
+			return parsed, nil
+		case float64:
+			return int64(raw), nil
+		default:
+			return nil, fmt.Errorf("invalid integer value type %T", value.Value)
+		}
+	case "real":
+		switch raw := value.Value.(type) {
+		case float64:
+			return raw, nil
+		case string:
+			parsed, err := strconv.ParseFloat(raw, 64)
+			if err != nil {
+				return nil, err
+			}
+			return parsed, nil
+		default:
+			return nil, fmt.Errorf("invalid real value type %T", value.Value)
+		}
+	case "bool":
+		raw, ok := value.Value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("invalid bool value type %T", value.Value)
+		}
+		return raw, nil
+	case "bytes":
+		raw, ok := value.Value.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid bytes value type %T", value.Value)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(raw)
+		if err != nil {
+			return nil, err
+		}
+		return decoded, nil
+	case "text":
+		if value.Value == nil {
+			return "", nil
+		}
+		raw, ok := value.Value.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid text value type %T", value.Value)
+		}
+		return raw, nil
+	default:
+		return nil, fmt.Errorf("unknown value type %q", value.Type)
+	}
 }
 
 func replaceOwnedTablesFromDatabase(target *sql.DB, sourcePath string) (err error) {

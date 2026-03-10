@@ -1,9 +1,10 @@
 package settings_test
 
 import (
-	"fmt"
+	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
@@ -22,17 +23,6 @@ func TestSQLTransferExportAndImportOwnedTables(t *testing.T) {
 	})
 
 	sourceSettings := settings.NewSQLiteRepository(sourceStore.DB())
-	if err := sourceSettings.SaveAppSettings(settings.AppSettings{
-		CloseToTray:             true,
-		ShowProxySwitchOnHome:   true,
-		ProxyHost:               "localhost",
-		ProxyPort:               15721,
-		AutoBackupIntervalHours: 6,
-		BackupRetentionCount:    4,
-		AutoFailoverEnabled:     true,
-	}); err != nil {
-		t.Fatalf("SaveAppSettings(source) returned error: %v", err)
-	}
 	if err := sourceSettings.SaveFailoverQueue([]int64{9, 2, 1}); err != nil {
 		t.Fatalf("SaveFailoverQueue(source) returned error: %v", err)
 	}
@@ -58,6 +48,29 @@ func TestSQLTransferExportAndImportOwnedTables(t *testing.T) {
 	if len(exported) == 0 {
 		t.Fatal("Export returned empty payload")
 	}
+	var exportedPayload map[string]any
+	if err := json.Unmarshal(exported, &exportedPayload); err != nil {
+		t.Fatalf("Export returned non-JSON payload: %v", err)
+	}
+	tables, ok := exportedPayload["tables"].(map[string]any)
+	if !ok {
+		t.Fatalf("Export payload missing tables field: %s", string(exported))
+	}
+	if len(tables) != 3 {
+		t.Fatalf("len(tables) = %d, want 3 account-domain tables", len(tables))
+	}
+	if _, ok := tables["accounts"]; !ok {
+		t.Fatalf("export payload missing accounts table: %s", string(exported))
+	}
+	if _, ok := tables["account_usage_snapshots"]; !ok {
+		t.Fatalf("export payload missing account_usage_snapshots table: %s", string(exported))
+	}
+	if _, ok := tables["failover_queue_items"]; !ok {
+		t.Fatalf("export payload missing failover_queue_items table: %s", string(exported))
+	}
+	if _, ok := tables["messages"]; ok {
+		t.Fatalf("export payload unexpectedly contains messages table: %s", string(exported))
+	}
 
 	targetStore, err := sqlitestore.Open(filepath.Join(t.TempDir(), "target.sqlite"))
 	if err != nil {
@@ -67,24 +80,12 @@ func TestSQLTransferExportAndImportOwnedTables(t *testing.T) {
 		_ = targetStore.Close()
 	})
 
-	targetSettings := settings.NewSQLiteRepository(targetStore.DB())
-	if err := targetSettings.SaveAppSettings(settings.DefaultAppSettings()); err != nil {
-		t.Fatalf("SaveAppSettings(target) returned error: %v", err)
-	}
-
 	targetTransfer := settings.NewSQLTransfer(targetStore.DB())
 	if err := targetTransfer.Import(exported); err != nil {
 		t.Fatalf("Import returned error: %v", err)
 	}
 
-	gotSettings, err := targetSettings.GetAppSettings()
-	if err != nil {
-		t.Fatalf("GetAppSettings(target) returned error: %v", err)
-	}
-	if gotSettings.ProxyHost != "localhost" || gotSettings.ProxyPort != 15721 || !gotSettings.AutoFailoverEnabled || gotSettings.AutoBackupIntervalHours != 6 || gotSettings.BackupRetentionCount != 4 {
-		t.Fatalf("imported settings = %+v, want source settings", gotSettings)
-	}
-
+	targetSettings := settings.NewSQLiteRepository(targetStore.DB())
 	gotQueue, err := targetSettings.ListFailoverQueue()
 	if err != nil {
 		t.Fatalf("ListFailoverQueue(target) returned error: %v", err)
@@ -115,37 +116,30 @@ func TestSQLTransferImportAccountsWithExtraSourceColumns(t *testing.T) {
 
 	targetTransfer := settings.NewSQLTransfer(targetStore.DB())
 
-	raw := `BEGIN TRANSACTION;
-CREATE TABLE "accounts" (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider_type TEXT NOT NULL,
-  account_name TEXT NOT NULL,
-  source_icon TEXT NOT NULL DEFAULT 'openai',
-  auth_mode TEXT NOT NULL,
-  credential_ref TEXT NOT NULL,
-  base_url TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'active',
-  priority INTEGER NOT NULL DEFAULT 0,
-  is_active INTEGER NOT NULL DEFAULT 0,
-  supports_responses INTEGER NOT NULL DEFAULT 0,
-  cooldown_until DATETIME,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  legacy_extra_col TEXT NOT NULL DEFAULT ''
-);
-INSERT INTO "accounts" ("provider_type","account_name","source_icon","auth_mode","credential_ref","base_url","status","priority","is_active","supports_responses","cooldown_until","created_at","legacy_extra_col")
-VALUES ('openai-compatible','extra-schema','openai','api_key','sk-extra','https://example.test/v1','active',9,1,1,NULL,'2026-03-10 00:00:00','legacy-value');
-`
-	for _, table := range []string{
-		"account_usage_snapshots",
-		"conversations",
-		"messages",
-		"runs",
-		"app_settings",
-		"failover_queue_items",
-	} {
-		raw += fmt.Sprintf("CREATE TABLE \"%s\" (id INTEGER PRIMARY KEY AUTOINCREMENT);\n", table)
-	}
-	raw += "COMMIT;\n"
+	raw := `{
+  "format": "aigate-db-exchange",
+  "version": 1,
+  "tables": {
+    "accounts": {
+      "columns": ["provider_type","account_name","source_icon","auth_mode","credential_ref","base_url","status","priority","is_active","supports_responses","cooldown_until","created_at","legacy_extra_col"],
+      "rows": [[
+        {"type":"text","value":"openai-compatible"},
+        {"type":"text","value":"extra-schema"},
+        {"type":"text","value":"openai"},
+        {"type":"text","value":"api_key"},
+        {"type":"text","value":"sk-extra"},
+        {"type":"text","value":"https://example.test/v1"},
+        {"type":"text","value":"active"},
+        {"type":"integer","value":"9"},
+        {"type":"integer","value":"1"},
+        {"type":"integer","value":"1"},
+        {"type":"null"},
+        {"type":"text","value":"2026-03-10 00:00:00"},
+        {"type":"text","value":"legacy-value"}
+      ]]
+    }
+  }
+}`
 
 	if err := targetTransfer.Import([]byte(raw)); err != nil {
 		t.Fatalf("Import returned error: %v", err)
@@ -157,5 +151,81 @@ VALUES ('openai-compatible','extra-schema','openai','api_key','sk-extra','https:
 	}
 	if len(items) != 1 || items[0].AccountName != "extra-schema" || items[0].Priority != 9 {
 		t.Fatalf("imported accounts = %+v, want account extra-schema with priority 9", items)
+	}
+}
+
+func TestSQLTransferExportSparsifiesAccountUsageSnapshots(t *testing.T) {
+	t.Parallel()
+
+	sourceStore, err := sqlitestore.Open(filepath.Join(t.TempDir(), "source.sqlite"))
+	if err != nil {
+		t.Fatalf("Open(source) returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = sourceStore.Close()
+	})
+
+	accountRepo := accounts.NewSQLiteRepository(sourceStore.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "sparse-test",
+		AuthMode:      accounts.AuthModeAPIKey,
+		CredentialRef: "sk-sparse",
+		BaseURL:       "https://example.test/v1",
+		Status:        accounts.StatusActive,
+		Priority:      10,
+	}); err != nil {
+		t.Fatalf("Create(account) returned error: %v", err)
+	}
+	items, err := accountRepo.List()
+	if err != nil || len(items) == 0 {
+		t.Fatalf("List(account) returned error=%v len=%d", err, len(items))
+	}
+	accountID := items[0].ID
+
+	now := time.Now().UTC()
+	insertSnapshot := func(ts time.Time, tokens int) {
+		_, execErr := sourceStore.DB().Exec(
+			`INSERT INTO account_usage_snapshots (account_id, last_total_tokens, checked_at) VALUES (?, ?, ?)`,
+			accountID,
+			tokens,
+			ts.Format(time.RFC3339),
+		)
+		if execErr != nil {
+			t.Fatalf("insert snapshot at %s failed: %v", ts.Format(time.RFC3339), execErr)
+		}
+	}
+
+	insertSnapshot(now.Add(-2*time.Hour), 101)
+	insertSnapshot(now.Add(-3*time.Hour), 102)
+	insertSnapshot(now.Add(-20*time.Minute), 103)
+	insertSnapshot(now.AddDate(0, 0, -10).Add(-10*time.Minute), 201)
+	insertSnapshot(now.AddDate(0, 0, -10).Add(-40*time.Minute), 202)
+	insertSnapshot(now.AddDate(0, 0, -40).Add(-2*time.Hour), 301)
+	insertSnapshot(now.AddDate(0, 0, -40).Add(-5*time.Hour), 302)
+
+	transfer := settings.NewSQLTransfer(sourceStore.DB())
+	exported, err := transfer.Export()
+	if err != nil {
+		t.Fatalf("Export returned error: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(exported, &payload); err != nil {
+		t.Fatalf("unmarshal export payload failed: %v", err)
+	}
+	tables, ok := payload["tables"].(map[string]any)
+	if !ok {
+		t.Fatalf("tables field type = %T, want map", payload["tables"])
+	}
+	snapshots, ok := tables["account_usage_snapshots"].(map[string]any)
+	if !ok {
+		t.Fatalf("account_usage_snapshots field type = %T, want map", tables["account_usage_snapshots"])
+	}
+	rows, ok := snapshots["rows"].([]any)
+	if !ok {
+		t.Fatalf("snapshot rows type = %T, want array", snapshots["rows"])
+	}
+	if len(rows) != 5 {
+		t.Fatalf("len(snapshot rows) = %d, want 5 (3 recent + 1 mid + 1 old)", len(rows))
 	}
 }

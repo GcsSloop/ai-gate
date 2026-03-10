@@ -263,11 +263,11 @@ export function SettingsPage({
   async function handleExportSQL() {
     try {
       const raw = await exportDatabaseSQL();
-      const filename = `aigate-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.sql`;
+      const filename = `aigate-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
       triggerTextDownload(filename, raw);
-      void messageApi.success("SQL 已导出");
+      void messageApi.success("JSON 已导出");
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : "导出 SQL 失败");
+      void messageApi.error(error instanceof Error ? error.message : "导出 JSON 失败");
     }
   }
 
@@ -284,12 +284,12 @@ export function SettingsPage({
         setDraftSettings(refreshed);
         await onSettingsChanged(refreshed);
       } catch {
-        // Keep the current draft when the imported SQL payload doesn't include app settings yet.
+        // Keep the current draft when the imported payload doesn't include app settings yet.
       }
       setDbBackups(await listDatabaseBackups());
-      void messageApi.success("SQL 导入完成");
+      void messageApi.success("JSON 导入完成");
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : "导入 SQL 失败");
+      void messageApi.error(error instanceof Error ? error.message : "导入 JSON 失败");
     } finally {
       setImportingSQL(false);
       if (sqlInputRef.current) {
@@ -521,18 +521,18 @@ export function SettingsPage({
             children: (
               <div className="settings-grid">
                 <Card className="settings-card" variant="borderless">
-                  <SectionHeader icon={<DatabaseOutlined />} title="数据管理" description="直接导出或导入 SQL，以便迁移或排查数据。" />
+                  <SectionHeader icon={<DatabaseOutlined />} title="数据管理" description="直接导出或导入 JSON，以便迁移或排查数据。" />
                   <div className="settings-action-row">
                     <Button icon={<CloudDownloadOutlined />} onClick={() => void handleExportSQL()}>
-                      导出 SQL
+                      导出 JSON
                     </Button>
                     <Button icon={<CloudUploadOutlined />} loading={importingSQL} onClick={() => sqlInputRef.current?.click()}>
-                      导入 SQL
+                      导入 JSON
                     </Button>
                     <input
                       ref={sqlInputRef}
                       type="file"
-                      accept=".sql,text/plain"
+                      accept=".json,application/json,text/plain"
                       style={{ display: "none" }}
                       onChange={(event) => void handleImportSQL(event.target.files?.[0] || null)}
                     />
