@@ -218,6 +218,7 @@ fn main() {
                     }
                 }
             }
+            #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 show_main_window(app_handle);
             }
