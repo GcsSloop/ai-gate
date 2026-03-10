@@ -377,23 +377,54 @@ export async function saveFailoverQueue(accountIDs: number[]): Promise<void> {
 }
 
 export async function exportDatabaseSQL(): Promise<string> {
-  const response = await fetch(apiPath("/settings/database/json-export"));
-  if (!response.ok) {
-    const details = await response.text();
+  const jsonResponse = await fetch(apiPath("/settings/database/json-export"));
+  if (jsonResponse.ok) {
+    return jsonResponse.text();
+  }
+
+  if (jsonResponse.status !== 404) {
+    const details = await jsonResponse.text();
     throw new Error(details || "failed to export database json");
   }
-  return response.text();
+
+  // Backward compatibility for legacy backends that only expose SQL export routes.
+  const sqlResponse = await fetch(apiPath("/settings/database/sql-export"));
+  if (!sqlResponse.ok) {
+    const details = await sqlResponse.text();
+    throw new Error(details || "failed to export database sql");
+  }
+  return sqlResponse.text();
 }
 
 export async function importDatabaseSQL(raw: string): Promise<void> {
-  const response = await fetch(apiPath("/settings/database/json-import"), {
+  const jsonResponse = await fetch(apiPath("/settings/database/json-import"), {
     method: "POST",
     headers: { "Content-Type": "application/json; charset=utf-8" },
     body: raw,
   });
-  if (!response.ok) {
-    const details = await response.text();
+  if (jsonResponse.ok) {
+    return;
+  }
+  if (jsonResponse.status !== 404) {
+    const details = await jsonResponse.text();
     throw new Error(details || "failed to import database json");
+  }
+
+  const trimmed = raw.trimStart();
+  const isAIGateJSONExchange = trimmed.startsWith("{") && raw.includes('"format":"aigate-db-exchange"');
+  if (isAIGateJSONExchange) {
+    throw new Error("当前后端版本不支持 JSON 导入，请升级到最新版本后重试");
+  }
+
+  // Backward compatibility for legacy SQL import route.
+  const sqlResponse = await fetch(apiPath("/settings/database/sql-import"), {
+    method: "POST",
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+    body: raw,
+  });
+  if (!sqlResponse.ok) {
+    const details = await sqlResponse.text();
+    throw new Error(details || "failed to import database sql");
   }
 }
 
