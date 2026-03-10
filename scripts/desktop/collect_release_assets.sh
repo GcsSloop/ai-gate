@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/desktop/release_path_helpers.sh
+source "$ROOT_DIR/scripts/desktop/release_path_helpers.sh"
 VERSION="${RELEASE_VERSION:-${GITHUB_REF_NAME:-${CI_COMMIT_TAG:-local}}}"
 PLATFORM="${RELEASE_PLATFORM:-auto}"
 TARGET_DIR="${TARGET_DIR:-$ROOT_DIR/desktop/src-tauri/target}"
@@ -48,8 +50,12 @@ zip_dir() {
       zip -rq "$dest_zip" "$dir_name"
     )
   elif command -v powershell.exe >/dev/null 2>&1; then
+    local source_windows
+    local dest_windows
+    source_windows="$(to_windows_path "$source_dir")"
+    dest_windows="$(to_windows_path "$dest_zip")"
     powershell.exe -NoLogo -NoProfile -Command \
-      "Compress-Archive -Path '${source_dir//\//\\}\\*' -DestinationPath '${dest_zip//\//\\}' -Force" \
+      "Compress-Archive -Path '${source_windows}\\*' -DestinationPath '${dest_windows}' -Force" \
       >/dev/null
   else
     echo "No zip implementation available" >&2
