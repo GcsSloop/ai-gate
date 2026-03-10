@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "aigate-desktop"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "once_cell",
  "serde",
