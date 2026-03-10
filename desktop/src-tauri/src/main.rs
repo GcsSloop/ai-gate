@@ -6,8 +6,9 @@ use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Mutex;
+use std::thread::JoinHandle;
 use std::time::Duration;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder};
@@ -15,6 +16,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
+static SIDECAR_HEARTBEAT: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
 static DESKTOP_RUNTIME: Lazy<Mutex<DesktopRuntime>> =
     Lazy::new(|| Mutex::new(DesktopRuntime::default()));
 
@@ -34,6 +36,7 @@ const ABOUT_DESCRIPTION: &str =
     "AI Gate 是一个本地桌面代理与账号编排工具，用于统一管理路由、故障转移与数据备份。";
 const ABOUT_AUTHOR: &str = "GcsSloop";
 const BACKEND_REQUEST_TIMEOUT_MS: u64 = 1500;
+const SIDECAR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -162,6 +165,12 @@ struct DesktopRuntime {
     settings_cache: DesktopSettingsCache,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowCloseAction {
+    MinimizeWindow,
+    ExitApp,
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -188,6 +197,25 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
+            tauri::RunEvent::WindowEvent { label, event, .. } => {
+                if label == "main" {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        match window_close_action(current_settings_cache().close_to_tray) {
+                            WindowCloseAction::MinimizeWindow => {
+                                api.prevent_close();
+                                if let Some(window) = app_handle.get_webview_window("main") {
+                                    let _ = window.minimize();
+                                }
+                            }
+                            WindowCloseAction::ExitApp => {
+                                api.prevent_close();
+                                shutdown_sidecar();
+                                app_handle.exit(0);
+                            }
+                        }
+                    }
+                }
+            }
             tauri::RunEvent::Reopen { .. } => {
                 show_main_window(app_handle);
             }
@@ -196,6 +224,14 @@ fn main() {
             }
             _ => {}
         });
+}
+
+fn window_close_action(close_to_tray: bool) -> WindowCloseAction {
+    if close_to_tray {
+        WindowCloseAction::MinimizeWindow
+    } else {
+        WindowCloseAction::ExitApp
+    }
 }
 
 #[tauri::command]
@@ -321,15 +357,26 @@ fn spawn_sidecar() -> Result<(), String> {
             runtime.settings_cache.backend_addr(),
         )
         .env("CODEX_ROUTER_DATABASE_PATH", runtime.database_path)
+        .env("CODEX_ROUTER_PARENT_HEARTBEAT", "stdin")
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let child = command.spawn().map_err(|e| {
+    let mut child = command.spawn().map_err(|e| {
         format!(
             "spawn sidecar {} failed: {e}",
             runtime.sidecar_path.display()
         )
     })?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "capture sidecar stdin failed".to_string())?;
+    if let Err(err) = start_sidecar_heartbeat(stdin) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(err);
+    }
 
     let mut guard = SIDECAR_CHILD
         .lock()
@@ -741,14 +788,41 @@ fn shutdown_sidecar() {
         let _ = child.wait();
     }
     *guard = None;
+
+    if let Ok(mut heartbeat_guard) = SIDECAR_HEARTBEAT.lock() {
+        if let Some(handle) = heartbeat_guard.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn start_sidecar_heartbeat(mut stdin: ChildStdin) -> Result<(), String> {
+    let handle = std::thread::Builder::new()
+        .name("sidecar-heartbeat".to_string())
+        .spawn(move || loop {
+            if stdin.write_all(b"hb\n").is_err() {
+                break;
+            }
+            if stdin.flush().is_err() {
+                break;
+            }
+            std::thread::sleep(SIDECAR_HEARTBEAT_INTERVAL);
+        })
+        .map_err(|e| format!("start sidecar heartbeat failed: {e}"))?;
+
+    let mut guard = SIDECAR_HEARTBEAT
+        .lock()
+        .map_err(|_| "sidecar heartbeat lock poisoned".to_string())?;
+    *guard = Some(handle);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         build_launch_agent_plist, format_timeout_error, format_tray_title, map_backend_io_error,
-        parse_account_menu_id, should_refresh_tray_after_action, AppSettingsPayload,
-        DesktopSettingsCache,
+        parse_account_menu_id, should_refresh_tray_after_action, window_close_action,
+        AppSettingsPayload, DesktopSettingsCache, WindowCloseAction,
     };
     use std::path::Path;
 
@@ -779,6 +853,16 @@ mod tests {
     fn tray_refresh_skips_non_stateful_actions() {
         assert!(!should_refresh_tray_after_action("open-main"));
         assert!(!should_refresh_tray_after_action("quit"));
+    }
+
+    #[test]
+    fn window_close_minimizes_when_close_to_tray_is_enabled() {
+        assert_eq!(window_close_action(true), WindowCloseAction::MinimizeWindow);
+    }
+
+    #[test]
+    fn window_close_exits_when_close_to_tray_is_disabled() {
+        assert_eq!(window_close_action(false), WindowCloseAction::ExitApp);
     }
 
     #[test]
