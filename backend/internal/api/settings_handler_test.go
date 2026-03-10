@@ -45,7 +45,8 @@ func TestSettingsHandlerGetAndPutAppSettings(t *testing.T) {
 		"proxy_port": 15721,
 		"auto_failover_enabled": true,
 		"auto_backup_interval_hours": 12,
-		"backup_retention_count": 7
+		"backup_retention_count": 7,
+		"language": "en-US"
 	}`)
 	putReq := httptest.NewRequest(http.MethodPut, "/settings/app", body)
 	putReq.Header.Set("Content-Type", "application/json")
@@ -59,7 +60,7 @@ func TestSettingsHandlerGetAndPutAppSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAppSettings returned error: %v", err)
 	}
-	if !stored.LaunchAtLogin || !stored.SilentStart || stored.CloseToTray || stored.ShowProxySwitchOnHome || stored.ProxyHost != "localhost" || stored.ProxyPort != 15721 || !stored.AutoFailoverEnabled || stored.AutoBackupIntervalHours != 12 || stored.BackupRetentionCount != 7 {
+	if !stored.LaunchAtLogin || !stored.SilentStart || stored.CloseToTray || stored.ShowProxySwitchOnHome || stored.ProxyHost != "localhost" || stored.ProxyPort != 15721 || !stored.AutoFailoverEnabled || stored.AutoBackupIntervalHours != 12 || stored.BackupRetentionCount != 7 || stored.Language != "en-US" {
 		t.Fatalf("stored settings = %+v, want updated values", stored)
 	}
 }

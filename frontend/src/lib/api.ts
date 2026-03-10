@@ -150,6 +150,7 @@ export type AppSettings = {
   auto_failover_enabled: boolean;
   auto_backup_interval_hours: number;
   backup_retention_count: number;
+  language: "zh-CN" | "en-US";
 };
 
 export type DatabaseBackupItem = {

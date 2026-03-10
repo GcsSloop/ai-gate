@@ -19,9 +19,12 @@ const baseSettings = {
   auto_failover_enabled: false,
   auto_backup_interval_hours: 24,
   backup_retention_count: 10,
+  language: "zh-CN",
 };
 
 describe("SettingsPage", () => {
+  const identity = (value: string) => value;
+
   beforeEach(() => {
     vi.clearAllMocks();
     setAPIBase("/ai-router/api");
@@ -78,7 +81,7 @@ describe("SettingsPage", () => {
       close_to_tray: true,
     });
 
-    render(<SettingsPage initialSettings={baseSettings} proxyEnabled={true} onSettingsChanged={onSettingsChanged} />);
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={true} onSettingsChanged={onSettingsChanged} />);
 
     expect(await screen.findByRole("tab", { name: "通用" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "代理" })).toBeInTheDocument();
@@ -151,7 +154,7 @@ describe("SettingsPage", () => {
       close_to_tray: true,
     });
 
-    render(<SettingsPage initialSettings={baseSettings} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole("tab", { name: "高级" }));
     expect(await screen.findByRole("button", { name: "恢复此备份" })).toBeInTheDocument();
@@ -175,5 +178,54 @@ describe("SettingsPage", () => {
     fireEvent.click(screen.getByRole("tab", { name: "关于" }));
     expect(await screen.findByText("GcsSloop")).toBeInTheDocument();
     expect(screen.getByText("桌面代理与路由控制台")).toBeInTheDocument();
+  });
+
+  it("auto-saves language changes immediately", async () => {
+    const onSettingsChanged = vi.fn();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/failover-queue") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/database/backups") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/app" && init?.method === "PUT") {
+        return Promise.resolve(
+          new Response(String(init.body), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(getAppMetadata).mockResolvedValue({
+      name: "AI Gate",
+      version: "0.1.0",
+      description: "桌面代理与路由控制台",
+      author: "GcsSloop",
+    });
+    vi.mocked(applyDesktopAppSettings).mockResolvedValue(null);
+
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={onSettingsChanged} />);
+
+    fireEvent.click(await screen.findByRole("radio", { name: "English" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/settings/app",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ ...baseSettings, language: "en-US" }),
+        }),
+      );
+    });
+
+    expect(onSettingsChanged).toHaveBeenCalledWith({ ...baseSettings, language: "en-US" });
   });
 });

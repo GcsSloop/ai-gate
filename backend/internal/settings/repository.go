@@ -15,6 +15,7 @@ type AppSettings struct {
 	AutoFailoverEnabled     bool   `json:"auto_failover_enabled"`
 	AutoBackupIntervalHours int    `json:"auto_backup_interval_hours"`
 	BackupRetentionCount    int    `json:"backup_retention_count"`
+	Language                string `json:"language"`
 }
 
 type ReadRepository interface {
@@ -44,12 +45,13 @@ func DefaultAppSettings() AppSettings {
 		ProxyPort:               6789,
 		AutoBackupIntervalHours: 24,
 		BackupRetentionCount:    10,
+		Language:                "zh-CN",
 	}
 }
 
 func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	row := r.db.QueryRow(
-		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count
+		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language
 		 FROM app_settings WHERE id = 1`,
 	)
 
@@ -62,6 +64,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	var autoFailoverEnabled int
 	var autoBackupIntervalHours int
 	var backupRetentionCount int
+	var language string
 
 	if err := row.Scan(
 		&launchAtLogin,
@@ -73,6 +76,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		&autoFailoverEnabled,
 		&autoBackupIntervalHours,
 		&backupRetentionCount,
+		&language,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return DefaultAppSettings(), nil
@@ -90,6 +94,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		AutoFailoverEnabled:     autoFailoverEnabled == 1,
 		AutoBackupIntervalHours: autoBackupIntervalHours,
 		BackupRetentionCount:    backupRetentionCount,
+		Language:                language,
 	}), nil
 }
 
@@ -97,8 +102,8 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 	value = sanitize(value)
 	_, err := r.db.Exec(
 		`INSERT INTO app_settings (
-			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			launch_at_login = excluded.launch_at_login,
 			silent_start = excluded.silent_start,
@@ -109,6 +114,7 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 			auto_failover_enabled = excluded.auto_failover_enabled,
 			auto_backup_interval_hours = excluded.auto_backup_interval_hours,
 			backup_retention_count = excluded.backup_retention_count,
+			language = excluded.language,
 			updated_at = CURRENT_TIMESTAMP`,
 		1,
 		boolToInt(value.LaunchAtLogin),
@@ -120,6 +126,7 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 		boolToInt(value.AutoFailoverEnabled),
 		value.AutoBackupIntervalHours,
 		value.BackupRetentionCount,
+		value.Language,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert app settings: %w", err)
@@ -190,6 +197,9 @@ func sanitize(value AppSettings) AppSettings {
 	}
 	if value.BackupRetentionCount <= 0 {
 		value.BackupRetentionCount = defaults.BackupRetentionCount
+	}
+	if value.Language != "en-US" {
+		value.Language = defaults.Language
 	}
 	return value
 }

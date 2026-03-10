@@ -15,7 +15,7 @@ import {
   SwapOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
-import { Avatar, Button, Card, Input, InputNumber, Modal, Switch, Tabs, Tag, Typography, message } from "antd";
+import { Avatar, Button, Card, Input, InputNumber, Modal, Radio, Switch, Tabs, Tag, Typography, message } from "antd";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 
@@ -35,6 +35,7 @@ import {
   saveFailoverQueue,
 } from "../../lib/api";
 import { applyDesktopAppSettings, getAppMetadata, type AppMetadata } from "../../lib/desktop-shell";
+import type { AppLanguage, Translator } from "../../lib/i18n";
 import { setAPIBase } from "../../lib/paths";
 import appLogo from "../../assets/aigate_1024_1024.png";
 
@@ -42,6 +43,8 @@ const { Text, Title } = Typography;
 
 type SettingsPageProps = {
   initialSettings: AppSettings;
+  language: AppLanguage;
+  t: Translator;
   proxyEnabled: boolean;
   onSettingsChanged: (next: AppSettings) => void | Promise<void>;
   onToggleProxy?: (checked: boolean) => void | Promise<void>;
@@ -49,12 +52,12 @@ type SettingsPageProps = {
   onRegisterSaveHandler?: (handler: () => void) => void;
 };
 
-function formatDateTime(value: string): string {
+function formatDateTime(value: string, language: AppLanguage): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return date.toLocaleString("zh-CN", { hour12: false });
+  return date.toLocaleString(language, { hour12: false });
 }
 
 function formatBytes(value: number): string {
@@ -160,6 +163,8 @@ function ToggleRow(props: {
 
 export function SettingsPage({
   initialSettings,
+  language,
+  t,
   proxyEnabled,
   onSettingsChanged,
   onToggleProxy,
@@ -178,6 +183,7 @@ export function SettingsPage({
     author: "GcsSloop",
   });
   const [savingSettings, setSavingSettings] = useState(false);
+  const [autoSavingPreference, setAutoSavingPreference] = useState(false);
   const [savingQueue, setSavingQueue] = useState(false);
   const [proxySwitchBusy, setProxySwitchBusy] = useState(false);
   const [backupBusy, setBackupBusy] = useState("");
@@ -203,12 +209,12 @@ export function SettingsPage({
         setDbBackups(backups);
         setMetadata(about);
       } catch (error) {
-        void messageApi.error(error instanceof Error ? error.message : "加载设置数据失败");
+        void messageApi.error(error instanceof Error ? error.message : t("加载设置数据失败"));
       }
     }
 
     void loadSettingsPageData();
-  }, [messageApi]);
+  }, [messageApi, t]);
 
   const orderedAccounts = failoverQueue
     .map((accountID) => accounts.find((account) => account.id === accountID))
@@ -241,11 +247,35 @@ export function SettingsPage({
       }
       setDraftSettings(saved);
       await onSettingsChanged(saved);
-      void messageApi.success("设置已保存");
+      void messageApi.success(t("设置已保存"));
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : "保存设置失败");
+      void messageApi.error(error instanceof Error ? error.message : t("保存设置失败"));
     } finally {
       setSavingSettings(false);
+    }
+  }
+
+  async function handleAutoSavePreference(patch: Partial<AppSettings>) {
+    const previous = draftSettings;
+    const next = {
+      ...previous,
+      ...patch,
+    };
+    setDraftSettings(next);
+    setAutoSavingPreference(true);
+    try {
+      const saved = await saveAppSettings(next);
+      const shellContext = await applyDesktopAppSettings(saved);
+      if (shellContext?.backend_api_base) {
+        setAPIBase(shellContext.backend_api_base);
+      }
+      setDraftSettings(saved);
+      await onSettingsChanged(saved);
+    } catch (error) {
+      setDraftSettings(previous);
+      void messageApi.error(error instanceof Error ? error.message : t("保存设置失败"));
+    } finally {
+      setAutoSavingPreference(false);
     }
   }
 
@@ -253,9 +283,9 @@ export function SettingsPage({
     setSavingQueue(true);
     try {
       await saveFailoverQueue(failoverQueue);
-      void messageApi.success("故障转移队列已更新");
+      void messageApi.success(t("故障转移队列已更新"));
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : "保存故障转移队列失败");
+      void messageApi.error(error instanceof Error ? error.message : t("保存故障转移队列失败"));
     } finally {
       setSavingQueue(false);
     }
@@ -279,15 +309,15 @@ export function SettingsPage({
       validateExchangePayload(raw);
       const filename = `aigate-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
       triggerTextDownload(filename, raw);
-      void messageApi.success("JSON 已导出");
+      void messageApi.success(t("JSON 已导出"));
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : "导出 JSON 失败");
+      void messageApi.error(error instanceof Error ? error.message : t("导出 JSON 失败"));
     }
   }
 
   async function handleImportSQL() {
     if (!importFile) {
-      void messageApi.error("请选择导入文件");
+      void messageApi.error(t("请选择导入文件"));
       return;
     }
     setImportingSQL(true);
@@ -313,11 +343,11 @@ export function SettingsPage({
         // Import payload currently focuses on account-domain tables. Keep existing settings if fetch fails.
       }
       await onSettingsChanged(nextSettings);
-      void messageApi.success("JSON 导入完成");
+      void messageApi.success(t("JSON 导入完成"));
       setImportModalOpen(false);
       setImportFile(null);
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : "导入 JSON 失败");
+      void messageApi.error(error instanceof Error ? error.message : t("导入 JSON 失败"));
     } finally {
       setImportingSQL(false);
     }
@@ -332,9 +362,9 @@ export function SettingsPage({
     try {
       await createDatabaseBackup();
       await refreshBackups();
-      void messageApi.success("数据库备份已创建");
+      void messageApi.success(t("数据库备份已创建"));
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : "创建数据库备份失败");
+      void messageApi.error(error instanceof Error ? error.message : t("创建数据库备份失败"));
     } finally {
       setBackupBusy("");
     }
@@ -352,9 +382,9 @@ export function SettingsPage({
         // Keep current settings draft if the restored snapshot doesn't change app settings.
       }
       await refreshBackups();
-      void messageApi.success("数据库已恢复到所选备份");
+      void messageApi.success(t("数据库已恢复到所选备份"));
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : "恢复数据库备份失败");
+      void messageApi.error(error instanceof Error ? error.message : t("恢复数据库备份失败"));
     } finally {
       setBackupBusy("");
     }
@@ -372,14 +402,14 @@ export function SettingsPage({
       {!hideLocalSaveButton ? (
         <div className="settings-toolbar">
           <Button
-            aria-label="保存设置"
+            aria-label={t("保存设置")}
             type="primary"
             size="large"
             icon={<SaveOutlined />}
             loading={savingSettings}
             onClick={() => void handleSaveSettings()}
           >
-            保存设置
+            {t("保存设置")}
           </Button>
         </div>
       ) : null}
@@ -389,36 +419,57 @@ export function SettingsPage({
         items={[
           {
             key: "general",
-            label: "通用",
+            label: t("通用"),
             children: (
               <div className="settings-grid">
                 <Card className="settings-card" variant="borderless">
-                  <SectionHeader icon={<DesktopOutlined />} title="窗口行为" description="控制桌面应用的启动与关闭方式。" />
+                  <SectionHeader icon={<DesktopOutlined />} title={t("窗口行为")} description={t("控制桌面应用的启动与关闭方式。")} />
                   <div className="settings-stack">
                     <ToggleRow
                       icon={<PoweroffOutlined />}
-                      title="开机自启"
-                      description="通过 macOS LaunchAgent 在登录系统后自动启动 AI Gate。"
-                      label="开机自启"
+                      title={t("开机自启")}
+                      description={t("通过 macOS LaunchAgent 在登录系统后自动启动 AI Gate。")}
+                      label={t("开机自启")}
                       checked={draftSettings.launch_at_login}
                       onChange={(checked) => updateDraft({ launch_at_login: checked })}
                     />
                     <ToggleRow
                       icon={<EyeInvisibleOutlined />}
-                      title="静默启动"
-                      description="启动应用时不抢占前台窗口，保留托盘常驻。"
-                      label="静默启动"
+                      title={t("静默启动")}
+                      description={t("启动应用时不抢占前台窗口，保留托盘常驻。")}
+                      label={t("静默启动")}
                       checked={draftSettings.silent_start}
                       onChange={(checked) => updateDraft({ silent_start: checked })}
                     />
                     <ToggleRow
                       icon={<ThunderboltOutlined />}
-                      title="关闭时最小化到托盘"
-                      description="关闭主窗口时保留后端与托盘继续运行，默认开启。"
-                      label="关闭时最小化到托盘"
+                      title={t("关闭时最小化到托盘")}
+                      description={t("关闭主窗口时保留后端与托盘继续运行，默认开启。")}
+                      label={t("关闭时最小化到托盘")}
                       checked={draftSettings.close_to_tray}
                       onChange={(checked) => updateDraft({ close_to_tray: checked })}
                     />
+                  </div>
+                </Card>
+
+                <Card className="settings-card" variant="borderless">
+                  <SectionHeader icon={<DesktopOutlined />} title={t("界面偏好")} description={t("即时切换界面语言与主题，自动保存并立即生效。")} />
+                  <div className="settings-stack">
+                    <label className="settings-field">
+                      <span className="settings-field-label">{t("界面语言")}</span>
+                      <Radio.Group
+                        aria-label={t("界面语言")}
+                        buttonStyle="solid"
+                        optionType="button"
+                        options={[
+                          { label: "中文", value: "zh-CN" },
+                          { label: "English", value: "en-US" },
+                        ]}
+                        value={draftSettings.language}
+                        onChange={(event) => void handleAutoSavePreference({ language: event.target.value })}
+                        disabled={autoSavingPreference}
+                      />
+                    </label>
                   </div>
                 </Card>
               </div>
@@ -426,33 +477,33 @@ export function SettingsPage({
           },
           {
             key: "proxy",
-            label: "代理",
+            label: t("代理"),
             children: (
               <div className="settings-grid">
                 <Card className="settings-card" variant="borderless">
-                  <SectionHeader icon={<ApiOutlined />} title="本地代理" description="管理主界面显示、代理状态与监听地址。" />
+                  <SectionHeader icon={<ApiOutlined />} title={t("本地代理")} description={t("管理主界面显示、代理状态与监听地址。")} />
                   <div className="proxy-status-strip">
                     <Tag color={proxyEnabled ? "success" : "default"} icon={<CheckCircleFilled />}>
-                      本地代理 {proxyEnabled ? "已开启" : "未开启"}
+                      {t("本地代理")} {proxyEnabled ? t("已开启") : t("未开启")}
                     </Tag>
                     <Text type="secondary">
-                      当前地址 {draftSettings.proxy_host}:{draftSettings.proxy_port}
+                      {t("当前地址")} {draftSettings.proxy_host}:{draftSettings.proxy_port}
                     </Text>
                   </div>
                   <div className="settings-stack">
                     <ToggleRow
                       icon={<ControlOutlined />}
-                      title="在主界面显示代理开关"
-                      description="决定首页右上角是否显示实时代理总开关。"
-                      label="在主界面显示代理开关"
+                      title={t("在主界面显示代理开关")}
+                      description={t("决定首页右上角是否显示实时代理总开关。")}
+                      label={t("在主界面显示代理开关")}
                       checked={draftSettings.show_proxy_switch_on_home}
                       onChange={(checked) => updateDraft({ show_proxy_switch_on_home: checked })}
                     />
                     <ToggleRow
                       icon={<PoweroffOutlined />}
-                      title="代理总开关"
-                      description="即时启停本地代理，并同步桌面托盘状态。"
-                      label="代理总开关"
+                      title={t("代理总开关")}
+                      description={t("即时启停本地代理，并同步桌面托盘状态。")}
+                      label={t("代理总开关")}
                       checked={proxyEnabled}
                       loading={proxySwitchBusy}
                       onChange={(checked) => void handleProxyToggle(checked)}
@@ -460,18 +511,18 @@ export function SettingsPage({
                   </div>
                   <div className="settings-field-grid">
                     <label className="settings-field">
-                      <span className="settings-field-label">代理主机</span>
+                      <span className="settings-field-label">{t("代理主机")}</span>
                       <Input
-                        aria-label="代理主机"
+                        aria-label={t("代理主机")}
                         value={draftSettings.proxy_host}
                         onChange={(event) => updateDraft({ proxy_host: event.target.value })}
                         placeholder="127.0.0.1"
                       />
                     </label>
                     <label className="settings-field">
-                      <span className="settings-field-label">代理端口</span>
+                      <span className="settings-field-label">{t("代理端口")}</span>
                       <InputNumber
-                        aria-label="代理端口"
+                        aria-label={t("代理端口")}
                         min={1}
                         max={65535}
                         value={draftSettings.proxy_port}
@@ -483,25 +534,25 @@ export function SettingsPage({
                 </Card>
 
                 <Card className="settings-card" variant="borderless">
-                  <SectionHeader icon={<SwapOutlined />} title="自动故障转移" description="当当前账号失效时，按队列顺序尝试下一个候选账号。" />
+                  <SectionHeader icon={<SwapOutlined />} title={t("自动故障转移")} description={t("当当前账号失效时，按队列顺序尝试下一个候选账号。")} />
                   <ToggleRow
                     icon={<SwapOutlined />}
-                    title="自动故障转移开关"
-                    description="开启后，网关与 responses 路由会优先使用你指定的显式故障转移队列。"
-                    label="自动故障转移开关"
+                    title={t("自动故障转移开关")}
+                    description={t("开启后，网关与 responses 路由会优先使用你指定的显式故障转移队列。")}
+                    label={t("自动故障转移开关")}
                     checked={draftSettings.auto_failover_enabled}
                     onChange={(checked) => updateDraft({ auto_failover_enabled: checked })}
                   />
                   <div className="queue-shell">
                     <div className="queue-header">
-                      <span>自动故障转移队列</span>
+                      <span>{t("自动故障转移队列")}</span>
                       <Button onClick={() => void handleSaveQueue()} loading={savingQueue}>
-                        保存队列
+                        {t("保存队列")}
                       </Button>
                     </div>
                     <div className="queue-list">
                       {orderedAccounts.length === 0 ? (
-                        <div className="settings-empty">暂无可用账号</div>
+                        <div className="settings-empty">{t("暂无可用账号")}</div>
                       ) : (
                         orderedAccounts.map((account, index) => (
                           <div className="queue-row" key={account.id}>
@@ -515,18 +566,18 @@ export function SettingsPage({
                               </div>
                             </div>
                             <div className="queue-row-actions">
-                              {account.is_active ? <Tag color="success">当前激活</Tag> : <Tag>候选</Tag>}
+                              {account.is_active ? <Tag color="success">{t("当前激活")}</Tag> : <Tag>{t("候选")}</Tag>}
                               <Button
                                 type="text"
                                 icon={<ArrowUpOutlined />}
-                                aria-label={`上移 ${account.account_name}`}
+                                aria-label={`${language === "en-US" ? "Move up" : "上移"} ${account.account_name}`}
                                 disabled={index === 0}
                                 onClick={() => moveQueueItem(index, -1)}
                               />
                               <Button
                                 type="text"
                                 icon={<ArrowDownOutlined />}
-                                aria-label={`下移 ${account.account_name}`}
+                                aria-label={`${language === "en-US" ? "Move down" : "下移"} ${account.account_name}`}
                                 disabled={index === orderedAccounts.length - 1}
                                 onClick={() => moveQueueItem(index, 1)}
                               />
@@ -542,28 +593,28 @@ export function SettingsPage({
           },
           {
             key: "advanced",
-            label: "高级",
+            label: t("高级"),
             children: (
               <div className="settings-grid">
                 <Card className="settings-card" variant="borderless">
-                  <SectionHeader icon={<DatabaseOutlined />} title="数据管理" description="导出与导入均为明文 JSON（仅账户域数据）。" />
+                  <SectionHeader icon={<DatabaseOutlined />} title={t("数据管理")} description={t("导出与导入均为明文 JSON（仅账户域数据）。")} />
                   <div className="settings-action-row">
                     <Button icon={<CloudDownloadOutlined />} onClick={() => void handleExportSQL()}>
-                      导出 JSON
+                      {t("导出 JSON")}
                     </Button>
                     <Button icon={<CloudUploadOutlined />} loading={importingSQL} onClick={() => setImportModalOpen(true)}>
-                      导入 JSON
+                      {t("导入 JSON")}
                     </Button>
                   </div>
                 </Card>
 
                 <Card className="settings-card" variant="borderless">
-                  <SectionHeader icon={<DatabaseOutlined />} title="备份与恢复" description="按设定的时间间隔自动做数据库快照，并控制保留数量。" />
+                  <SectionHeader icon={<DatabaseOutlined />} title={t("备份与恢复")} description={t("按设定的时间间隔自动做数据库快照，并控制保留数量。")} />
                   <div className="settings-field-grid">
                     <label className="settings-field">
-                      <span className="settings-field-label">自动备份间隔（小时）</span>
+                      <span className="settings-field-label">{t("自动备份间隔（小时）")}</span>
                       <InputNumber
-                        aria-label="自动备份间隔"
+                        aria-label={t("自动备份间隔（小时）")}
                         min={1}
                         value={draftSettings.auto_backup_interval_hours}
                         onChange={(value) => updateDraft({ auto_backup_interval_hours: Number(value) || 24 })}
@@ -571,9 +622,9 @@ export function SettingsPage({
                       />
                     </label>
                     <label className="settings-field">
-                      <span className="settings-field-label">备份保留数量</span>
+                      <span className="settings-field-label">{t("备份保留数量")}</span>
                       <InputNumber
-                        aria-label="备份保留数量"
+                        aria-label={t("备份保留数量")}
                         min={1}
                         value={draftSettings.backup_retention_count}
                         onChange={(value) => updateDraft({ backup_retention_count: Number(value) || 10 })}
@@ -583,23 +634,23 @@ export function SettingsPage({
                   </div>
                   <div className="settings-action-row">
                     <Button type="primary" onClick={() => void handleCreateBackup()} loading={backupBusy === "create"}>
-                      立即备份
+                      {t("立即备份")}
                     </Button>
                   </div>
                   <div className="backup-list">
                     {dbBackups.length === 0 ? (
-                      <div className="settings-empty">暂无数据库备份</div>
+                      <div className="settings-empty">{t("暂无数据库备份")}</div>
                     ) : (
                       dbBackups.map((item) => (
                         <div className="backup-row" key={item.backup_id}>
                           <div>
                             <div className="backup-row-title">{item.backup_id}</div>
                             <div className="backup-row-description">
-                              创建于 {formatDateTime(item.created_at)} · {formatBytes(item.size_bytes)}
+                              {t("创建于")} {formatDateTime(item.created_at, language)} · {formatBytes(item.size_bytes)}
                             </div>
                           </div>
                           <Button onClick={() => void handleRestoreBackup(item)} loading={backupBusy === item.backup_id}>
-                            恢复此备份
+                            {t("恢复此备份")}
                           </Button>
                         </div>
                       ))
@@ -611,7 +662,7 @@ export function SettingsPage({
           },
           {
             key: "about",
-            label: "关于",
+            label: t("关于"),
             children: (
               <Card className="settings-card about-card" variant="borderless">
                 <div className="about-layout">
@@ -621,18 +672,18 @@ export function SettingsPage({
                       <Title level={3} style={{ marginBottom: 4 }}>
                         {metadata.name}
                       </Title>
-                      <Text type="secondary">版本 {metadata.version}</Text>
+                      <Text type="secondary">{language === "en-US" ? `Version ${metadata.version}` : `版本 ${metadata.version}`}</Text>
                     </div>
                   </div>
                   <div className="about-copy">
-                    <SectionHeader icon={<InfoCircleOutlined />} title="程序介绍" description={metadata.description} />
+                    <SectionHeader icon={<InfoCircleOutlined />} title={t("程序介绍")} description={t(metadata.description)} />
                     <div className="about-meta">
                       <div className="about-meta-row">
-                        <span>程序作者</span>
+                        <span>{language === "en-US" ? "Author" : "程序作者"}</span>
                         <strong>{metadata.author}</strong>
                       </div>
                       <div className="about-meta-row">
-                        <span>程序版本</span>
+                        <span>{language === "en-US" ? "Version" : "程序版本"}</span>
                         <strong>{metadata.version}</strong>
                       </div>
                     </div>
@@ -644,9 +695,9 @@ export function SettingsPage({
         ]}
       />
       <Modal
-        title="导入 JSON"
+        title={t("导入 JSON")}
         open={importModalOpen}
-        okText="验证并导入"
+        okText={t("验证并导入")}
         confirmLoading={importingSQL}
         onOk={() => void handleImportSQL()}
         onCancel={() => {

@@ -598,6 +598,9 @@ func normalizeAppSettings(value settings.AppSettings) settings.AppSettings {
 	if value.BackupRetentionCount <= 0 {
 		value.BackupRetentionCount = defaults.BackupRetentionCount
 	}
+	if value.Language != "en-US" {
+		value.Language = defaults.Language
+	}
 	return value
 }
 

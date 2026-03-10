@@ -68,6 +68,7 @@ import {
   type AccountTestResult,
 } from "../../lib/api";
 import { refreshDesktopTrayState } from "../../lib/desktop-shell";
+import type { AppLanguage, Translator } from "../../lib/i18n";
 import sourceClaudeCodeIcon from "../../assets/providers/claude-code.png";
 import sourceOpenAIIcon from "../../assets/providers/openai.png";
 import sourcePPChatIcon from "../../assets/providers/ppchat.png";
@@ -125,7 +126,7 @@ function sameAccountOrder(left: AccountRecord[], right: AccountRecord[]): boolea
   return left.length === right.length && left.every((item, index) => item.id === right[index]?.id);
 }
 
-function formatResetAt(value?: string) {
+function formatResetAt(value: string | undefined, language: AppLanguage) {
   if (!value) {
     return "--";
   }
@@ -139,12 +140,14 @@ function formatResetAt(value?: string) {
     date.getMonth() === now.getMonth() &&
     date.getDate() === now.getDate();
   if (sameDay) {
-    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+    return date.toLocaleTimeString(language, { hour: "2-digit", minute: "2-digit", hour12: false });
   }
-  return date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+  return date.toLocaleDateString(language, { month: "numeric", day: "numeric" });
 }
 
 type AccountsPageProps = {
+  language?: AppLanguage;
+  t?: Translator;
   syncToken?: number;
   addModalMode?: AddModalMode;
   onAddModalModeConsumed?: () => void;
@@ -187,6 +190,8 @@ function SortableAccountCard({ id, record, renderCard }: SortableAccountCardProp
 }
 
 export function AccountsPage({
+  language = "zh-CN",
+  t = (value) => value,
   syncToken = 0,
   addModalMode: externalAddModalMode,
   onAddModalModeConsumed,
@@ -314,7 +319,7 @@ export function AccountsPage({
     thirdPartyForm.resetFields();
     await refreshAll();
     void refreshDesktopTrayState();
-    void messageApi.success("第三方账户已添加");
+    void messageApi.success(t("第三方账户已添加"));
   }
 
   async function handleCreateOfficial(values: { account_name: string }) {
@@ -323,7 +328,7 @@ export function AccountsPage({
     setInternalAddModalMode(null);
     await refreshAll();
     void refreshDesktopTrayState();
-    void messageApi.success("官方账户已导入");
+    void messageApi.success(t("官方账户已导入"));
   }
 
   function openEditModal(account: AccountRecord) {
@@ -361,7 +366,7 @@ export function AccountsPage({
     editForm.resetFields();
     await refreshAll();
     void refreshDesktopTrayState();
-    void messageApi.success("账户已更新");
+    void messageApi.success(t("账户已更新"));
   }
 
   async function handleDelete(account: AccountRecord) {
@@ -393,20 +398,22 @@ export function AccountsPage({
     try {
       await updateAccount(account.id, { is_active: true });
       void refreshDesktopTrayState();
-      void messageApi.success(`已切换当前激活账户为 ${account.account_name}`);
+      void messageApi.success(
+        language === "en-US" ? `Active account switched to ${account.account_name}` : `已切换当前激活账户为 ${account.account_name}`,
+      );
     } catch (error) {
       setAccountsState(previous);
-      void messageApi.error(error instanceof Error ? error.message : "切换激活账户失败");
+      void messageApi.error(error instanceof Error ? error.message : t("切换激活账户失败"));
     }
   }
 
   async function handleCopyAccount(record: AccountRecord) {
-    const copied = `${record.account_name}\n${record.base_url || "OpenAI 官方"}`;
+    const copied = `${record.account_name}\n${record.base_url || t("OpenAI 官方")}`;
     try {
       await navigator.clipboard.writeText(copied);
-      void messageApi.success("已复制账户名称和 API 地址");
+      void messageApi.success(t("已复制账户名称和 API 地址"));
     } catch {
-      void messageApi.warning("复制失败，请检查系统剪贴板权限");
+      void messageApi.warning(t("复制失败，请检查系统剪贴板权限"));
     }
   }
 
@@ -446,7 +453,7 @@ export function AccountsPage({
       await persistAccountPriority(current);
     } catch {
       setAccountsState(snapshot);
-      void messageApi.warning("排序已更新到界面，但保存顺序失败，请稍后重试");
+      void messageApi.warning(t("排序已更新到界面，但保存顺序失败，请稍后重试"));
     }
   }
 
@@ -539,7 +546,7 @@ export function AccountsPage({
               type="button"
               ref={options.setHandleRef}
               className="account-drag-handle"
-              aria-label={`拖拽排序-${record.account_name}`}
+              aria-label={`${language === "en-US" ? "Drag sort" : "拖拽排序"}-${record.account_name}`}
               {...(options.handleAttributes as ButtonHTMLAttributes<HTMLButtonElement> | undefined)}
               {...(options.handleListeners as ButtonHTMLAttributes<HTMLButtonElement> | undefined)}
             >
@@ -551,12 +558,12 @@ export function AccountsPage({
                 <div className="account-title-row">
                   <Text strong>{record.account_name}</Text>
                   <Tag color={statusColorMap[record.status] ?? "default"}>
-                    {statusTextMap[record.status] ?? record.status}
+                    {t(statusTextMap[record.status] ?? record.status)}
                   </Tag>
-                  {record.is_active ? <Tag color="green">当前激活</Tag> : null}
+                  {record.is_active ? <Tag color="green">{t("当前激活")}</Tag> : null}
                 </div>
                 <Text type="secondary" className="account-base-url">
-                  {record.base_url || "OpenAI 官方"}
+                  {record.base_url || t("OpenAI 官方")}
                 </Text>
               </div>
             </div>
@@ -565,17 +572,17 @@ export function AccountsPage({
             <Button
               type="primary"
               className="account-enable-button"
-              aria-label={`设为激活-${record.account_name}`}
+              aria-label={`${language === "en-US" ? "Set active" : "设为激活"}-${record.account_name}`}
               icon={<CheckCircleOutlined />}
               disabled={record.is_active || options.actionsDisabled}
               onClick={() => void handleSetActive(record)}
             >
-              启用
+              {t("启用")}
             </Button>
             <Button
               type="text"
               className="account-action-button"
-              aria-label={`编辑-${record.account_name}`}
+              aria-label={`${language === "en-US" ? "Edit" : "编辑"}-${record.account_name}`}
               icon={<EditOutlined />}
               disabled={options.actionsDisabled}
               onClick={() => openEditModal(record)}
@@ -583,7 +590,7 @@ export function AccountsPage({
             <Button
               type="text"
               className="account-action-button"
-              aria-label={`复制-${record.account_name}`}
+              aria-label={`${language === "en-US" ? "Copy" : "复制"}-${record.account_name}`}
               icon={<CopyOutlined />}
               disabled={options.actionsDisabled}
               onClick={() => void handleCopyAccount(record)}
@@ -591,7 +598,7 @@ export function AccountsPage({
             <Button
               type="text"
               className="account-action-button"
-              aria-label={`详情-${record.account_name}`}
+              aria-label={`${language === "en-US" ? "Details" : "详情"}-${record.account_name}`}
               icon={<InfoCircleOutlined />}
               disabled={options.actionsDisabled}
               onClick={() => setDetailAccount(record)}
@@ -600,14 +607,14 @@ export function AccountsPage({
               type="text"
               danger
               className="account-action-button"
-              aria-label={`删除-${record.account_name}`}
+              aria-label={`${language === "en-US" ? "Delete" : "删除"}-${record.account_name}`}
               icon={<DeleteOutlined />}
               disabled={options.actionsDisabled}
               onClick={() =>
                 void Modal.confirm({
-                  title: `确认删除账户「${record.account_name}」吗？`,
-                  okText: "删除",
-                  cancelText: "取消",
+                  title: language === "en-US" ? `Delete account "${record.account_name}"?` : `确认删除账户「${record.account_name}」吗？`,
+                  okText: t("删除"),
+                  cancelText: t("取消"),
                   okButtonProps: { danger: true },
                   onOk: () => handleDelete(record),
                 })
@@ -626,22 +633,22 @@ export function AccountsPage({
         <div className="dashboard-header">
           <div>
             <Title level={2} style={{ marginBottom: 8 }}>
-              账户列表
+              {t("账户列表")}
             </Title>
-            <Text type="secondary">主表仅展示核心状态，详细信息请通过详情查看。</Text>
+            <Text type="secondary">{t("主表仅展示核心状态，详细信息请通过详情查看。")}</Text>
           </div>
           <Dropdown
             menu={{
               items: [
-                { key: "official", label: "官方账户" },
-                { key: "third_party", label: "第三方账户" },
+                { key: "official", label: t("官方账户") },
+                { key: "third_party", label: t("第三方账户") },
               ],
               onClick: ({ key }) => setInternalAddModalMode(key as AddModalMode),
             }}
             trigger={["click"]}
           >
             <Button type="primary" icon={<PlusOutlined />}>
-              添加账户
+              {t("添加账户")}
             </Button>
           </Dropdown>
         </div>
@@ -650,7 +657,7 @@ export function AccountsPage({
       {accounts.length === 0 ? (
         <Card className="accounts-card" variant="borderless">
           <div className="accounts-empty">
-            <Empty description="暂无账户" />
+            <Empty description={t("暂无账户")} />
           </div>
         </Card>
       ) : (
@@ -682,7 +689,7 @@ export function AccountsPage({
         </DndContext>
       )}
 
-      <Modal open={!!detailAccount} title="账户详情" onCancel={() => setDetailAccount(null)} footer={null} destroyOnHidden width={880}>
+      <Modal open={!!detailAccount} title={t("账户详情")} onCancel={() => setDetailAccount(null)} footer={null} destroyOnHidden width={880}>
         {detailAccount ? (
           normalizeSourceIcon(detailAccount.source_icon) === "ppchat" ? (
             <div className="account-detail-layout">
@@ -703,7 +710,7 @@ export function AccountsPage({
                   ))}
                 </div>
               )}
-              <Card variant="borderless" className="account-detail-chart-card" title="PPChat Token 日志" extra={<BarChartOutlined />}>
+              <Card variant="borderless" className="account-detail-chart-card" title={t("PPChat Token 日志")} extra={<BarChartOutlined />}>
                 {detailLogsLoading ? (
                   <Skeleton active paragraph={{ rows: 5 }} />
                 ) : detailLogs?.logs?.length ? (
@@ -729,7 +736,7 @@ export function AccountsPage({
                     })}
                   </div>
                 ) : (
-                  <Empty description="暂无 PPChat 日志数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                  <Empty description={t("暂无 PPChat 日志数据")} image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 )}
               </Card>
             </div>
@@ -737,32 +744,32 @@ export function AccountsPage({
             <div className="account-detail-layout">
               <div className="account-detail-stats">
                 <Card variant="borderless">
-                  <Statistic title="额度余额" value={Math.round(detailAccount.quota_remaining)} />
+                  <Statistic title={t("额度余额")} value={Math.round(detailAccount.quota_remaining)} />
                 </Card>
                 <Card variant="borderless">
-                  <Statistic title="健康分" value={detailAccount.health_score.toFixed(2)} />
+                  <Statistic title={t("健康分")} value={detailAccount.health_score.toFixed(2)} />
                 </Card>
                 <Card variant="borderless">
-                  <Statistic title="最近 Token" value={Math.round(detailAccount.last_total_tokens)} />
+                  <Statistic title={t("最近 Token")} value={Math.round(detailAccount.last_total_tokens)} />
                 </Card>
                 <Card variant="borderless">
-                  <Statistic title="错误率" value={(detailAccount.recent_error_rate * 100).toFixed(1)} suffix="%" />
+                  <Statistic title={t("错误率")} value={(detailAccount.recent_error_rate * 100).toFixed(1)} suffix="%" />
                 </Card>
               </div>
               <Card variant="borderless" className="account-detail-meta">
                 <Descriptions column={2} size="small">
-                  <Descriptions.Item label="账户">{detailAccount.account_name}</Descriptions.Item>
-                  <Descriptions.Item label="来源">{sourceIconMap[normalizeSourceIcon(detailAccount.source_icon)].label}</Descriptions.Item>
-                  <Descriptions.Item label="状态">{statusTextMap[detailAccount.status] ?? detailAccount.status}</Descriptions.Item>
-                  <Descriptions.Item label="认证方式">{authModeTextMap[detailAccount.auth_mode] ?? detailAccount.auth_mode}</Descriptions.Item>
-                  <Descriptions.Item label="接口地址" span={2}>
-                    {detailAccount.base_url || "OpenAI 官方"}
+                  <Descriptions.Item label={t("账户")}>{detailAccount.account_name}</Descriptions.Item>
+                  <Descriptions.Item label={t("来源")}>{sourceIconMap[normalizeSourceIcon(detailAccount.source_icon)].label}</Descriptions.Item>
+                  <Descriptions.Item label={t("状态")}>{t(statusTextMap[detailAccount.status] ?? detailAccount.status)}</Descriptions.Item>
+                  <Descriptions.Item label={t("认证方式")}>{t(authModeTextMap[detailAccount.auth_mode] ?? detailAccount.auth_mode)}</Descriptions.Item>
+                  <Descriptions.Item label={t("接口地址")} span={2}>
+                    {detailAccount.base_url || t("OpenAI 官方")}
                   </Descriptions.Item>
-                  <Descriptions.Item label="5 小时剩余">
-                    {(100 - detailAccount.primary_used_percent).toFixed(0)}% · {formatResetAt(detailAccount.primary_resets_at)}
+                  <Descriptions.Item label={t("5 小时剩余")}>
+                    {(100 - detailAccount.primary_used_percent).toFixed(0)}% · {formatResetAt(detailAccount.primary_resets_at, language)}
                   </Descriptions.Item>
-                  <Descriptions.Item label="1 周剩余">
-                    {(100 - detailAccount.secondary_used_percent).toFixed(0)}% · {formatResetAt(detailAccount.secondary_resets_at)}
+                  <Descriptions.Item label={t("1 周剩余")}>
+                    {(100 - detailAccount.secondary_used_percent).toFixed(0)}% · {formatResetAt(detailAccount.secondary_resets_at, language)}
                   </Descriptions.Item>
                 </Descriptions>
               </Card>
@@ -773,7 +780,7 @@ export function AccountsPage({
 
       <Modal
         open={internalAddModalMode === "third_party"}
-        title="添加第三方账户"
+        title={t("添加第三方账户")}
         onCancel={() => setInternalAddModalMode(null)}
         footer={null}
         destroyOnHidden
@@ -784,19 +791,19 @@ export function AccountsPage({
           initialValues={{ base_url: defaultBaseURL }}
           onFinish={(values) => void handleCreateThirdParty(values)}
         >
-          <Form.Item label="账户名称" name="account_name" rules={[{ required: true, message: "请输入账户名称" }]}>
+          <Form.Item label={t("账户名称")} name="account_name" rules={[{ required: true, message: t("请输入账户名称") }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="接口地址" name="base_url" rules={[{ required: true, message: "请输入接口地址" }]}>
+          <Form.Item label={t("接口地址")} name="base_url" rules={[{ required: true, message: t("请输入接口地址") }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="API Key" name="credential_ref" rules={[{ required: true, message: "请输入 API Key" }]}>
+          <Form.Item label="API Key" name="credential_ref" rules={[{ required: true, message: t("请输入 API Key") }]}>
             <Input.Password />
           </Form.Item>
           <div className="modal-footer">
-            <Button onClick={() => setInternalAddModalMode(null)}>取消</Button>
+            <Button onClick={() => setInternalAddModalMode(null)}>{t("取消")}</Button>
             <Button type="primary" htmlType="submit">
-              保存
+              {t("保存")}
             </Button>
           </div>
         </Form>
@@ -804,20 +811,24 @@ export function AccountsPage({
 
       <Modal
         open={internalAddModalMode === "official"}
-        title="添加官方账户"
+        title={t("添加官方账户")}
         onCancel={() => setInternalAddModalMode(null)}
         footer={null}
         destroyOnHidden
       >
         <Form form={officialForm} layout="vertical" onFinish={(values) => void handleCreateOfficial(values)}>
-          <Form.Item label="账户名称" name="account_name" initialValue="local-codex">
+          <Form.Item label={t("账户名称")} name="account_name" initialValue="local-codex">
             <Input />
           </Form.Item>
-          <Text type="secondary">将直接读取当前用户目录下的 <code>~/.codex/auth.json</code>。</Text>
+          <Text type="secondary">
+            {language === "en-US"
+              ? <>The app reads <code>~/.codex/auth.json</code> directly from the current user directory.</>
+              : <>将直接读取当前用户目录下的 <code>~/.codex/auth.json</code>。</>}
+          </Text>
           <div className="modal-footer">
-            <Button onClick={() => setInternalAddModalMode(null)}>取消</Button>
+            <Button onClick={() => setInternalAddModalMode(null)}>{t("取消")}</Button>
             <Button type="primary" htmlType="submit">
-              导入
+              {t("导入")}
             </Button>
           </div>
         </Form>
@@ -825,16 +836,16 @@ export function AccountsPage({
 
       <Modal
         open={!!editingAccount}
-        title="编辑账户"
+        title={t("编辑账户")}
         onCancel={() => setEditingAccount(null)}
         footer={null}
         destroyOnHidden
       >
         <Form form={editForm} layout="vertical" onFinish={(values) => void handleEdit(values)}>
-          <Form.Item label="账户名称" name="account_name" rules={[{ required: true, message: "请输入账户名称" }]}>
+          <Form.Item label={t("账户名称")} name="account_name" rules={[{ required: true, message: t("请输入账户名称") }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="来源图标" name="source_icon" rules={[{ required: true, message: "请选择来源图标" }]}>
+          <Form.Item label={t("来源图标")} name="source_icon" rules={[{ required: true, message: t("请选择来源图标") }]}>
             <Select
               options={(Object.keys(sourceIconMap) as SourceIcon[]).map((key) => ({
                 value: key,
@@ -847,23 +858,23 @@ export function AccountsPage({
               }))}
             />
           </Form.Item>
-          <Form.Item label="接口地址" name="base_url" rules={[{ required: true, message: "请输入接口地址" }]}>
+          <Form.Item label={t("接口地址")} name="base_url" rules={[{ required: true, message: t("请输入接口地址") }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="API Key / Token" name="credential_ref">
-            <Input.Password placeholder="留空表示不修改" />
+          <Form.Item label={t("API Key / Token")} name="credential_ref">
+            <Input.Password placeholder={t("留空表示不修改")} />
           </Form.Item>
           <div className="modal-footer">
-            <Button onClick={() => setEditingAccount(null)}>取消</Button>
+            <Button onClick={() => setEditingAccount(null)}>{t("取消")}</Button>
             <Button type="primary" htmlType="submit">
-              保存
+              {t("保存")}
             </Button>
           </div>
         </Form>
         <div className="edit-test-panel">
-          <Text strong>连接测试</Text>
+          <Text strong>{t("连接测试")}</Text>
           <Form form={testForm} layout="vertical" initialValues={{ model: "gpt-5.4", input: "ping" }} onFinish={(values) => void handleTest(values)}>
-            <Form.Item label="模型" name="model" rules={[{ required: true, message: "请选择模型" }]}>
+            <Form.Item label={t("模型")} name="model" rules={[{ required: true, message: t("请选择模型") }]}>
               <Select
                 options={[
                   { value: "gpt-5.4", label: "gpt-5.4" },
@@ -874,11 +885,11 @@ export function AccountsPage({
                 ]}
               />
             </Form.Item>
-            <Form.Item label="输入内容" name="input" rules={[{ required: true, message: "请输入测试内容" }]}>
+            <Form.Item label={t("输入内容")} name="input" rules={[{ required: true, message: t("请输入测试内容") }]}>
               <Input.TextArea rows={3} />
             </Form.Item>
             <div className="modal-footer">
-              <Button htmlType="submit">测试</Button>
+              <Button htmlType="submit">{t("测试")}</Button>
             </div>
           </Form>
         </div>

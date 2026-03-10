@@ -8,6 +8,7 @@ import { SettingsPage } from "./features/settings/SettingsPage";
 import appLogo from "./assets/aigate_1024_1024.png";
 import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus } from "./lib/api";
 import { loadDesktopShellContext, refreshDesktopTrayState, subscribeDesktopBackendStateChanged } from "./lib/desktop-shell";
+import { createTranslator, getAntdLocale, normalizeLanguage } from "./lib/i18n";
 import { setAPIBase } from "./lib/paths";
 import "./styles.css";
 
@@ -29,6 +30,8 @@ export function App() {
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const [shellReady, setShellReady] = useState(false);
   const settingsSaveActionRef = useRef<(() => void) | null>(null);
+  const language = normalizeLanguage(appSettings?.language);
+  const t = createTranslator(language);
 
   async function refreshProxyState() {
     try {
@@ -114,19 +117,22 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const translate = createTranslator(language);
     const handler = (event: Event) => {
       const custom = event as CustomEvent<{ message?: string }>;
       const details = custom.detail?.message || "当前配置已被外部修改，无法自动恢复备份。";
       Modal.confirm({
-        title: "退出前恢复失败",
-        content: `${details} 是否强制退出？`,
-        okText: "强制退出",
-        cancelText: "取消",
+        title: translate("退出前恢复失败"),
+        content: language === "en-US" ? `${details} Force quit anyway?` : `${details} 是否强制退出？`,
+        okText: translate("强制退出"),
+        cancelText: translate("取消"),
         onOk: async () => {
           try {
             await disableProxy({ force: true });
           } catch (error) {
-            void messageApi.warning(error instanceof Error ? `恢复失败，仍将退出：${error.message}` : "恢复失败，仍将退出");
+            void messageApi.warning(
+              error instanceof Error ? `${translate("恢复失败，仍将退出")}: ${error.message}` : translate("恢复失败，仍将退出"),
+            );
           } finally {
             await invoke("force_exit_app");
           }
@@ -137,7 +143,7 @@ export function App() {
     return () => {
       window.removeEventListener("aigate-exit-conflict", handler as EventListener);
     };
-  }, [messageApi]);
+  }, [language, messageApi]);
 
   async function handleToggleProxy(checked: boolean) {
     setProxyLoading(true);
@@ -148,19 +154,22 @@ export function App() {
     } catch (error) {
       if (!checked && error instanceof Error && error.message.includes("config.toml changed externally")) {
         Modal.confirm({
-          title: "检测到配置冲突",
-          content: "当前 config.toml 已被外部修改。请选择关闭方式：覆盖恢复后关闭，或不覆盖直接关闭代理。",
-          okText: "覆盖并关闭",
-          cancelText: "不覆盖直接关闭",
+          title: t("检测到配置冲突"),
+          content:
+            language === "en-US"
+              ? "The current config.toml was modified externally. Choose whether to overwrite and disable, or disable the proxy without overwriting."
+              : "当前 config.toml 已被外部修改。请选择关闭方式：覆盖恢复后关闭，或不覆盖直接关闭代理。",
+          okText: t("覆盖并关闭"),
+          cancelText: t("不覆盖直接关闭"),
           onOk: async () => {
             setProxyLoading(true);
             try {
               const status = await disableProxy({ force: true });
               setProxyEnabled(status.enabled);
               void refreshDesktopTrayState();
-              void messageApi.success("代理已关闭");
+              void messageApi.success(t("代理已关闭"));
             } catch (forceError) {
-              void messageApi.error(forceError instanceof Error ? forceError.message : "覆盖恢复失败");
+              void messageApi.error(forceError instanceof Error ? forceError.message : t("覆盖恢复失败"));
               setProxyEnabled(true);
             } finally {
               setProxyLoading(false);
@@ -172,9 +181,9 @@ export function App() {
               const status = await disableProxy({ skipRestore: true });
               setProxyEnabled(status.enabled);
               void refreshDesktopTrayState();
-              void messageApi.success("代理已关闭（未覆盖当前配置）");
+              void messageApi.success(t("代理已关闭（未覆盖当前配置）"));
             } catch (cancelError) {
-              void messageApi.error(cancelError instanceof Error ? cancelError.message : "关闭代理失败");
+              void messageApi.error(cancelError instanceof Error ? cancelError.message : t("关闭代理失败"));
               setProxyEnabled(true);
             } finally {
               setProxyLoading(false);
@@ -183,7 +192,7 @@ export function App() {
         });
         return;
       }
-      void messageApi.error(error instanceof Error ? error.message : "代理切换失败，请检查配置冲突后重试");
+      void messageApi.error(error instanceof Error ? error.message : t("代理切换失败，请检查配置冲突后重试"));
       setProxyEnabled(!checked);
     } finally {
       setProxyLoading(false);
@@ -200,6 +209,7 @@ export function App() {
 
   return (
     <ConfigProvider
+      locale={getAntdLocale(language)}
       theme={{
         token: {
           colorPrimary: "#3e5be8",
@@ -215,28 +225,30 @@ export function App() {
         {!shellReady || !appSettings ? (
           <div className="app-loading">
             <Spin size="large" />
-            <span>正在载入设置中心…</span>
+            <span>{t("正在载入设置中心…")}</span>
           </div>
         ) : view === "settings" ? (
           <div className="settings-screen">
             <header className="settings-top-bar">
               <div className="settings-top-left">
-                <Button type="text" icon={<ArrowLeftOutlined />} aria-label="返回首页" onClick={() => setView("accounts")} />
-                <span className="settings-top-title">设置</span>
+                <Button type="text" icon={<ArrowLeftOutlined />} aria-label={t("返回首页")} onClick={() => setView("accounts")} />
+                <span className="settings-top-title">{t("设置")}</span>
               </div>
               <Button
-                aria-label="保存设置"
+                aria-label={t("保存设置")}
                 type="primary"
                 size="large"
                 icon={<SaveOutlined />}
                 onClick={() => settingsSaveActionRef.current?.()}
               >
-                保存设置
+                {t("保存设置")}
               </Button>
             </header>
             <div className="settings-content-scroll">
               <SettingsPage
                 initialSettings={appSettings}
+                language={language}
+                t={t}
                 proxyEnabled={proxyEnabled}
                 onSettingsChanged={(next) => void handleSettingsChanged(next)}
                 onToggleProxy={(checked) => handleToggleProxy(checked)}
@@ -256,7 +268,7 @@ export function App() {
                 <Button
                   type="text"
                   icon={<SettingOutlined />}
-                  aria-label="打开设置"
+                  aria-label={t("打开设置")}
                   className="top-settings-button"
                   onClick={() => setView("settings")}
                 />
@@ -264,7 +276,7 @@ export function App() {
               <div className="top-menu-right">
                 {showProxySwitch ? (
                   <div className="proxy-panel">
-                    <span className="proxy-label">开启代理</span>
+                    <span className="proxy-label">{t("开启代理")}</span>
                     <Switch checked={proxyEnabled} loading={proxyLoading} onChange={(checked) => void handleToggleProxy(checked)} />
                   </div>
                 ) : null}
@@ -272,17 +284,19 @@ export function App() {
                   trigger={["click"]}
                   menu={{
                     items: [
-                      { key: "official", label: "官方账户" },
-                      { key: "third_party", label: "第三方账户" },
+                      { key: "official", label: t("官方账户") },
+                      { key: "third_party", label: t("第三方账户") },
                     ],
                     onClick: ({ key }) => setAddModalMode(key as "official" | "third_party"),
                   }}
                 >
-                  <Button type="primary" shape="circle" icon={<PlusOutlined />} aria-label="添加账户" className="global-add-button" />
+                  <Button type="primary" shape="circle" icon={<PlusOutlined />} aria-label={t("添加账户")} className="global-add-button" />
                 </Dropdown>
               </div>
             </header>
             <AccountsPage
+              language={language}
+              t={t}
               syncToken={accountsSyncToken}
               showAddButton={false}
               addModalMode={addModalMode}
