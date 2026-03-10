@@ -4,7 +4,19 @@ import { App } from "./App";
 import { loadDesktopShellContext, refreshDesktopTrayState, subscribeDesktopBackendStateChanged } from "./lib/desktop-shell";
 
 vi.mock("./features/accounts/AccountsPage", () => ({
-  AccountsPage: ({ syncToken }: { syncToken?: number }) => <div>accounts-sync:{syncToken ?? 0}</div>,
+  AccountsPage: ({
+    syncToken,
+    addModalMode,
+    showAddButton,
+  }: {
+    syncToken?: number;
+    addModalMode?: string | null;
+    showAddButton?: boolean;
+  }) => (
+    <div>
+      accounts-sync:{syncToken ?? 0};add-mode:{addModalMode ?? "none"};show-add:{String(showAddButton)}
+    </div>
+  ),
 }));
 
 vi.mock("./features/settings/SettingsPage", () => ({
@@ -73,9 +85,54 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("accounts-sync:0")).toBeInTheDocument();
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
     expect(screen.getByText("AI Gate")).toBeInTheDocument();
     expect(screen.queryByText("开启代理")).not.toBeInTheDocument();
+  });
+
+  it("refreshes tray state once after app bootstrap", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(refreshDesktopTrayState).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("refreshes tray state after toggling proxy from the page", async () => {
@@ -189,7 +246,7 @@ describe("App", () => {
 
     expect(screen.getByText("正在载入设置中心…")).toBeInTheDocument();
 
-    expect(await screen.findByText("accounts-sync:0")).toBeInTheDocument();
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
     expect(appSettingsAttempts).toBe(2);
   });
 
@@ -242,7 +299,7 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("accounts-sync:0")).toBeInTheDocument();
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false");
 
     proxyEnabled = true;
@@ -251,8 +308,104 @@ describe("App", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("accounts-sync:1")).toBeInTheDocument();
+      expect(screen.getByText(/accounts-sync:1/)).toBeInTheDocument();
       expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
     });
+  });
+
+  it("opens settings full-screen and supports back navigation", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    expect(await screen.findByText("settings-page")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回首页" }));
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+  });
+
+  it("uses global add button and does not render backup label", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(
+            new Response(JSON.stringify({ enabled: true, last_backup_id: "backup-123" }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+    expect(await screen.findByText(/show-add:false/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "添加账户" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "官方账户" }));
+    expect(await screen.findByText(/add-mode:official/)).toBeInTheDocument();
+    expect(screen.queryByText(/备份:/)).not.toBeInTheDocument();
   });
 });

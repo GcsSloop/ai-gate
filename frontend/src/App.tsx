@@ -1,4 +1,5 @@
-import { App as AntApp, ConfigProvider, Modal, Spin, Switch, message } from "antd";
+import { ArrowLeftOutlined, PlusOutlined, SettingOutlined } from "@ant-design/icons";
+import { App as AntApp, Button, ConfigProvider, Dropdown, Modal, Spin, Switch, message } from "antd";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -19,9 +20,9 @@ function sleep(ms: number): Promise<void> {
 
 export function App() {
   const [messageApi, contextHolder] = message.useMessage();
-  const [tab, setTab] = useState<"accounts" | "settings">("accounts");
+  const [view, setView] = useState<"accounts" | "settings">("accounts");
+  const [addModalMode, setAddModalMode] = useState<"official" | "third_party" | null>(null);
   const [proxyEnabled, setProxyEnabled] = useState(false);
-  const [lastBackupID, setLastBackupID] = useState("");
   const [proxyLoading, setProxyLoading] = useState(false);
   const [accountsSyncToken, setAccountsSyncToken] = useState(0);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
@@ -31,7 +32,6 @@ export function App() {
     try {
       const status = await getProxyStatus();
       setProxyEnabled(status.enabled);
-      setLastBackupID(status.last_backup_id || "");
     } catch {
       // Keep UI usable even if status endpoint is temporarily unavailable.
     }
@@ -73,6 +73,7 @@ export function App() {
 
       try {
         await Promise.all([refreshProxyState(), bootstrapAppSettingsState()]);
+        void refreshDesktopTrayState();
       } catch (error) {
         if (!disposed) {
           void messageApi.error(error instanceof Error ? error.message : "初始化设置中心失败");
@@ -95,6 +96,7 @@ export function App() {
     let unlisten: undefined | (() => void);
     void subscribeDesktopBackendStateChanged(() => {
       void refreshProxyState();
+      void refreshDesktopTrayState();
       setAccountsSyncToken((value) => value + 1);
     }).then((cleanup) => {
       if (disposed) {
@@ -140,7 +142,6 @@ export function App() {
     try {
       const status = checked ? await enableProxy() : await disableProxy();
       setProxyEnabled(status.enabled);
-      setLastBackupID(status.last_backup_id || "");
       void refreshDesktopTrayState();
     } catch (error) {
       if (!checked && error instanceof Error && error.message.includes("config.toml changed externally")) {
@@ -154,9 +155,8 @@ export function App() {
             try {
               const status = await disableProxy({ force: true });
               setProxyEnabled(status.enabled);
-              setLastBackupID(status.last_backup_id || "");
               void refreshDesktopTrayState();
-              void messageApi.success("代理已关闭并恢复备份");
+              void messageApi.success("代理已关闭");
             } catch (forceError) {
               void messageApi.error(forceError instanceof Error ? forceError.message : "覆盖恢复失败");
               setProxyEnabled(true);
@@ -169,7 +169,6 @@ export function App() {
             try {
               const status = await disableProxy({ skipRestore: true });
               setProxyEnabled(status.enabled);
-              setLastBackupID(status.last_backup_id || "");
               void refreshDesktopTrayState();
               void messageApi.success("代理已关闭（未覆盖当前配置）");
             } catch (cancelError) {
@@ -200,11 +199,11 @@ export function App() {
     <ConfigProvider
       theme={{
         token: {
-          colorPrimary: "#0f766e",
-          borderRadius: 16,
-          colorBgLayout: "#eef3ee",
+          colorPrimary: "#3e5be8",
+          borderRadius: 14,
+          colorBgLayout: "#ffffff",
           colorBgContainer: "#ffffff",
-          colorBorderSecondary: "#d8e0d8",
+          colorBorderSecondary: "#e5e7eb",
         },
       }}
     >
@@ -215,53 +214,57 @@ export function App() {
             <Spin size="large" />
             <span>正在载入设置中心…</span>
           </div>
+        ) : view === "settings" ? (
+          <div className="settings-screen">
+            <header className="settings-top-bar">
+              <Button type="text" icon={<ArrowLeftOutlined />} aria-label="返回首页" onClick={() => setView("accounts")} />
+              <span className="settings-top-title">设置</span>
+            </header>
+            <SettingsPage
+              initialSettings={appSettings}
+              proxyEnabled={proxyEnabled}
+              onSettingsChanged={(next) => void handleSettingsChanged(next)}
+              onToggleProxy={(checked) => handleToggleProxy(checked)}
+            />
+          </div>
         ) : (
           <div className="app-shell">
             <header className="top-menu">
               <div className="brand-block">
-                <div className="brand-mark">AI</div>
+                <img src="/aigate_1024_1024.png" alt="AI Gate" className="brand-logo" />
                 <div>
                   <div className="brand">AI Gate</div>
-                  <div className="brand-subtitle">本地代理与路由控制台</div>
+                  <div className="brand-subtitle">简洁 · 本地 · 可控</div>
                 </div>
+                <Button type="text" icon={<SettingOutlined />} aria-label="打开设置" onClick={() => setView("settings")} />
               </div>
               <div className="top-menu-right">
                 {showProxySwitch ? (
                   <div className="proxy-panel">
                     <span className="proxy-label">开启代理</span>
                     <Switch checked={proxyEnabled} loading={proxyLoading} onChange={(checked) => void handleToggleProxy(checked)} />
-                    {lastBackupID ? <span className="proxy-backup">备份: {lastBackupID}</span> : null}
                   </div>
                 ) : null}
-                <div className="menu-actions">
-                  <button
-                    type="button"
-                    className={`menu-button ${tab === "accounts" ? "active" : ""}`}
-                    onClick={() => setTab("accounts")}
-                  >
-                    账号
-                  </button>
-                  <button
-                    type="button"
-                    className={`menu-button ${tab === "settings" ? "active" : ""}`}
-                    onClick={() => setTab("settings")}
-                  >
-                    设置
-                  </button>
-                </div>
+                <Dropdown
+                  trigger={["click"]}
+                  menu={{
+                    items: [
+                      { key: "official", label: "官方账户" },
+                      { key: "third_party", label: "第三方账户" },
+                    ],
+                    onClick: ({ key }) => setAddModalMode(key as "official" | "third_party"),
+                  }}
+                >
+                  <Button type="primary" shape="circle" icon={<PlusOutlined />} aria-label="添加账户" className="global-add-button" />
+                </Dropdown>
               </div>
             </header>
-            <div style={{ display: tab === "accounts" ? "block" : "none" }}>
-              <AccountsPage syncToken={accountsSyncToken} />
-            </div>
-            <div style={{ display: tab === "settings" ? "block" : "none" }}>
-              <SettingsPage
-                initialSettings={appSettings}
-                proxyEnabled={proxyEnabled}
-                onSettingsChanged={(next) => void handleSettingsChanged(next)}
-                onToggleProxy={(checked) => handleToggleProxy(checked)}
-              />
-            </div>
+            <AccountsPage
+              syncToken={accountsSyncToken}
+              showAddButton={false}
+              addModalMode={addModalMode}
+              onAddModalModeConsumed={() => setAddModalMode(null)}
+            />
           </div>
         )}
       </AntApp>

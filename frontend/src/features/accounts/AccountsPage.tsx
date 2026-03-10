@@ -79,12 +79,20 @@ function formatResetAt(value?: string) {
 
 type AccountsPageProps = {
   syncToken?: number;
+  addModalMode?: AddModalMode;
+  onAddModalModeConsumed?: () => void;
+  showAddButton?: boolean;
 };
 
-export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
+export function AccountsPage({
+  syncToken = 0,
+  addModalMode: externalAddModalMode,
+  onAddModalModeConsumed,
+  showAddButton = true,
+}: AccountsPageProps) {
   const [messageApi, contextHolder] = message.useMessage();
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
-  const [addModalMode, setAddModalMode] = useState<AddModalMode>(null);
+  const [internalAddModalMode, setInternalAddModalMode] = useState<AddModalMode>(null);
   const [editingAccount, setEditingAccount] = useState<AccountRecord | null>(null);
   const [detailAccount, setDetailAccount] = useState<AccountRecord | null>(null);
   const [testingAccount, setTestingAccount] = useState<AccountRecord | null>(null);
@@ -97,6 +105,14 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
   useEffect(() => {
     void refreshAll();
   }, [syncToken]);
+
+  useEffect(() => {
+    if (!externalAddModalMode) {
+      return;
+    }
+    setInternalAddModalMode(externalAddModalMode);
+    onAddModalModeConsumed?.();
+  }, [externalAddModalMode, onAddModalModeConsumed]);
 
   async function refreshAll() {
     const accountItems = await listAccounts();
@@ -134,7 +150,7 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
       credential_ref: values.credential_ref,
       supports_responses: !!values.supports_responses,
     });
-    setAddModalMode(null);
+    setInternalAddModalMode(null);
     thirdPartyForm.resetFields();
     await refreshAll();
     void refreshDesktopTrayState();
@@ -144,7 +160,7 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
   async function handleCreateOfficial(values: { account_name: string }) {
     await importCurrentCodexAuth(values.account_name || "local-codex");
     officialForm.resetFields();
-    setAddModalMode(null);
+    setInternalAddModalMode(null);
     await refreshAll();
     void refreshDesktopTrayState();
     void messageApi.success("官方账户已导入");
@@ -308,20 +324,22 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
           </Title>
           <Text type="secondary">主表仅展示核心状态，详细信息请通过详情查看。</Text>
         </div>
-        <Dropdown
-          menu={{
-            items: [
-              { key: "official", label: "官方账户" },
-              { key: "third_party", label: "第三方账户" },
-            ],
-            onClick: ({ key }) => setAddModalMode(key as AddModalMode),
-          }}
-          trigger={["click"]}
-        >
-          <Button type="primary" icon={<PlusOutlined />}>
-            添加账户
-          </Button>
-        </Dropdown>
+        {showAddButton ? (
+          <Dropdown
+            menu={{
+              items: [
+                { key: "official", label: "官方账户" },
+                { key: "third_party", label: "第三方账户" },
+              ],
+              onClick: ({ key }) => setInternalAddModalMode(key as AddModalMode),
+            }}
+            trigger={["click"]}
+          >
+            <Button type="primary" icon={<PlusOutlined />}>
+              添加账户
+            </Button>
+          </Dropdown>
+        ) : null}
       </div>
 
       <Card className="accounts-card" variant="borderless">
@@ -364,9 +382,9 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
       </Modal>
 
       <Modal
-        open={addModalMode === "third_party"}
+        open={internalAddModalMode === "third_party"}
         title="添加第三方账户"
-        onCancel={() => setAddModalMode(null)}
+        onCancel={() => setInternalAddModalMode(null)}
         footer={null}
         destroyOnHidden
       >
@@ -394,7 +412,7 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
             <Switch checkedChildren="已支持" unCheckedChildren="未支持" />
           </Form.Item>
           <div className="modal-footer">
-            <Button onClick={() => setAddModalMode(null)}>取消</Button>
+            <Button onClick={() => setInternalAddModalMode(null)}>取消</Button>
             <Button type="primary" htmlType="submit">
               保存
             </Button>
@@ -403,9 +421,9 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
       </Modal>
 
       <Modal
-        open={addModalMode === "official"}
+        open={internalAddModalMode === "official"}
         title="添加官方账户"
-        onCancel={() => setAddModalMode(null)}
+        onCancel={() => setInternalAddModalMode(null)}
         footer={null}
         destroyOnHidden
       >
@@ -415,7 +433,7 @@ export function AccountsPage({ syncToken = 0 }: AccountsPageProps) {
           </Form.Item>
           <Text type="secondary">将直接读取当前用户目录下的 <code>~/.codex/auth.json</code>。</Text>
           <div className="modal-footer">
-            <Button onClick={() => setAddModalMode(null)}>取消</Button>
+            <Button onClick={() => setInternalAddModalMode(null)}>取消</Button>
             <Button type="primary" htmlType="submit">
               导入
             </Button>

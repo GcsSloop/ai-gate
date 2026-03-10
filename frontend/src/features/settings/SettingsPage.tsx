@@ -593,7 +593,7 @@ export function SettingsPage({
               <Card className="settings-card about-card" variant="borderless">
                 <div className="about-layout">
                   <div className="about-brand">
-                    <img src="/aigate-icon.png" alt="AI Gate icon" className="about-logo" />
+                    <img src="/aigate_1024_1024.png" alt="AI Gate icon" className="about-logo" />
                     <div>
                       <Title level={3} style={{ marginBottom: 4 }}>
                         {metadata.name}
