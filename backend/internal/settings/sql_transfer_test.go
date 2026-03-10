@@ -1,6 +1,7 @@
 package settings_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -98,5 +99,63 @@ func TestSQLTransferExportAndImportOwnedTables(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].AccountName != "team-east" {
 		t.Fatalf("imported accounts = %+v, want [team-east]", items)
+	}
+}
+
+func TestSQLTransferImportAccountsWithExtraSourceColumns(t *testing.T) {
+	t.Parallel()
+
+	targetStore, err := sqlitestore.Open(filepath.Join(t.TempDir(), "target.sqlite"))
+	if err != nil {
+		t.Fatalf("Open(target) returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = targetStore.Close()
+	})
+
+	targetTransfer := settings.NewSQLTransfer(targetStore.DB())
+
+	raw := `BEGIN TRANSACTION;
+CREATE TABLE "accounts" (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_type TEXT NOT NULL,
+  account_name TEXT NOT NULL,
+  source_icon TEXT NOT NULL DEFAULT 'openai',
+  auth_mode TEXT NOT NULL,
+  credential_ref TEXT NOT NULL,
+  base_url TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  priority INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 0,
+  supports_responses INTEGER NOT NULL DEFAULT 0,
+  cooldown_until DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  legacy_extra_col TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO "accounts" ("provider_type","account_name","source_icon","auth_mode","credential_ref","base_url","status","priority","is_active","supports_responses","cooldown_until","created_at","legacy_extra_col")
+VALUES ('openai-compatible','extra-schema','openai','api_key','sk-extra','https://example.test/v1','active',9,1,1,NULL,'2026-03-10 00:00:00','legacy-value');
+`
+	for _, table := range []string{
+		"account_usage_snapshots",
+		"conversations",
+		"messages",
+		"runs",
+		"app_settings",
+		"failover_queue_items",
+	} {
+		raw += fmt.Sprintf("CREATE TABLE \"%s\" (id INTEGER PRIMARY KEY AUTOINCREMENT);\n", table)
+	}
+	raw += "COMMIT;\n"
+
+	if err := targetTransfer.Import([]byte(raw)); err != nil {
+		t.Fatalf("Import returned error: %v", err)
+	}
+
+	items, err := accounts.NewSQLiteRepository(targetStore.DB()).List()
+	if err != nil {
+		t.Fatalf("List(accounts) returned error: %v", err)
+	}
+	if len(items) != 1 || items[0].AccountName != "extra-schema" || items[0].Priority != 9 {
+		t.Fatalf("imported accounts = %+v, want account extra-schema with priority 9", items)
 	}
 }

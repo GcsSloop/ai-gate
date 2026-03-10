@@ -142,8 +142,23 @@ func lookupTableColumns(db *sql.DB, table string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inspect table %s columns: %w", table, err)
 	}
-	defer rows.Close()
+	return scanTableColumns(rows, table)
+}
 
+func lookupTableColumnsInSchema(tx *sql.Tx, schema string, table string) ([]string, error) {
+	pragma := fmt.Sprintf("PRAGMA %s.table_info(%s)", quoteIdentifier(schema), quoteIdentifier(table))
+	if schema == "" {
+		pragma = fmt.Sprintf("PRAGMA table_info(%s)", quoteIdentifier(table))
+	}
+	rows, err := tx.Query(pragma)
+	if err != nil {
+		return nil, fmt.Errorf("inspect table %s columns: %w", table, err)
+	}
+	return scanTableColumns(rows, table)
+}
+
+func scanTableColumns(rows *sql.Rows, table string) ([]string, error) {
+	defer rows.Close()
 	var columns []string
 	for rows.Next() {
 		var cid int
@@ -188,10 +203,33 @@ func replaceOwnedTablesFromDatabase(target *sql.DB, sourcePath string) (err erro
 		}
 	}
 	for _, table := range ownedTableNames {
+		targetColumns, colErr := lookupTableColumnsInSchema(tx, "", table)
+		if colErr != nil {
+			return colErr
+		}
+		sourceColumns, colErr := lookupTableColumnsInSchema(tx, "imported", table)
+		if colErr != nil {
+			return colErr
+		}
+		commonColumns := commonTableColumns(targetColumns, sourceColumns)
+		if len(commonColumns) == 0 {
+			return fmt.Errorf("copy imported rows into %s: no common columns found", table)
+		}
+
+		insertColumns := make([]string, 0, len(commonColumns))
+		selectColumns := make([]string, 0, len(commonColumns))
+		for _, column := range commonColumns {
+			quoted := quoteIdentifier(column)
+			insertColumns = append(insertColumns, quoted)
+			selectColumns = append(selectColumns, quoted)
+		}
+
 		if _, err = tx.Exec(
 			fmt.Sprintf(
-				"INSERT INTO %s SELECT * FROM imported.%s",
+				"INSERT INTO %s (%s) SELECT %s FROM imported.%s",
 				quoteIdentifier(table),
+				strings.Join(insertColumns, ", "),
+				strings.Join(selectColumns, ", "),
 				quoteIdentifier(table),
 			),
 		); err != nil {
@@ -202,6 +240,20 @@ func replaceOwnedTablesFromDatabase(target *sql.DB, sourcePath string) (err erro
 		return fmt.Errorf("commit imported data: %w", err)
 	}
 	return nil
+}
+
+func commonTableColumns(targetColumns []string, sourceColumns []string) []string {
+	sourceSet := make(map[string]struct{}, len(sourceColumns))
+	for _, column := range sourceColumns {
+		sourceSet[column] = struct{}{}
+	}
+	result := make([]string, 0, len(targetColumns))
+	for _, column := range targetColumns {
+		if _, ok := sourceSet[column]; ok {
+			result = append(result, column)
+		}
+	}
+	return result
 }
 
 func quoteIdentifier(value string) string {
