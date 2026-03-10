@@ -25,13 +25,13 @@ checksum_file() {
 }
 
 write_checksums() {
-  local output_file="$OUT_DIR/SHA256SUMS"
+  local output_file="$OUT_DIR/aigate-${VERSION}-${PLATFORM}-SHA256SUMS.txt"
   : >"$output_file"
   while IFS= read -r file; do
     local name
     name="$(basename "$file")"
     printf '%s  %s\n' "$(checksum_file "$file")" "$name" >>"$output_file"
-  done < <(find "$OUT_DIR" -maxdepth 1 -type f ! -name 'SHA256SUMS' | sort)
+  done < <(find "$OUT_DIR" -maxdepth 1 -type f ! -name 'aigate-*-SHA256SUMS.txt' | sort)
 }
 
 zip_dir() {

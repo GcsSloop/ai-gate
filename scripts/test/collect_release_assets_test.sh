@@ -49,9 +49,9 @@ bash "$SCRIPT_PATH" >/dev/null
 
 assert_file "$mac_out/aigate-v1.2.3-macOS.zip"
 assert_file "$mac_out/aigate-v1.2.3-macOS.dmg"
-assert_file "$mac_out/SHA256SUMS"
-assert_contains "$mac_out/SHA256SUMS" "aigate-v1.2.3-macOS.zip"
-assert_contains "$mac_out/SHA256SUMS" "aigate-v1.2.3-macOS.dmg"
+assert_file "$mac_out/aigate-v1.2.3-macos-SHA256SUMS.txt"
+assert_contains "$mac_out/aigate-v1.2.3-macos-SHA256SUMS.txt" "aigate-v1.2.3-macOS.zip"
+assert_contains "$mac_out/aigate-v1.2.3-macos-SHA256SUMS.txt" "aigate-v1.2.3-macOS.dmg"
 
 windows_out="$tmp_dir/release-windows"
 RELEASE_PLATFORM=windows \
@@ -64,9 +64,9 @@ bash "$SCRIPT_PATH" >/dev/null
 
 assert_file "$windows_out/aigate-v1.2.3-windows.msi"
 assert_file "$windows_out/aigate-v1.2.3-windows.zip"
-assert_file "$windows_out/SHA256SUMS"
-assert_contains "$windows_out/SHA256SUMS" "aigate-v1.2.3-windows.msi"
-assert_contains "$windows_out/SHA256SUMS" "aigate-v1.2.3-windows.zip"
+assert_file "$windows_out/aigate-v1.2.3-windows-SHA256SUMS.txt"
+assert_contains "$windows_out/aigate-v1.2.3-windows-SHA256SUMS.txt" "aigate-v1.2.3-windows.msi"
+assert_contains "$windows_out/aigate-v1.2.3-windows-SHA256SUMS.txt" "aigate-v1.2.3-windows.zip"
 
 if command -v unzip >/dev/null 2>&1; then
   zip_listing="$(unzip -l "$windows_out/aigate-v1.2.3-windows.zip")"

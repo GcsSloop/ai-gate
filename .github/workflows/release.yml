@@ -168,5 +168,5 @@ jobs:
             dist/**/*.zip
             dist/**/*.dmg
             dist/**/*.msi
-            dist/**/SHA256SUMS
+            dist/**/aigate-*-SHA256SUMS.txt
           fail_on_unmatched_files: true
