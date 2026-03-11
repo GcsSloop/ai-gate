@@ -472,7 +472,7 @@ func TestSettingsHandlerProxyEnableDisable(t *testing.T) {
 	if disableRec.Code != http.StatusOK {
 		t.Fatalf("POST /settings/proxy/disable status = %d, want %d", disableRec.Code, http.StatusOK)
 	}
-	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
+	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
 	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `[model_providers.aigate]`)
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
 }
@@ -502,7 +502,7 @@ func TestSettingsHandlerProxyDisableRestoreDoesNotRestoreAuthJSON(t *testing.T) 
 		t.Fatalf("POST /settings/proxy/disable status = %d, want %d", disableRec.Code, http.StatusOK)
 	}
 
-	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
+	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-updated"`)
 	assertFileNotContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
 }
@@ -573,7 +573,7 @@ extra_flag = true
 	if disableRec.Code != http.StatusOK {
 		t.Fatalf("disable status = %d, want %d", disableRec.Code, http.StatusOK)
 	}
-	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
+	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
 	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `[model_providers.aigate]`)
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
 }
@@ -602,7 +602,7 @@ func TestSettingsHandlerProxyDisableIgnoresLegacyForceParam(t *testing.T) {
 	if forceRec.Code != http.StatusOK {
 		t.Fatalf("force disable status = %d, want %d", forceRec.Code, http.StatusOK)
 	}
-	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
+	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
 	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `[model_providers.aigate]`)
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
 }
