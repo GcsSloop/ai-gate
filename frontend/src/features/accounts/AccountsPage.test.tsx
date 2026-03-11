@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { App as AntApp, ConfigProvider } from "antd";
 
 import { refreshDesktopTrayState } from "../../lib/desktop-shell";
 import { AccountsPage } from "./AccountsPage";
@@ -6,6 +7,16 @@ import { AccountsPage } from "./AccountsPage";
 vi.mock("../../lib/desktop-shell", () => ({
   refreshDesktopTrayState: vi.fn(),
 }));
+
+function renderAccountsPage() {
+  return render(
+    <ConfigProvider>
+      <AntApp>
+        <AccountsPage />
+      </AntApp>
+    </ConfigProvider>,
+  );
+}
 
 describe("AccountsPage", () => {
   beforeEach(() => {
@@ -86,7 +97,7 @@ describe("AccountsPage", () => {
 
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<AccountsPage />);
+    renderAccountsPage();
 
     expect(await screen.findByText("mirror-east")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "账户列表" })).toBeInTheDocument();
@@ -258,7 +269,7 @@ describe("AccountsPage", () => {
 
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<AccountsPage />);
+    renderAccountsPage();
 
     expect(await screen.findByText("account-a")).toBeInTheDocument();
     const activeRow = screen.getByText("account-b").closest(".account-card-item");
@@ -368,7 +379,7 @@ describe("AccountsPage", () => {
 
     vi.stubGlobal("fetch", fetchMock);
 
-    const { container } = render(<AccountsPage />);
+    const { container } = renderAccountsPage();
 
     expect(await screen.findByText("account-a")).toBeInTheDocument();
 

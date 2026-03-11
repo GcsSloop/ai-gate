@@ -9,6 +9,7 @@ import {
   PlusOutlined,
 } from "@ant-design/icons";
 import {
+  App as AntApp,
   Avatar,
   Button,
   Card,
@@ -198,6 +199,7 @@ export function AccountsPage({
   showAddButton = true,
 }: AccountsPageProps) {
   const [messageApi, contextHolder] = message.useMessage();
+  const { modal } = AntApp.useApp();
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [internalAddModalMode, setInternalAddModalMode] = useState<AddModalMode>(null);
   const [editingAccount, setEditingAccount] = useState<AccountRecord | null>(null);
@@ -610,7 +612,7 @@ export function AccountsPage({
                 icon={<DeleteOutlined />}
                 disabled={options.actionsDisabled}
                 onClick={() =>
-                  void Modal.confirm({
+                  void modal.confirm({
                     title: language === "en-US" ? `Delete account "${record.account_name}"?` : `确认删除账户「${record.account_name}」吗？`,
                     okText: t("删除"),
                     cancelText: t("取消"),
