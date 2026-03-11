@@ -178,8 +178,8 @@ describe("AccountsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "详情-mirror-east" }));
     const detailModal = await screen.findByRole("dialog", { name: "账户详情" });
-    expect(within(detailModal).getByText("TOKEN 名称")).toBeInTheDocument();
-    expect(within(detailModal).getByText("PPChat Token 日志")).toBeInTheDocument();
+    expect(await within(detailModal).findByText("TOKEN 名称")).toBeInTheDocument();
+    expect(await within(detailModal).findByText("PPChat Token 日志")).toBeInTheDocument();
     fireEvent.click(within(detailModal).getByRole("button", { name: "Close" }));
 
     fireEvent.click(screen.getByRole("button", { name: "编辑-mirror-east" }));
