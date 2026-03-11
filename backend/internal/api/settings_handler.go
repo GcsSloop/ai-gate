@@ -652,7 +652,11 @@ func detachProxyConfig(content string, session proxySession) (string, error) {
 	if previousProvider == "" || previousProvider == "aigate" {
 		previousProvider = defaultModelProvider
 	}
-	updated = setModelProvider(updated, previousProvider)
+	if previousProvider == defaultModelProvider {
+		updated = removeModelProvider(updated)
+	} else {
+		updated = setModelProvider(updated, previousProvider)
+	}
 	updated = removeAigateProviderDefinitions(updated)
 	return updated, nil
 }
@@ -912,6 +916,12 @@ func setModelProvider(content string, provider string) string {
 		return re.ReplaceAllString(content, line)
 	}
 	return line + "\n\n" + strings.TrimLeft(content, "\n")
+}
+
+func removeModelProvider(content string) string {
+	re := regexp.MustCompile(`(?m)^model_provider\s*=\s*".*"\s*\n?`)
+	updated := re.ReplaceAllString(content, "")
+	return strings.TrimLeft(updated, "\n")
 }
 
 func aigateProviderBlock(proxyBaseURL string) string {

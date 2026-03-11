@@ -141,8 +141,8 @@ requires_openai_auth = true
 代理开关行为：
 
 - 为默认 Codex provider 开启代理时，会临时写入 `[model_providers.aigate]`，并将 `model_provider` 切到 `aigate`
-- 关闭代理时，会删除临时的 `aigate` provider 配置，并切回之前的 provider，而不是整份覆盖恢复 `config.toml`
-- 如果开启代理时是对现有第三方 provider 做 `base_url` 补丁，关闭时只恢复原始 `base_url`，不会覆盖其它独立配置修改
+- 默认官方模式关闭代理时，会删除临时的 `aigate` provider 配置，并删除顶层 `model_provider` 字段，让 Codex 回到默认 provider 行为
+- 如果开启代理时是对现有第三方 provider 做 `base_url` 补丁，关闭时会恢复原始 provider 名称和 `base_url`，不会覆盖其它独立配置修改
 
 ## 本地开发
 

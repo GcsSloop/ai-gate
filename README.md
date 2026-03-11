@@ -155,8 +155,8 @@ Important notes:
 Proxy toggle behavior:
 
 - Enabling the proxy for the default Codex provider writes a temporary `[model_providers.aigate]` block and switches `model_provider` to `aigate`.
-- Disabling the proxy removes the temporary `aigate` provider block and switches the config back to the previous provider instead of restoring a full config snapshot.
-- If the proxy patched an existing third-party provider, disabling restores that provider's original `base_url` and leaves unrelated config edits untouched.
+- Disabling the proxy for the default Codex provider removes the temporary `aigate` provider block and deletes the top-level `model_provider` key so Codex falls back to its default provider behavior.
+- If the proxy patched an existing third-party provider, disabling restores that provider's original name and `base_url`, and leaves unrelated config edits untouched.
 
 ## Local Development
 
