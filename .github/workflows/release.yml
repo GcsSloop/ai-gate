@@ -45,8 +45,12 @@ jobs:
       - name: Frontend tests
         run: npm --prefix frontend run test
 
-      - name: Release asset script test
-        run: bash scripts/test/collect_release_assets_test.sh
+      - name: Release script tests
+        run: |
+          bash scripts/test/release_version_helpers_test.sh
+          bash scripts/test/sync_release_metadata_test.sh
+          bash scripts/test/collect_release_assets_test.sh
+          bash scripts/test/package_local_release_test.sh
 
   build:
     needs: test

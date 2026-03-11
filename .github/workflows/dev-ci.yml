@@ -51,6 +51,13 @@ jobs:
       - name: Install dependencies
         run: npm --prefix frontend ci
 
+      - name: Run release script tests
+        run: |
+          bash scripts/test/release_version_helpers_test.sh
+          bash scripts/test/sync_release_metadata_test.sh
+          bash scripts/test/collect_release_assets_test.sh
+          bash scripts/test/package_local_release_test.sh
+
       - name: Run frontend tests
         run: npm --prefix frontend run test
 
