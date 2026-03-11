@@ -182,6 +182,8 @@ describe("App", () => {
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
     expect(document.querySelector('[data-theme-mode="dark"]')).toBeInTheDocument();
+    expect(document.body.dataset.themeMode).toBe("dark");
+    expect(document.body.dataset.themePreference).toBe("dark");
   });
 
   it("refreshes tray state once after app bootstrap", async () => {

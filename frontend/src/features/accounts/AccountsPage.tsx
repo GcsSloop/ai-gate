@@ -567,59 +567,59 @@ export function AccountsPage({
                 </Text>
               </div>
             </div>
-          </div>
-          <div className="account-actions">
-            <Button
-              type="primary"
-              className="account-enable-button"
-              aria-label={`${language === "en-US" ? "Set active" : "设为激活"}-${record.account_name}`}
-              icon={<CheckCircleOutlined />}
-              disabled={record.is_active || options.actionsDisabled}
-              onClick={() => void handleSetActive(record)}
-            >
-              {t("启用")}
-            </Button>
-            <Button
-              type="text"
-              className="account-action-button"
-              aria-label={`${language === "en-US" ? "Edit" : "编辑"}-${record.account_name}`}
-              icon={<EditOutlined />}
-              disabled={options.actionsDisabled}
-              onClick={() => openEditModal(record)}
-            />
-            <Button
-              type="text"
-              className="account-action-button"
-              aria-label={`${language === "en-US" ? "Copy" : "复制"}-${record.account_name}`}
-              icon={<CopyOutlined />}
-              disabled={options.actionsDisabled}
-              onClick={() => void handleCopyAccount(record)}
-            />
-            <Button
-              type="text"
-              className="account-action-button"
-              aria-label={`${language === "en-US" ? "Details" : "详情"}-${record.account_name}`}
-              icon={<InfoCircleOutlined />}
-              disabled={options.actionsDisabled}
-              onClick={() => setDetailAccount(record)}
-            />
-            <Button
-              type="text"
-              danger
-              className="account-action-button"
-              aria-label={`${language === "en-US" ? "Delete" : "删除"}-${record.account_name}`}
-              icon={<DeleteOutlined />}
-              disabled={options.actionsDisabled}
-              onClick={() =>
-                void Modal.confirm({
-                  title: language === "en-US" ? `Delete account "${record.account_name}"?` : `确认删除账户「${record.account_name}」吗？`,
-                  okText: t("删除"),
-                  cancelText: t("取消"),
-                  okButtonProps: { danger: true },
-                  onOk: () => handleDelete(record),
-                })
-              }
-            />
+            <div className="account-actions">
+              <Button
+                type="primary"
+                className="account-enable-button"
+                aria-label={`${language === "en-US" ? "Set active" : "设为激活"}-${record.account_name}`}
+                icon={<CheckCircleOutlined />}
+                disabled={record.is_active || options.actionsDisabled}
+                onClick={() => void handleSetActive(record)}
+              >
+                {t("启用")}
+              </Button>
+              <Button
+                type="text"
+                className="account-action-button"
+                aria-label={`${language === "en-US" ? "Edit" : "编辑"}-${record.account_name}`}
+                icon={<EditOutlined />}
+                disabled={options.actionsDisabled}
+                onClick={() => openEditModal(record)}
+              />
+              <Button
+                type="text"
+                className="account-action-button"
+                aria-label={`${language === "en-US" ? "Copy" : "复制"}-${record.account_name}`}
+                icon={<CopyOutlined />}
+                disabled={options.actionsDisabled}
+                onClick={() => void handleCopyAccount(record)}
+              />
+              <Button
+                type="text"
+                className="account-action-button"
+                aria-label={`${language === "en-US" ? "Details" : "详情"}-${record.account_name}`}
+                icon={<InfoCircleOutlined />}
+                disabled={options.actionsDisabled}
+                onClick={() => setDetailAccount(record)}
+              />
+              <Button
+                type="text"
+                danger
+                className="account-action-button"
+                aria-label={`${language === "en-US" ? "Delete" : "删除"}-${record.account_name}`}
+                icon={<DeleteOutlined />}
+                disabled={options.actionsDisabled}
+                onClick={() =>
+                  void Modal.confirm({
+                    title: language === "en-US" ? `Delete account "${record.account_name}"?` : `确认删除账户「${record.account_name}」吗？`,
+                    okText: t("删除"),
+                    cancelText: t("取消"),
+                    okButtonProps: { danger: true },
+                    onOk: () => handleDelete(record),
+                  })
+                }
+              />
+            </div>
           </div>
         </Card>
       </div>

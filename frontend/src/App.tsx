@@ -115,6 +115,20 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const targets = [document.documentElement, document.body];
+    targets.forEach((target) => {
+      target.dataset.themeMode = resolvedThemeMode;
+      target.dataset.themePreference = themeMode;
+    });
+    return () => {
+      targets.forEach((target) => {
+        delete target.dataset.themeMode;
+        delete target.dataset.themePreference;
+      });
+    };
+  }, [resolvedThemeMode, themeMode]);
+
+  useEffect(() => {
     let disposed = false;
     let unlisten: undefined | (() => void);
     void subscribeDesktopBackendStateChanged(() => {
@@ -240,7 +254,7 @@ export function App() {
       }}
     >
       <AntApp>
-        <div data-theme-mode={resolvedThemeMode} data-theme-preference={themeMode}>
+        <div className="app-theme-shell" data-theme-mode={resolvedThemeMode} data-theme-preference={themeMode}>
           {contextHolder}
           {!shellReady || !appSettings ? (
             <div className="app-loading">
