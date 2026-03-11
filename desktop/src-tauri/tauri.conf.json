@@ -22,6 +22,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/icon.png",
       "icons/icon.icns",
@@ -37,6 +38,20 @@
     ],
     "macOS": {
       "minimumSystemVersion": "12.0"
+    },
+    "windows": {
+      "allowDowngrades": false
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERGRDUyRkY5NzAzRDJGQzYKUldUR0x6MXcrUy9WMzdDd1VacitqN0JHSUc4UlVkSzB5bncwdUVNOTdhNys2aTIrTy85NXFyd2oK",
+      "endpoints": [
+        "https://github.com/GcsSloop/ai-gate/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
