@@ -108,4 +108,21 @@ assert_file "$fallback_out/aigate-v9.8.7-macOS.zip"
 assert_file "$fallback_out/aigate-v9.8.7-macOS.dmg"
 assert_file "$fallback_out/aigate-v9.8.7-macos-SHA256SUMS.txt"
 
+native_target_dir="$tmp_dir/native-target"
+mkdir -p "$native_target_dir/release/bundle/macos/AI Gate.app/Contents/MacOS"
+mkdir -p "$native_target_dir/release/bundle/dmg"
+printf 'native mac app\n' >"$native_target_dir/release/bundle/macos/AI Gate.app/Contents/MacOS/aigate-desktop"
+printf 'native dmg\n' >"$native_target_dir/release/bundle/dmg/AI Gate_1.2.3_aarch64.dmg"
+
+native_out="$tmp_dir/release-native"
+RELEASE_VERSION=v1.2.3 \
+TARGET_DIR="$native_target_dir" \
+RELEASE_ASSET_DIR="$native_out" \
+SIDECAR_BIN_DIR="$sidecar_dir" \
+bash "$SCRIPT_PATH" >/dev/null
+
+assert_file "$native_out/aigate-v1.2.3-macOS.zip"
+assert_file "$native_out/aigate-v1.2.3-macOS.dmg"
+assert_file "$native_out/aigate-v1.2.3-macos-SHA256SUMS.txt"
+
 echo "PASS: collect_release_assets_test"
