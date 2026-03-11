@@ -3,5 +3,5 @@
   "identifier": "main-capability",
   "description": "Main window capability for AI Gate desktop shell",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "process:default", "updater:default"]
 }
