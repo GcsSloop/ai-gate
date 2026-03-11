@@ -652,11 +652,13 @@ func detachProxyConfig(content string, session proxySession) (string, error) {
 	if previousProvider == "" || previousProvider == "aigate" {
 		previousProvider = defaultModelProvider
 	}
+
 	if previousProvider == defaultModelProvider {
 		updated = removeModelProvider(updated)
 	} else {
 		updated = setModelProvider(updated, previousProvider)
 	}
+
 	updated = removeAigateProviderDefinitions(updated)
 	return updated, nil
 }
