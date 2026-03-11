@@ -158,6 +158,20 @@ Proxy toggle behavior:
 - Disabling the proxy for the default Codex provider removes the temporary `aigate` provider block and deletes the top-level `model_provider` key so Codex falls back to its default provider behavior.
 - If the proxy patched an existing third-party provider, disabling restores that provider's original name and `base_url`, and leaves unrelated config edits untouched.
 
+## Session Migration Skill
+
+Get the migration skill here:
+
+- [GitHub skill link](https://github.com/GcsSloop/ai-gate/blob/main/skills/migrating-codex-history/SKILL.md)
+
+Use it like this:
+
+1. Open the link and copy the full skill text into Codex.
+2. Tell Codex: `Use this skill and migrate my ~/.codex history from openai to aigate. Run a dry-run first, show me the summary, then wait for confirmation before the real migration.` The skill will use the local script if this repository is present, otherwise it will fetch the script from the `main` branch raw URL.
+3. On Windows, the skill tells Codex to translate the shell script behavior into equivalent PowerShell or native Windows steps before execution.
+
+The repository source of truth is [skills/migrating-codex-history/SKILL.md](skills/migrating-codex-history/SKILL.md).
+
 ## Local Development
 
 ### Backend
