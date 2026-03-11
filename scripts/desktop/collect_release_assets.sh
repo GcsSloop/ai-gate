@@ -15,6 +15,22 @@ APP_EXECUTABLE_NAME="${APP_EXECUTABLE_NAME:-aigate-desktop.exe}"
 
 mkdir -p "$OUT_DIR"
 
+macos_bundle_dir() {
+  local universal_dir="$TARGET_DIR/universal-apple-darwin/release/bundle"
+  local native_dir="$TARGET_DIR/release/bundle"
+
+  if [[ -d "$universal_dir" ]]; then
+    printf '%s\n' "$universal_dir"
+    return 0
+  fi
+  if [[ -d "$native_dir" ]]; then
+    printf '%s\n' "$native_dir"
+    return 0
+  fi
+
+  return 1
+}
+
 checksum_file() {
   local file="$1"
   if command -v shasum >/dev/null 2>&1; then
@@ -66,9 +82,13 @@ zip_dir() {
 }
 
 collect_macos_assets() {
-  local src_dir="$TARGET_DIR/universal-apple-darwin/release/bundle"
+  local src_dir
   local app_path
   local dmg_path
+  src_dir="$(macos_bundle_dir)" || {
+    echo "No macOS bundle found under $TARGET_DIR" >&2
+    exit 1
+  }
   app_path="$(find "$src_dir/macos" -maxdepth 1 -name "*.app" -type d | head -n1 || true)"
   dmg_path="$(find "$src_dir/dmg" -maxdepth 1 -name "*.dmg" -type f | head -n1 || true)"
 
@@ -116,7 +136,7 @@ collect_windows_assets() {
 }
 
 if [[ "$PLATFORM" == "auto" ]]; then
-  if [[ -d "$TARGET_DIR/universal-apple-darwin/release/bundle" ]]; then
+  if macos_bundle_dir >/dev/null; then
     PLATFORM="macos"
   elif [[ -d "$TARGET_DIR/x86_64-pc-windows-msvc/release/bundle" ]]; then
     PLATFORM="windows"
