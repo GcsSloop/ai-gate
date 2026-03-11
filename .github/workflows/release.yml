@@ -119,20 +119,9 @@ jobs:
           cd desktop/src-tauri
           cargo test sidecar_ -q
 
-      - name: Prepare updater signing key
-        env:
-          TAURI_SIGNING_PRIVATE_KEY_B64: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: |
-          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY_B64:-}" ]]; then
-            echo "TAURI_SIGNING_PRIVATE_KEY=" >>"$GITHUB_ENV"
-            exit 0
-          fi
-          decoded_key="$(printf "%s" "$TAURI_SIGNING_PRIVATE_KEY_B64" | base64 --decode)"
-          printf 'TAURI_SIGNING_PRIVATE_KEY<<__TAURI_PRIVATE_KEY__\n%s\n__TAURI_PRIVATE_KEY__\n' "$decoded_key" >>"$GITHUB_ENV"
-
       - name: Build desktop bundles
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           npm --prefix desktop run tauri build -- \

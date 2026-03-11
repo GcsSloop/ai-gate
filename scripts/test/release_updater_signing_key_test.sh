@@ -23,10 +23,10 @@ assert_not_contains() {
   fi
 }
 
-assert_contains "name: Prepare updater signing key"
-assert_contains 'TAURI_SIGNING_PRIVATE_KEY_B64: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'
-assert_contains 'printf "%s" "$TAURI_SIGNING_PRIVATE_KEY_B64" | base64 --decode'
-assert_contains 'TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}'
-assert_not_contains 'TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'
+assert_not_contains "name: Prepare updater signing key"
+assert_not_contains 'TAURI_SIGNING_PRIVATE_KEY_B64: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'
+assert_not_contains 'printf "%s" "$TAURI_SIGNING_PRIVATE_KEY_B64" | base64 --decode'
+assert_contains 'TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'
+assert_contains 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}'
 
 echo "PASS: release_updater_signing_key_test"
