@@ -499,30 +499,14 @@ func (h *SettingsHandler) disableProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	configChanged := hashBytes(raw) != session.EnabledConfigHash
-	disableMode := resolveDisableMode(r)
-	forcedRestore := isForceDisable(r.URL.Query().Get("force"))
-	if disableMode == "restore" && configChanged && !forcedRestore {
-		http.Error(w, "config.toml changed externally; skip auto-restore to avoid overwrite", http.StatusConflict)
+	updated, err := detachProxyConfig(string(raw), session)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if disableMode == "detach" {
-		updated := setModelProvider(string(raw), defaultModelProvider)
-		updated = removeAigateProviderDefinitions(updated)
-		if err := writeAtomic(configPath, []byte(updated), 0o600); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	} else {
-		backupDir := filepath.Join(codexBackupRoot(home), session.BackupID)
-		for _, name := range []string{"config.toml"} {
-			source := filepath.Join(backupDir, name)
-			target := filepath.Join(home, ".codex", name)
-			if err := copyRequiredFile(source, target); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-		}
+	if err := writeAtomic(configPath, []byte(updated), 0o600); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	clearProxySession(home)
 	state, _ := readProxyState(home)
@@ -644,6 +628,33 @@ func (h *SettingsHandler) updateEnabledProxyConfig(value settings.AppSettings) e
 	}
 	session.EnabledConfigHash = hashString(updated)
 	return writeProxySession(home, session)
+}
+
+func detachProxyConfig(content string, session proxySession) (string, error) {
+	updated := content
+	previousProvider := strings.TrimSpace(session.PreviousModelProvider)
+
+	if session.Mode == "patched_existing_provider" {
+		targetProvider := strings.TrimSpace(session.TargetProvider)
+		if targetProvider == "" {
+			return "", errors.New("proxy session missing target provider")
+		}
+		originalBaseURL := strings.TrimSpace(session.OriginalBaseURL)
+		if originalBaseURL == "" {
+			return "", errors.New("proxy session missing original base_url")
+		}
+		updated = setProviderValue(updated, targetProvider, "base_url", strconv.Quote(originalBaseURL))
+		if previousProvider == "" || previousProvider == "aigate" {
+			previousProvider = targetProvider
+		}
+	}
+
+	if previousProvider == "" || previousProvider == "aigate" {
+		previousProvider = defaultModelProvider
+	}
+	updated = setModelProvider(updated, previousProvider)
+	updated = removeAigateProviderDefinitions(updated)
+	return updated, nil
 }
 
 func (h *SettingsHandler) sqlTransfer() (*settings.SQLTransfer, error) {

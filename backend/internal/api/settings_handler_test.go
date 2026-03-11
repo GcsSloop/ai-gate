@@ -19,6 +19,8 @@ import (
 )
 
 func TestSettingsHandlerGetAndPutAppSettings(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	handler, repo := newSettingsHandler(t)
 
 	getReq := httptest.NewRequest(http.MethodGet, "/settings/app", nil)
@@ -471,6 +473,7 @@ func TestSettingsHandlerProxyEnableDisable(t *testing.T) {
 		t.Fatalf("POST /settings/proxy/disable status = %d, want %d", disableRec.Code, http.StatusOK)
 	}
 	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
+	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `[model_providers.aigate]`)
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
 }
 
@@ -539,7 +542,7 @@ func TestSettingsHandlerUpdatingProxyAddressRewritesEnabledConfig(t *testing.T) 
 	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "http://localhost:15721/ai-router/api"`)
 }
 
-func TestSettingsHandlerProxyDisableConflictWhenConfigChanged(t *testing.T) {
+func TestSettingsHandlerProxyDisableDetachesEvenWhenConfigChanged(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	prepareCodexFiles(t, home, "model_provider = \"openai\"\n", `{"access_token":"token-before"}`)
@@ -559,29 +562,23 @@ func TestSettingsHandlerProxyDisableConflictWhenConfigChanged(t *testing.T) {
 name = "aigate"
 base_url = "http://127.0.0.1:6789/ai-router/api"
 wire_api = "responses"
+extra_flag = true
 `), 0o600); err != nil {
-		t.Fatalf("write config for conflict: %v", err)
+		t.Fatalf("write config for detach: %v", err)
 	}
 
 	disableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/disable", nil)
 	disableRec := httptest.NewRecorder()
 	handler.ServeHTTP(disableRec, disableReq)
-	if disableRec.Code != http.StatusConflict {
-		t.Fatalf("disable status = %d, want %d", disableRec.Code, http.StatusConflict)
-	}
-
-	skipReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/disable?skip_restore=1", nil)
-	skipRec := httptest.NewRecorder()
-	handler.ServeHTTP(skipRec, skipReq)
-	if skipRec.Code != http.StatusOK {
-		t.Fatalf("skip-restore disable status = %d, want %d", skipRec.Code, http.StatusOK)
+	if disableRec.Code != http.StatusOK {
+		t.Fatalf("disable status = %d, want %d", disableRec.Code, http.StatusOK)
 	}
 	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
 	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `[model_providers.aigate]`)
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
 }
 
-func TestSettingsHandlerProxyDisableForceRestoresWhenConfigChanged(t *testing.T) {
+func TestSettingsHandlerProxyDisableIgnoresLegacyForceParam(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	prepareCodexFiles(t, home, "model_provider = \"openai\"\n", `{"access_token":"token-before"}`)
@@ -595,8 +592,8 @@ func TestSettingsHandlerProxyDisableForceRestoresWhenConfigChanged(t *testing.T)
 		t.Fatalf("enable status = %d, want %d", enableRec.Code, http.StatusOK)
 	}
 
-	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte("model_provider = \"changed\"\n"), 0o600); err != nil {
-		t.Fatalf("write config for conflict: %v", err)
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte("model_provider = \"changed\"\n\n[model_providers.aigate]\nname = \"aigate\"\nbase_url = \"http://127.0.0.1:6789/ai-router/api\"\n"), 0o600); err != nil {
+		t.Fatalf("write config for detach: %v", err)
 	}
 
 	forceReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/disable?force=1", nil)
@@ -606,10 +603,11 @@ func TestSettingsHandlerProxyDisableForceRestoresWhenConfigChanged(t *testing.T)
 		t.Fatalf("force disable status = %d, want %d", forceRec.Code, http.StatusOK)
 	}
 	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
+	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `[model_providers.aigate]`)
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
 }
 
-func TestSettingsHandlerEnablePatchesThirdPartyProviderAndDetachDoesNotOverwriteConfig(t *testing.T) {
+func TestSettingsHandlerEnablePatchesThirdPartyProviderAndDisableRestoresOriginalBaseURL(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	prepareCodexFiles(t, home, `model_provider = "ppchat"
@@ -648,13 +646,15 @@ wire_api = "responses"
 		t.Fatalf("target_provider = %v, want ppchat", statusPayload["target_provider"])
 	}
 
-	disableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/disable?mode=detach", nil)
+	disableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/disable", nil)
 	disableRec := httptest.NewRecorder()
 	handler.ServeHTTP(disableRec, disableReq)
 	if disableRec.Code != http.StatusOK {
-		t.Fatalf("detach disable status = %d, want %d", disableRec.Code, http.StatusOK)
+		t.Fatalf("disable status = %d, want %d", disableRec.Code, http.StatusOK)
 	}
-	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "http://127.0.0.1:6789/ai-router/api"`)
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "ppchat"`)
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "https://code.ppchat.vip/v1"`)
+	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "http://127.0.0.1:6789/ai-router/api"`)
 }
 
 func TestSettingsHandlerEnableNormalizesDuplicateAigateProviderSections(t *testing.T) {

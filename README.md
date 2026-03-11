@@ -152,6 +152,12 @@ Important notes:
 - Upstream `response_id` is authoritative.
 - AI Gate does not fake retrieval or continuation semantics that require local response reconstruction.
 
+Proxy toggle behavior:
+
+- Enabling the proxy for the default Codex provider writes a temporary `[model_providers.aigate]` block and switches `model_provider` to `aigate`.
+- Disabling the proxy removes the temporary `aigate` provider block and switches the config back to the previous provider instead of restoring a full config snapshot.
+- If the proxy patched an existing third-party provider, disabling restores that provider's original `base_url` and leaves unrelated config edits untouched.
+
 ## Local Development
 
 ### Backend
