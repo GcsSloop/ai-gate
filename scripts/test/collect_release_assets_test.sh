@@ -50,7 +50,10 @@ mkdir -p "$sidecar_dir"
 
 printf 'mac app\n' >"$target_dir/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/MacOS/aigate-desktop"
 printf 'dmg\n' >"$target_dir/universal-apple-darwin/release/bundle/dmg/AI Gate_1.2.3_universal.dmg"
+printf 'mac updater\n' >"$target_dir/universal-apple-darwin/release/bundle/macos/AI Gate.app.tar.gz"
+printf 'mac sig\n' >"$target_dir/universal-apple-darwin/release/bundle/macos/AI Gate.app.tar.gz.sig"
 printf 'msi\n' >"$target_dir/x86_64-pc-windows-msvc/release/bundle/msi/AI Gate_1.2.3_x64_en-US.msi"
+printf 'msi sig\n' >"$target_dir/x86_64-pc-windows-msvc/release/bundle/msi/AI Gate_1.2.3_x64_en-US.msi.sig"
 printf 'windows exe\n' >"$target_dir/x86_64-pc-windows-msvc/release/aigate-desktop.exe"
 printf 'sidecar exe\n' >"$sidecar_dir/routerd-x86_64-pc-windows-msvc.exe"
 
@@ -64,9 +67,13 @@ bash "$SCRIPT_PATH" >/dev/null
 
 assert_file "$mac_out/aigate-v1.2.3-macOS.zip"
 assert_file "$mac_out/aigate-v1.2.3-macOS.dmg"
+assert_file "$mac_out/aigate-v1.2.3-darwin-universal.app.tar.gz"
+assert_file "$mac_out/aigate-v1.2.3-darwin-universal.app.tar.gz.sig"
 assert_file "$mac_out/aigate-v1.2.3-macos-SHA256SUMS.txt"
 assert_contains "$mac_out/aigate-v1.2.3-macos-SHA256SUMS.txt" "aigate-v1.2.3-macOS.zip"
 assert_contains "$mac_out/aigate-v1.2.3-macos-SHA256SUMS.txt" "aigate-v1.2.3-macOS.dmg"
+assert_contains "$mac_out/aigate-v1.2.3-macos-SHA256SUMS.txt" "aigate-v1.2.3-darwin-universal.app.tar.gz"
+assert_contains "$mac_out/aigate-v1.2.3-macos-SHA256SUMS.txt" "aigate-v1.2.3-darwin-universal.app.tar.gz.sig"
 
 windows_out="$tmp_dir/release-windows"
 RELEASE_PLATFORM=windows \
@@ -78,9 +85,11 @@ APP_EXECUTABLE_NAME=aigate-desktop.exe \
 bash "$SCRIPT_PATH" >/dev/null
 
 assert_file "$windows_out/aigate-v1.2.3-windows.msi"
+assert_file "$windows_out/aigate-v1.2.3-windows.msi.sig"
 assert_file "$windows_out/aigate-v1.2.3-windows.zip"
 assert_file "$windows_out/aigate-v1.2.3-windows-SHA256SUMS.txt"
 assert_contains "$windows_out/aigate-v1.2.3-windows-SHA256SUMS.txt" "aigate-v1.2.3-windows.msi"
+assert_contains "$windows_out/aigate-v1.2.3-windows-SHA256SUMS.txt" "aigate-v1.2.3-windows.msi.sig"
 assert_contains "$windows_out/aigate-v1.2.3-windows-SHA256SUMS.txt" "aigate-v1.2.3-windows.zip"
 
 if command -v unzip >/dev/null 2>&1; then
@@ -113,6 +122,8 @@ mkdir -p "$native_target_dir/release/bundle/macos/AI Gate.app/Contents/MacOS"
 mkdir -p "$native_target_dir/release/bundle/dmg"
 printf 'native mac app\n' >"$native_target_dir/release/bundle/macos/AI Gate.app/Contents/MacOS/aigate-desktop"
 printf 'native dmg\n' >"$native_target_dir/release/bundle/dmg/AI Gate_1.2.3_aarch64.dmg"
+printf 'native updater\n' >"$native_target_dir/release/bundle/macos/AI Gate.app.tar.gz"
+printf 'native updater sig\n' >"$native_target_dir/release/bundle/macos/AI Gate.app.tar.gz.sig"
 
 native_out="$tmp_dir/release-native"
 RELEASE_VERSION=v1.2.3 \
@@ -123,6 +134,8 @@ bash "$SCRIPT_PATH" >/dev/null
 
 assert_file "$native_out/aigate-v1.2.3-macOS.zip"
 assert_file "$native_out/aigate-v1.2.3-macOS.dmg"
+assert_file "$native_out/aigate-v1.2.3-darwin-universal.app.tar.gz"
+assert_file "$native_out/aigate-v1.2.3-darwin-universal.app.tar.gz.sig"
 assert_file "$native_out/aigate-v1.2.3-macos-SHA256SUMS.txt"
 
 echo "PASS: collect_release_assets_test"

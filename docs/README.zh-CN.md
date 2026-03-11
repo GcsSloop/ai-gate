@@ -196,7 +196,21 @@ bash scripts/desktop/collect_release_assets.sh
 
 - `aigate-<tag>-macOS.dmg`
 - `aigate-<tag>-macOS.zip`
+- `aigate-<tag>-darwin-universal.app.tar.gz`
+- `aigate-<tag>-darwin-universal.app.tar.gz.sig`
 - `aigate-<tag>-<platform>-SHA256SUMS.txt`
+
+GitHub Releases 更新还依赖 updater 签名密钥：
+
+- `TAURI_SIGNING_PRIVATE_KEY`
+- 可选 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+Tag 发布时，除了手动安装包，还会额外上传：
+
+- `aigate-<tag>-windows.msi.sig`
+- `latest.json`
+
+`latest.json` 会在 release workflow 中生成，并作为桌面端检查更新的数据源。
 
 ## 仓库结构
 

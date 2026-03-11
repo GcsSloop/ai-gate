@@ -47,9 +47,11 @@ jobs:
 
       - name: Release script tests
         run: |
+          bash scripts/test/desktop_updater_config_test.sh
           bash scripts/test/release_version_helpers_test.sh
           bash scripts/test/sync_release_metadata_test.sh
           bash scripts/test/collect_release_assets_test.sh
+          bash scripts/test/release_updater_manifest_test.sh
           bash scripts/test/package_local_release_test.sh
 
   build:
@@ -117,6 +119,9 @@ jobs:
           cargo test sidecar_ -q
 
       - name: Build desktop bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           npm --prefix desktop run tauri build -- \
             --target "${{ matrix.tauri_target }}" \
@@ -160,17 +165,39 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Download release assets
         uses: actions/download-artifact@v4
         with:
           path: dist
 
+      - name: Generate updater manifest
+        run: |
+          bash scripts/release/generate_updater_manifest.sh \
+            --tag "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --assets-root dist \
+            --output dist/latest.json \
+            --notes "See GitHub release for details."
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          generate_release_notes: true
           files: |
             dist/**/*.zip
             dist/**/*.dmg
             dist/**/*.msi
+            dist/**/*.msi.sig
+            dist/**/*.app.tar.gz
+            dist/**/*.app.tar.gz.sig
+            dist/latest.json
             dist/**/aigate-*-SHA256SUMS.txt
           fail_on_unmatched_files: true
