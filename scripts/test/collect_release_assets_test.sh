@@ -22,6 +22,21 @@ assert_contains() {
   fi
 }
 
+create_git_repo_with_tag() {
+  local repo_dir="$1"
+  mkdir -p "$repo_dir"
+  (
+    cd "$repo_dir"
+    git init >/dev/null
+    git config user.name "Codex"
+    git config user.email "codex@example.com"
+    printf 'seed\n' >README.md
+    git add README.md
+    git commit -m "init" >/dev/null
+    git tag v9.8.7
+  )
+}
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -75,5 +90,22 @@ if command -v unzip >/dev/null 2>&1; then
   [[ "$zip_listing" == *"aigate-v1.2.3-windows/bin/routerd-x86_64-pc-windows-msvc.exe"* ]] || \
     fail "portable zip should include sidecar binary"
 fi
+
+tag_repo="$tmp_dir/tagged-repo"
+create_git_repo_with_tag "$tag_repo"
+
+fallback_out="$tmp_dir/release-fallback"
+(
+  cd "$tag_repo"
+  RELEASE_PLATFORM=macos \
+  TARGET_DIR="$target_dir" \
+  RELEASE_ASSET_DIR="$fallback_out" \
+  SIDECAR_BIN_DIR="$sidecar_dir" \
+  bash "$SCRIPT_PATH" >/dev/null
+)
+
+assert_file "$fallback_out/aigate-v9.8.7-macOS.zip"
+assert_file "$fallback_out/aigate-v9.8.7-macOS.dmg"
+assert_file "$fallback_out/aigate-v9.8.7-macos-SHA256SUMS.txt"
 
 echo "PASS: collect_release_assets_test"
