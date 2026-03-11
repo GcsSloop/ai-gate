@@ -38,6 +38,7 @@ import { applyDesktopAppSettings, getAppMetadata, type AppMetadata } from "../..
 import type { AppLanguage, Translator } from "../../lib/i18n";
 import { setAPIBase } from "../../lib/paths";
 import appLogo from "../../assets/aigate_1024_1024.png";
+import { UpdateCard } from "../updates/UpdateCard";
 
 const { Text, Title } = Typography;
 
@@ -703,6 +704,7 @@ export function SettingsPage({
                         <strong>{metadata.version}</strong>
                       </div>
                     </div>
+                    <UpdateCard currentVersion={metadata.version} language={language} t={t} />
                   </div>
                 </div>
               </Card>

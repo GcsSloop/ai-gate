@@ -520,6 +520,24 @@ body {
   color: var(--text-primary);
 }
 
+.update-status-value.is-checking {
+  position: relative;
+  color: var(--accent-color);
+  animation: update-status-pulse 1s ease-in-out infinite;
+}
+
+@keyframes update-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 0.58;
+    transform: translateY(-1px);
+  }
+}
+
 .account-cards {
   display: grid;
   gap: 14px;
