@@ -144,6 +144,20 @@ requires_openai_auth = true
 - 默认官方模式关闭代理时，会删除临时的 `aigate` provider 配置，并删除顶层 `model_provider` 字段，让 Codex 回到默认 provider 行为
 - 如果开启代理时是对现有第三方 provider 做 `base_url` 补丁，关闭时会恢复原始 provider 名称和 `base_url`，不会覆盖其它独立配置修改
 
+## 会话迁移 Skill
+
+获取 skill 的链接：
+
+- [GitHub skill 链接](https://github.com/GcsSloop/ai-gate/blob/main/skills/migrating-codex-history/SKILL.md)
+
+使用方式：
+
+1. 打开上面的链接，把完整 skill 文本复制到 Codex 对话里。
+2. 对 Codex 说：`使用这个 skill，把我 ~/.codex 里 openai 的会话迁移到 aigate，先 dry-run 并把 summary 给我确认，确认后再正式执行。` 如果本地有这个仓库，skill 会直接用本地脚本；如果没有，skill 会从 `main` 分支的 raw 地址拉取脚本。
+3. 如果用户在 Windows 上使用，skill 会要求 Codex 先把 `.sh` 的逻辑转换成等价的 PowerShell 或原生 Windows 步骤，再执行迁移。
+
+这个流程在仓库里的单一事实来源是 [skills/migrating-codex-history/SKILL.md](../skills/migrating-codex-history/SKILL.md)。
+
 ## 本地开发
 
 ### 后端
