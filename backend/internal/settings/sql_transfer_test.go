@@ -220,7 +220,9 @@ func TestSQLTransferExportSparsifiesAccountUsageSnapshots(t *testing.T) {
 	}
 	accountID := items[0].ID
 
-	now := time.Now().UTC()
+	// Use a fixed noon baseline in UTC to avoid day-boundary flakiness when
+	// bucket keys depend on date/hour windows.
+	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
 	insertSnapshot := func(ts time.Time, tokens int) {
 		_, execErr := sourceStore.DB().Exec(
 			`INSERT INTO account_usage_snapshots (account_id, last_total_tokens, checked_at) VALUES (?, ?, ?)`,
