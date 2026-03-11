@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/desktop/release_path_helpers.sh
 source "$ROOT_DIR/scripts/desktop/release_path_helpers.sh"
-VERSION="${RELEASE_VERSION:-${GITHUB_REF_NAME:-${CI_COMMIT_TAG:-local}}}"
+# shellcheck source=scripts/desktop/release_version_helpers.sh
+source "$ROOT_DIR/scripts/desktop/release_version_helpers.sh"
+VERSION="$(resolve_release_version)"
 PLATFORM="${RELEASE_PLATFORM:-auto}"
 TARGET_DIR="${TARGET_DIR:-$ROOT_DIR/desktop/src-tauri/target}"
 OUT_DIR="${RELEASE_ASSET_DIR:-$ROOT_DIR/release-assets}"
