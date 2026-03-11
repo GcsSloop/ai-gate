@@ -210,7 +210,21 @@ Artifacts are collected into `release-assets/`:
 
 - `aigate-<tag>-macOS.dmg`
 - `aigate-<tag>-macOS.zip`
+- `aigate-<tag>-darwin-universal.app.tar.gz`
+- `aigate-<tag>-darwin-universal.app.tar.gz.sig`
 - `aigate-<tag>-<platform>-SHA256SUMS.txt`
+
+GitHub release updater also requires a signing key:
+
+- `TAURI_SIGNING_PRIVATE_KEY`
+- optional `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+Tag releases upload the manual installers above plus:
+
+- `aigate-<tag>-windows.msi.sig`
+- `latest.json`
+
+`latest.json` is generated during the release workflow and consumed by the desktop updater from GitHub Releases.
 
 GitLab CI supports macOS packaging on tags and can optionally sign/notarize when the required Apple credentials are present.
 

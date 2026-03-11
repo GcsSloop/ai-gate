@@ -53,9 +53,11 @@ jobs:
 
       - name: Run release script tests
         run: |
+          bash scripts/test/desktop_updater_config_test.sh
           bash scripts/test/release_version_helpers_test.sh
           bash scripts/test/sync_release_metadata_test.sh
           bash scripts/test/collect_release_assets_test.sh
+          bash scripts/test/release_updater_manifest_test.sh
           bash scripts/test/package_local_release_test.sh
 
       - name: Run frontend tests

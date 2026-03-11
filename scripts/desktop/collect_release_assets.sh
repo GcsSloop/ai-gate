@@ -85,12 +85,16 @@ collect_macos_assets() {
   local src_dir
   local app_path
   local dmg_path
+  local updater_path
+  local updater_sig_path
   src_dir="$(macos_bundle_dir)" || {
     echo "No macOS bundle found under $TARGET_DIR" >&2
     exit 1
   }
   app_path="$(find "$src_dir/macos" -maxdepth 1 -name "*.app" -type d | head -n1 || true)"
   dmg_path="$(find "$src_dir/dmg" -maxdepth 1 -name "*.dmg" -type f | head -n1 || true)"
+  updater_path="$(find "$src_dir/macos" -maxdepth 1 -name "*.app.tar.gz" -type f | head -n1 || true)"
+  updater_sig_path="${updater_path}.sig"
 
   [[ -n "$app_path" ]] || {
     echo "No macOS app bundle found under $src_dir" >&2
@@ -102,15 +106,26 @@ collect_macos_assets() {
   if [[ -n "$dmg_path" ]]; then
     cp "$dmg_path" "$OUT_DIR/aigate-${VERSION}-macOS.dmg"
   fi
+
+  if [[ -n "$updater_path" ]]; then
+    cp "$updater_path" "$OUT_DIR/aigate-${VERSION}-darwin-universal.app.tar.gz"
+    [[ -f "$updater_sig_path" ]] || {
+      echo "No macOS updater signature found at $updater_sig_path" >&2
+      exit 1
+    }
+    cp "$updater_sig_path" "$OUT_DIR/aigate-${VERSION}-darwin-universal.app.tar.gz.sig"
+  fi
 }
 
 collect_windows_assets() {
   local src_dir="$TARGET_DIR/x86_64-pc-windows-msvc/release"
   local msi_path
+  local msi_sig_path
   local app_path="$src_dir/$APP_EXECUTABLE_NAME"
   local sidecar_path="$SIDECAR_BIN_DIR/routerd-x86_64-pc-windows-msvc.exe"
   local stage_dir
   msi_path="$(find "$src_dir/bundle/msi" -maxdepth 1 -name "*.msi" -type f | head -n1 || true)"
+  msi_sig_path="${msi_path}.sig"
 
   [[ -n "$msi_path" ]] || {
     echo "No Windows MSI found under $src_dir/bundle/msi" >&2
@@ -126,6 +141,9 @@ collect_windows_assets() {
   }
 
   cp "$msi_path" "$OUT_DIR/aigate-${VERSION}-windows.msi"
+  if [[ -f "$msi_sig_path" ]]; then
+    cp "$msi_sig_path" "$OUT_DIR/aigate-${VERSION}-windows.msi.sig"
+  fi
 
   stage_dir="$(mktemp -d)"
   mkdir -p "$stage_dir/aigate-${VERSION}-windows/bin"
