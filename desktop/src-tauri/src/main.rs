@@ -15,6 +15,9 @@ use tauri::menu::{Menu, MenuBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
 static SIDECAR_HEARTBEAT: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
 static DESKTOP_RUNTIME: Lazy<Mutex<DesktopRuntime>> =
@@ -39,6 +42,8 @@ const BACKEND_REQUEST_TIMEOUT_MS: u64 = 1500;
 const SIDECAR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const SIDECAR_MACOS_NAME: &str = "routerd-universal-apple-darwin";
 const SIDECAR_WINDOWS_NAME: &str = "routerd-x86_64-pc-windows-msvc.exe";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -349,6 +354,25 @@ fn current_backend_addr() -> String {
     current_settings_cache().backend_addr()
 }
 
+#[cfg(windows)]
+fn sidecar_creation_flags() -> u32 {
+    CREATE_NO_WINDOW
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+fn sidecar_creation_flags() -> u32 {
+    0
+}
+
+#[cfg(windows)]
+fn configure_sidecar_command(command: &mut Command) {
+    command.creation_flags(sidecar_creation_flags());
+}
+
+#[cfg(not(windows))]
+fn configure_sidecar_command(_command: &mut Command) {}
+
 fn spawn_sidecar() -> Result<(), String> {
     let runtime = DESKTOP_RUNTIME
         .lock()
@@ -366,6 +390,7 @@ fn spawn_sidecar() -> Result<(), String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    configure_sidecar_command(&mut command);
 
     let mut child = command.spawn().map_err(|e| {
         format!(
@@ -920,8 +945,9 @@ mod tests {
         build_launch_agent_plist, decode_chunked_body, format_timeout_error, format_tray_title,
         map_backend_io_error, parse_account_menu_id, parse_accounts_response,
         parse_proxy_status_response, should_refresh_tray_after_action, sidecar_candidate_paths,
-        sidecar_resource_name, window_close_action, AppSettingsPayload, DesktopSettingsCache,
-        HttpResponse, WindowCloseAction, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
+        sidecar_creation_flags, sidecar_resource_name, window_close_action, AppSettingsPayload,
+        DesktopSettingsCache, HttpResponse, WindowCloseAction, SIDECAR_MACOS_NAME,
+        SIDECAR_WINDOWS_NAME,
     };
     use std::path::{Path, PathBuf};
 
@@ -1029,6 +1055,18 @@ mod tests {
         assert!(candidates.contains(&PathBuf::from(
             "C:/Program Files/AI Gate/resources/bin/routerd-x86_64-pc-windows-msvc.exe"
         )));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn hidden_sidecar_flags_are_zero_on_non_windows() {
+        assert_eq!(sidecar_creation_flags(), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hidden_sidecar_flags_include_create_no_window() {
+        assert_eq!(sidecar_creation_flags(), 0x0800_0000);
     }
 
     #[test]
