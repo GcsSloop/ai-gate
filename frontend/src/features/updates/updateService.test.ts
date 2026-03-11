@@ -16,14 +16,18 @@ function buildAdapter(result: DesktopUpdateCheckResult | null): DesktopUpdateAda
 }
 
 describe("updateService", () => {
-  it("returns unsupported result outside desktop shell", async () => {
+  it("returns unsupported result with null update when manifest lookup fails", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("network unavailable"));
     const service = createDesktopUpdateService({
-      isSupported: () => false,
-      check: vi.fn(),
-      relaunch: vi.fn(),
-    });
+        isSupported: () => false,
+        check: vi.fn(),
+        relaunch: vi.fn(),
+      },
+      fetchMock as typeof fetch,
+    );
 
     await expect(service.check()).resolves.toEqual({ supported: false, update: null });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("falls back to latest manifest lookup when desktop updater is unsupported", async () => {
