@@ -42,6 +42,8 @@ const BACKEND_REQUEST_TIMEOUT_MS: u64 = 1500;
 const SIDECAR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const SIDECAR_MACOS_NAME: &str = "routerd-universal-apple-darwin";
 const SIDECAR_WINDOWS_NAME: &str = "routerd-x86_64-pc-windows-msvc.exe";
+const TRAY_ICON_COLOR_BYTES: &[u8] = include_bytes!("../icons/tray-icon-color.png");
+const TRAY_ICON_TEMPLATE_BYTES: &[u8] = include_bytes!("../icons/tray-icon-template.png");
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -485,6 +487,28 @@ fn escape_xml(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+fn current_tray_platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "other"
+    }
+}
+
+fn tray_icon_bytes_for_platform(target_os: &str) -> &'static [u8] {
+    if target_os == "macos" {
+        TRAY_ICON_TEMPLATE_BYTES
+    } else {
+        TRAY_ICON_COLOR_BYTES
+    }
+}
+
+fn tray_icon_is_template_for_platform(target_os: &str) -> bool {
+    target_os == "macos"
+}
+
 fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let tray_state = build_tray_state().unwrap_or_default();
     let tray_menu = build_tray_menu(app, &tray_state)?;
@@ -492,6 +516,7 @@ fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         tray_state.proxy.enabled,
         tray_state.active_account_name.as_deref(),
     );
+    let tray_platform = current_tray_platform();
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&tray_menu)
         .title(tray_title)
@@ -502,10 +527,13 @@ fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             handle_tray_menu_action(app, &id);
         });
 
-    if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/tray-icon.png")) {
+    if let Ok(icon) = Image::from_bytes(tray_icon_bytes_for_platform(tray_platform)) {
         builder = builder.icon(icon);
     } else if let Some(icon) = app.default_window_icon().cloned() {
         builder = builder.icon(icon);
+    }
+    if tray_icon_is_template_for_platform(tray_platform) {
+        builder = builder.icon_as_template(true);
     }
 
     builder
@@ -945,9 +973,10 @@ mod tests {
         build_launch_agent_plist, decode_chunked_body, format_timeout_error, format_tray_title,
         map_backend_io_error, parse_account_menu_id, parse_accounts_response,
         parse_proxy_status_response, should_refresh_tray_after_action, sidecar_candidate_paths,
-        sidecar_creation_flags, sidecar_resource_name, window_close_action, AppSettingsPayload,
-        DesktopSettingsCache, HttpResponse, WindowCloseAction, SIDECAR_MACOS_NAME,
-        SIDECAR_WINDOWS_NAME,
+        sidecar_creation_flags, sidecar_resource_name, tray_icon_bytes_for_platform,
+        tray_icon_is_template_for_platform, window_close_action, AppSettingsPayload,
+        DesktopSettingsCache, HttpResponse, WindowCloseAction, TRAY_ICON_COLOR_BYTES,
+        TRAY_ICON_TEMPLATE_BYTES, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
     };
     use std::path::{Path, PathBuf};
 
@@ -1004,6 +1033,29 @@ mod tests {
     fn tray_title_formats_no_account() {
         assert_eq!(format_tray_title(false, None), "· 无账户");
         assert_eq!(format_tray_title(true, None), "§ 无账户");
+    }
+
+    #[test]
+    fn tray_icon_platform_selection_matches_expected_assets() {
+        assert_eq!(
+            tray_icon_bytes_for_platform("macos"),
+            TRAY_ICON_TEMPLATE_BYTES
+        );
+        assert_eq!(
+            tray_icon_bytes_for_platform("windows"),
+            TRAY_ICON_COLOR_BYTES
+        );
+        assert_eq!(
+            tray_icon_bytes_for_platform("linux"),
+            TRAY_ICON_COLOR_BYTES
+        );
+    }
+
+    #[test]
+    fn tray_icon_template_mode_only_applies_to_macos() {
+        assert!(tray_icon_is_template_for_platform("macos"));
+        assert!(!tray_icon_is_template_for_platform("windows"));
+        assert!(!tray_icon_is_template_for_platform("linux"));
     }
 
     #[test]
