@@ -10,6 +10,7 @@ import {
   DesktopOutlined,
   EyeInvisibleOutlined,
   InfoCircleOutlined,
+  FileTextOutlined,
   PoweroffOutlined,
   SaveOutlined,
   SwapOutlined,
@@ -34,7 +35,13 @@ import {
   saveAppSettings,
   saveFailoverQueue,
 } from "../../lib/api";
-import { applyDesktopAppSettings, getAppMetadata, type AppMetadata } from "../../lib/desktop-shell";
+import {
+  applyDesktopAppSettings,
+  getAppMetadata,
+  getRecentDesktopLogs,
+  type AppMetadata,
+  type DesktopRecentLog,
+} from "../../lib/desktop-shell";
 import type { AppLanguage, Translator } from "../../lib/i18n";
 import { setAPIBase } from "../../lib/paths";
 import appLogo from "../../assets/aigate_1024_1024.png";
@@ -183,6 +190,7 @@ export function SettingsPage({
     description: "AI Gate 是一个本地桌面代理与账号编排工具，用于统一管理路由、故障转移与数据备份。",
     author: "GcsSloop",
   });
+  const [recentDesktopLogs, setRecentDesktopLogs] = useState<DesktopRecentLog[]>([]);
   const [savingSettings, setSavingSettings] = useState(false);
   const [autoSavingPreference, setAutoSavingPreference] = useState(false);
   const [savingQueue, setSavingQueue] = useState(false);
@@ -205,10 +213,12 @@ export function SettingsPage({
           listDatabaseBackups(),
           getAppMetadata(),
         ]);
+        const logs = await getRecentDesktopLogs(50);
         setAccounts(accountList);
         setFailoverQueue(normalizeQueue(accountList, queue));
         setDbBackups(backups);
         setMetadata(about);
+        setRecentDesktopLogs(logs);
       } catch (error) {
         void messageApi.error(error instanceof Error ? error.message : t("加载设置数据失败"));
       }
@@ -226,6 +236,13 @@ export function SettingsPage({
       ...current,
       ...patch,
     }));
+  }
+
+  function formatDesktopLogTime(value: number): string {
+    if (!Number.isFinite(value) || value <= 0) {
+      return "--";
+    }
+    return new Date(value).toLocaleString(language, { hour12: false });
   }
 
   function moveQueueItem(index: number, direction: -1 | 1) {
@@ -669,6 +686,30 @@ export function SettingsPage({
                           <Button onClick={() => void handleRestoreBackup(item)} loading={backupBusy === item.backup_id}>
                             {t("恢复此备份")}
                           </Button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </Card>
+
+                <Card className="settings-card" variant="borderless">
+                  <SectionHeader icon={<FileTextOutlined />} title={t("最近日志")} description={t("查看桌面端 sidecar 与自动恢复事件。")} />
+                  <div className="settings-log-panel" data-testid="settings-recent-logs">
+                    {recentDesktopLogs.length === 0 ? (
+                      <div className="settings-empty">{t("暂无桌面日志")}</div>
+                    ) : (
+                      recentDesktopLogs.map((entry, index) => (
+                        <div className="settings-log-row" key={`${entry.timestamp_ms}-${index}`}>
+                          <div className="settings-log-row-main">
+                            <div className="settings-log-message">{entry.message}</div>
+                            <div className="settings-log-meta">
+                              <Tag>{entry.category}</Tag>
+                              <Tag color={entry.level === "error" ? "error" : entry.level === "warn" ? "warning" : "default"}>
+                                {entry.level}
+                              </Tag>
+                              <span>{formatDesktopLogTime(entry.timestamp_ms)}</span>
+                            </div>
+                          </div>
                         </div>
                       ))
                     )}

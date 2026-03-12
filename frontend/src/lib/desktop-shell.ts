@@ -20,6 +20,13 @@ export type AppMetadata = {
   author: string;
 };
 
+export type DesktopRecentLog = {
+  timestamp_ms: number;
+  level: string;
+  category: string;
+  message: string;
+};
+
 function isDesktopShell() {
   if (typeof window === "undefined") {
     return false;
@@ -59,6 +66,13 @@ export async function getAppMetadata(): Promise<AppMetadata> {
     };
   }
   return invoke<AppMetadata>("get_app_metadata");
+}
+
+export async function getRecentDesktopLogs(limit = 50): Promise<DesktopRecentLog[]> {
+  if (!isDesktopShell()) {
+    return [];
+  }
+  return invoke<DesktopRecentLog[]>("get_recent_desktop_logs", { limit });
 }
 
 export async function refreshDesktopTrayState(): Promise<void> {

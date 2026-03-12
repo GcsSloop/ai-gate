@@ -1,12 +1,13 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { SettingsPage } from "./SettingsPage";
-import { applyDesktopAppSettings, getAppMetadata } from "../../lib/desktop-shell";
+import { applyDesktopAppSettings, getAppMetadata, getRecentDesktopLogs } from "../../lib/desktop-shell";
 import { setAPIBase } from "../../lib/paths";
 
 vi.mock("../../lib/desktop-shell", () => ({
   applyDesktopAppSettings: vi.fn(),
   getAppMetadata: vi.fn(),
+  getRecentDesktopLogs: vi.fn(),
 }));
 
 const baseSettings = {
@@ -74,6 +75,7 @@ describe("SettingsPage", () => {
       description: "桌面代理与路由控制台",
       author: "GcsSloop",
     });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
     vi.mocked(applyDesktopAppSettings).mockResolvedValue({
       backend_addr: "127.0.0.1:6789",
       backend_api_base: "http://127.0.0.1:6789/ai-router/api",
@@ -147,6 +149,7 @@ describe("SettingsPage", () => {
       description: "桌面代理与路由控制台",
       author: "GcsSloop",
     });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
     vi.mocked(applyDesktopAppSettings).mockResolvedValue({
       backend_addr: "127.0.0.1:6789",
       backend_api_base: "http://127.0.0.1:6789/ai-router/api",
@@ -213,6 +216,7 @@ describe("SettingsPage", () => {
       description: "桌面代理与路由控制台",
       author: "GcsSloop",
     });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
     vi.mocked(applyDesktopAppSettings).mockResolvedValue(null);
 
     render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={onSettingsChanged} />);
@@ -262,6 +266,7 @@ describe("SettingsPage", () => {
       description: "桌面代理与路由控制台",
       author: "GcsSloop",
     });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
     vi.mocked(applyDesktopAppSettings).mockResolvedValue(null);
 
     render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={onSettingsChanged} />);
@@ -279,5 +284,41 @@ describe("SettingsPage", () => {
     });
 
     expect(onSettingsChanged).toHaveBeenCalledWith({ ...baseSettings, theme_mode: "dark" });
+  });
+
+  it("renders recent desktop logs inside a bounded scroll panel", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/failover-queue") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/database/backups") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(getAppMetadata).mockResolvedValue({
+      name: "AI Gate",
+      version: "0.1.0",
+      description: "桌面代理与路由控制台",
+      author: "GcsSloop",
+    });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([
+      { timestamp_ms: 1, level: "info", category: "sidecar", message: "spawn success" },
+      { timestamp_ms: 2, level: "warn", category: "recovery", message: "restart triggered" },
+    ]);
+    vi.mocked(applyDesktopAppSettings).mockResolvedValue(null);
+
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "高级" }));
+    expect(await screen.findByText("最近日志")).toBeInTheDocument();
+    expect(screen.getByText("spawn success")).toBeInTheDocument();
+    expect(screen.getByText("restart triggered")).toBeInTheDocument();
+    expect(screen.getByTestId("settings-recent-logs")).toBeInTheDocument();
   });
 });

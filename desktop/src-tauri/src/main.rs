@@ -3,6 +3,7 @@
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -22,6 +23,8 @@ static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None)
 static SIDECAR_HEARTBEAT: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
 static DESKTOP_RUNTIME: Lazy<Mutex<DesktopRuntime>> =
     Lazy::new(|| Mutex::new(DesktopRuntime::default()));
+static DESKTOP_RECENT_LOGS: Lazy<Mutex<VecDeque<DesktopLogEntry>>> =
+    Lazy::new(|| Mutex::new(VecDeque::new()));
 
 const DEFAULT_PROXY_HOST: &str = "127.0.0.1";
 const DEFAULT_PROXY_PORT: u16 = 6789;
@@ -40,6 +43,9 @@ const ABOUT_DESCRIPTION: &str =
 const ABOUT_AUTHOR: &str = "GcsSloop";
 const BACKEND_REQUEST_TIMEOUT_MS: u64 = 1500;
 const SIDECAR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+const DESKTOP_RECENT_LOG_CAPACITY: usize = 200;
+const DESKTOP_RECENT_LOG_DEFAULT_LIMIT: usize = 50;
+const DESKTOP_RECENT_LOG_MAX_LIMIT: usize = 50;
 const SIDECAR_MACOS_NAME: &str = "routerd-universal-apple-darwin";
 const SIDECAR_WINDOWS_NAME: &str = "routerd-x86_64-pc-windows-msvc.exe";
 const TRAY_ICON_COLOR_BYTES: &[u8] = include_bytes!("../icons/tray-icon-color.png");
@@ -166,6 +172,14 @@ struct HttpResponse {
     body: String,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct DesktopLogEntry {
+    timestamp_ms: u64,
+    level: String,
+    category: String,
+    message: String,
+}
+
 #[derive(Clone, Default)]
 struct DesktopRuntime {
     sidecar_path: PathBuf,
@@ -189,7 +203,8 @@ fn main() {
             refresh_tray_state,
             get_desktop_shell_context,
             apply_app_settings,
-            get_app_metadata
+            get_app_metadata,
+            get_recent_desktop_logs
         ])
         .setup(|app| {
             let cache = initialize_runtime(app.handle())?;
@@ -229,6 +244,9 @@ fn main() {
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
+                recover_backend_after_reopen();
+                refresh_tray_state_from_backend(&app_handle);
+                emit_backend_state_changed(&app_handle);
                 show_main_window(app_handle);
             }
             tauri::RunEvent::Exit => {
@@ -288,6 +306,15 @@ fn get_app_metadata<R: Runtime>(app: AppHandle<R>) -> AppMetadataPayload {
         description: ABOUT_DESCRIPTION.to_string(),
         author: ABOUT_AUTHOR.to_string(),
     }
+}
+
+#[tauri::command]
+fn get_recent_desktop_logs(limit: Option<usize>) -> Vec<DesktopLogEntry> {
+    let count = clamp_recent_log_limit(limit);
+    DESKTOP_RECENT_LOGS
+        .lock()
+        .map(|entries| entries.iter().rev().take(count).cloned().collect())
+        .unwrap_or_default()
 }
 
 fn initialize_runtime(app: &tauri::AppHandle) -> Result<DesktopSettingsCache, String> {
@@ -356,6 +383,43 @@ fn current_backend_addr() -> String {
     current_settings_cache().backend_addr()
 }
 
+fn clamp_recent_log_limit(limit: Option<usize>) -> usize {
+    match limit.unwrap_or(DESKTOP_RECENT_LOG_DEFAULT_LIMIT) {
+        0 => 1,
+        value if value > DESKTOP_RECENT_LOG_MAX_LIMIT => DESKTOP_RECENT_LOG_MAX_LIMIT,
+        value => value,
+    }
+}
+
+fn append_recent_desktop_log(
+    entries: &mut VecDeque<DesktopLogEntry>,
+    entry: DesktopLogEntry,
+    capacity: usize,
+) {
+    entries.push_back(entry);
+    while entries.len() > capacity {
+        entries.pop_front();
+    }
+}
+
+fn log_desktop_event(level: &str, category: &str, message: impl Into<String>) {
+    let message = message.into();
+    eprintln!("desktop-{category} [{level}] {message}");
+    let timestamp_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    let entry = DesktopLogEntry {
+        timestamp_ms,
+        level: level.to_string(),
+        category: category.to_string(),
+        message,
+    };
+    if let Ok(mut entries) = DESKTOP_RECENT_LOGS.lock() {
+        append_recent_desktop_log(&mut entries, entry, DESKTOP_RECENT_LOG_CAPACITY);
+    }
+}
+
 #[cfg(windows)]
 fn sidecar_creation_flags() -> u32 {
     CREATE_NO_WINDOW
@@ -381,6 +445,16 @@ fn spawn_sidecar() -> Result<(), String> {
         .map_err(|_| "desktop runtime lock poisoned".to_string())?
         .clone();
 
+    log_desktop_event(
+        "info",
+        "sidecar",
+        format!(
+            "spawn requested path={} addr={}",
+            runtime.sidecar_path.display(),
+            runtime.settings_cache.backend_addr()
+        ),
+    );
+
     let mut command = Command::new(&runtime.sidecar_path);
     command
         .env(
@@ -395,10 +469,12 @@ fn spawn_sidecar() -> Result<(), String> {
     configure_sidecar_command(&mut command);
 
     let mut child = command.spawn().map_err(|e| {
-        format!(
+        let message = format!(
             "spawn sidecar {} failed: {e}",
             runtime.sidecar_path.display()
-        )
+        );
+        log_desktop_event("error", "sidecar", &message);
+        message
     })?;
     let stdin = child
         .stdin
@@ -407,6 +483,7 @@ fn spawn_sidecar() -> Result<(), String> {
     if let Err(err) = start_sidecar_heartbeat(stdin) {
         let _ = child.kill();
         let _ = child.wait();
+        log_desktop_event("error", "sidecar", format!("start heartbeat failed: {err}"));
         return Err(err);
     }
 
@@ -414,12 +491,19 @@ fn spawn_sidecar() -> Result<(), String> {
         .lock()
         .map_err(|_| "sidecar child lock poisoned".to_string())?;
     *guard = Some(child);
+    log_desktop_event("info", "sidecar", "spawn success");
     Ok(())
 }
 
 fn restart_sidecar() -> Result<(), String> {
+    log_desktop_event("warn", "recovery", "restart requested");
     shutdown_sidecar();
-    spawn_sidecar()
+    let result = spawn_sidecar();
+    match &result {
+        Ok(_) => log_desktop_event("info", "recovery", "restart success"),
+        Err(err) => log_desktop_event("error", "recovery", format!("restart failed: {err}")),
+    }
+    result
 }
 
 fn sync_launch_agent(enabled: bool) -> Result<(), String> {
@@ -588,6 +672,12 @@ fn refresh_tray_state_from_backend<R: Runtime>(app: &AppHandle<R>) {
     apply_tray_state(app, &tray_state);
 }
 
+#[cfg(target_os = "macos")]
+fn recover_backend_after_reopen() {
+    log_desktop_event("info", "recovery", "macos reopen probe");
+    let _ = request_backend("GET", "/ai-router/api/settings/proxy/status", "");
+}
+
 fn apply_tray_state<R: Runtime>(app: &AppHandle<R>, tray_state: &TrayStateSnapshot) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
@@ -729,13 +819,72 @@ fn emit_backend_state_changed<R: Runtime>(app: &AppHandle<R>) {
     let _ = app.emit_to("main", BACKEND_STATE_CHANGED_EVENT, ());
 }
 
+fn should_attempt_sidecar_recovery(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("timed out while waiting for the sidecar")
+        || normalized.contains("connection refused")
+        || normalized.contains("broken pipe")
+        || normalized.contains("not connected")
+}
+
+fn should_retry_sidecar_request(restart_worthy: bool, attempted_recovery: bool) -> bool {
+    restart_worthy && !attempted_recovery
+}
+
+fn sidecar_request_with_recovery<FRequest, FRestart>(
+    mut request: FRequest,
+    mut restart: FRestart,
+) -> Result<HttpResponse, String>
+where
+    FRequest: FnMut() -> Result<HttpResponse, String>,
+    FRestart: FnMut() -> Result<(), String>,
+{
+    let mut attempted_recovery = false;
+
+    loop {
+        match request() {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                let restart_worthy = should_attempt_sidecar_recovery(&error);
+                if !should_retry_sidecar_request(
+                    restart_worthy,
+                    attempted_recovery,
+                ) {
+                    if restart_worthy {
+                        log_desktop_event(
+                            "error",
+                            "recovery",
+                            format!("request failed after retry: {error}"),
+                        );
+                    }
+                    return Err(error);
+                }
+                log_desktop_event(
+                    "warn",
+                    "recovery",
+                    format!("request failed, attempting sidecar restart: {error}"),
+                );
+                restart()?;
+                attempted_recovery = true;
+                log_desktop_event("info", "recovery", "retrying backend request after restart");
+            }
+        }
+    }
+}
+
 fn request_backend(method: &str, path: &str, body: &str) -> Result<HttpResponse, String> {
-    request_backend_with_timeout(
-        &current_backend_addr(),
-        method,
-        path,
-        body,
-        Duration::from_millis(BACKEND_REQUEST_TIMEOUT_MS),
+    let backend_addr = current_backend_addr();
+    sidecar_request_with_recovery(
+        || {
+            request_backend_with_timeout(
+                &backend_addr,
+                method,
+                path,
+                body,
+                Duration::from_millis(BACKEND_REQUEST_TIMEOUT_MS),
+            )
+        },
+        restart_sidecar,
     )
 }
 
@@ -934,6 +1083,7 @@ fn shutdown_sidecar() {
     };
 
     if let Some(child) = guard.as_mut() {
+        log_desktop_event("info", "sidecar", "shutdown requested");
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -970,14 +1120,18 @@ fn start_sidecar_heartbeat(mut stdin: ChildStdin) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_launch_agent_plist, decode_chunked_body, format_timeout_error, format_tray_title,
-        map_backend_io_error, parse_account_menu_id, parse_accounts_response,
-        parse_proxy_status_response, should_refresh_tray_after_action, sidecar_candidate_paths,
-        sidecar_creation_flags, sidecar_resource_name, tray_icon_bytes_for_platform,
-        tray_icon_is_template_for_platform, window_close_action, AppSettingsPayload,
-        DesktopSettingsCache, HttpResponse, WindowCloseAction, TRAY_ICON_COLOR_BYTES,
-        TRAY_ICON_TEMPLATE_BYTES, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
+        append_recent_desktop_log, build_launch_agent_plist, clamp_recent_log_limit,
+        decode_chunked_body, format_timeout_error, format_tray_title, map_backend_io_error,
+        parse_account_menu_id, parse_accounts_response, parse_proxy_status_response,
+        should_attempt_sidecar_recovery, should_refresh_tray_after_action,
+        should_retry_sidecar_request, sidecar_candidate_paths, sidecar_creation_flags,
+        sidecar_request_with_recovery, sidecar_resource_name, DesktopLogEntry,
+        tray_icon_bytes_for_platform, tray_icon_is_template_for_platform, window_close_action,
+        AppSettingsPayload, DesktopSettingsCache, HttpResponse, WindowCloseAction,
+        TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, SIDECAR_MACOS_NAME,
+        SIDECAR_WINDOWS_NAME,
     };
+    use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -1206,6 +1360,120 @@ mod tests {
             map_backend_io_error("read", error),
             "read backend timed out while waiting for the sidecar"
         );
+    }
+
+    #[test]
+    fn sidecar_recovery_detects_timeout_errors() {
+        assert!(should_attempt_sidecar_recovery(
+            "read backend timed out while waiting for the sidecar"
+        ));
+    }
+
+    #[test]
+    fn sidecar_recovery_detects_connection_refused_errors() {
+        assert!(should_attempt_sidecar_recovery(
+            "connect backend failed: Connection refused (os error 61)"
+        ));
+    }
+
+    #[test]
+    fn sidecar_recovery_ignores_unrelated_errors() {
+        assert!(!should_attempt_sidecar_recovery(
+            "resolve backend address failed: invalid socket address"
+        ));
+    }
+
+    #[test]
+    fn sidecar_recovery_retries_only_once() {
+        assert!(should_retry_sidecar_request(true, false));
+        assert!(!should_retry_sidecar_request(true, true));
+        assert!(!should_retry_sidecar_request(false, false));
+    }
+
+    #[test]
+    fn sidecar_request_restarts_then_retries_once() {
+        let mut request_calls = 0;
+        let mut restart_calls = 0;
+
+        let result = sidecar_request_with_recovery(
+            || {
+                request_calls += 1;
+                if request_calls == 1 {
+                    Err("connect backend failed: Connection refused (os error 61)".to_string())
+                } else {
+                    Ok(HttpResponse {
+                        status: 200,
+                        body: "{}".to_string(),
+                    })
+                }
+            },
+            || {
+                restart_calls += 1;
+                Ok(())
+            },
+        )
+        .expect("request should recover");
+
+        assert_eq!(result.status, 200);
+        assert_eq!(request_calls, 2);
+        assert_eq!(restart_calls, 1);
+    }
+
+    #[test]
+    fn sidecar_request_returns_original_error_after_single_retry() {
+        let mut request_calls = 0;
+        let mut restart_calls = 0;
+
+        let result = sidecar_request_with_recovery(
+            || {
+                request_calls += 1;
+                Err("read backend timed out while waiting for the sidecar".to_string())
+            },
+            || {
+                restart_calls += 1;
+                Ok(())
+            },
+        );
+
+        let err = match result {
+            Ok(_) => panic!("request should fail after one retry"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err, "read backend timed out while waiting for the sidecar");
+        assert_eq!(request_calls, 2);
+        assert_eq!(restart_calls, 1);
+    }
+
+    #[test]
+    fn recent_desktop_logs_drop_oldest_entries_when_capacity_is_exceeded() {
+        let mut entries = VecDeque::new();
+        for index in 0..4 {
+            append_recent_desktop_log(
+                &mut entries,
+                DesktopLogEntry {
+                    timestamp_ms: index,
+                    level: "info".to_string(),
+                    category: "sidecar".to_string(),
+                    message: format!("entry-{index}"),
+                },
+                3,
+            );
+        }
+
+        let messages = entries
+            .iter()
+            .map(|entry| entry.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(messages, vec!["entry-1", "entry-2", "entry-3"]);
+    }
+
+    #[test]
+    fn recent_desktop_log_limit_is_clamped_to_safe_range() {
+        assert_eq!(clamp_recent_log_limit(None), 50);
+        assert_eq!(clamp_recent_log_limit(Some(0)), 1);
+        assert_eq!(clamp_recent_log_limit(Some(12)), 12);
+        assert_eq!(clamp_recent_log_limit(Some(999)), 50);
     }
 
     #[test]
