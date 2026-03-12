@@ -1,6 +1,6 @@
 ---
 name: release-rebase-pr-tag-loop
-description: Use when the user wants a full GitHub release loop for this repository, including rebasing a work branch onto remote main, pushing, monitoring CI, creating and merging a PR, tagging main, pushing the tag, and monitoring release workflows with automatic retry after CI fixes.
+description: Use when the user wants a full GitHub release loop for this repository, including requests like help me publish a new version or publish a new version, or when they want rebasing a work branch onto remote main, pushing, monitoring CI, creating and merging a PR, tagging main, pushing the tag, and monitoring release workflows with automatic retry after CI fixes.
 ---
 
 # Release Rebase PR Tag Loop
@@ -17,6 +17,7 @@ If CI fails in either phase, fix the smallest concrete issue, then restart from 
 ## When To Use
 
 - The user asks to finish a branch and carry it through PR, merge, tag, and release validation.
+- The user asks to publish a new version, release a new version, or explicitly says "帮我发布新版本" / "发布新版本".
 - The user wants CI monitored and requires automatic recovery when a workflow fails.
 - The user explicitly wants `rebase`-based integration instead of merge commits.
 
