@@ -8,11 +8,12 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuBuilder};
+use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -21,6 +22,9 @@ use std::os::windows::process::CommandExt;
 
 static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
 static SIDECAR_HEARTBEAT: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
+static RESUME_RECOVERY_WATCHER: Lazy<Mutex<Option<JoinHandle<()>>>> =
+    Lazy::new(|| Mutex::new(None));
+static RESUME_RECOVERY_WATCHER_STOP: AtomicBool = AtomicBool::new(false);
 static DESKTOP_RUNTIME: Lazy<Mutex<DesktopRuntime>> =
     Lazy::new(|| Mutex::new(DesktopRuntime::default()));
 static DESKTOP_RECENT_LOGS: Lazy<Mutex<VecDeque<DesktopLogEntry>>> =
@@ -42,7 +46,11 @@ const ABOUT_DESCRIPTION: &str =
     "AI Gate 是一个本地桌面代理与账号编排工具，用于统一管理路由、故障转移与数据备份。";
 const ABOUT_AUTHOR: &str = "GcsSloop";
 const BACKEND_REQUEST_TIMEOUT_MS: u64 = 1500;
+const SIDECAR_READY_WAIT_TIMEOUT_MS: u64 = 5000;
+const SIDECAR_READY_POLL_INTERVAL_MS: u64 = 100;
 const SIDECAR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+const RESUME_RECOVERY_WATCH_INTERVAL: Duration = Duration::from_secs(5);
+const RESUME_RECOVERY_GAP_THRESHOLD: Duration = Duration::from_secs(15);
 const DESKTOP_RECENT_LOG_CAPACITY: usize = 200;
 const DESKTOP_RECENT_LOG_DEFAULT_LIMIT: usize = 50;
 const DESKTOP_RECENT_LOG_MAX_LIMIT: usize = 50;
@@ -212,6 +220,11 @@ fn main() {
                 eprintln!("sync launch agent failed: {err}");
             }
             spawn_sidecar()?;
+            wait_for_backend_ready(
+                &cache.backend_addr(),
+                Duration::from_millis(SIDECAR_READY_WAIT_TIMEOUT_MS),
+            )?;
+            start_resume_recovery_watcher(app.handle().clone())?;
             setup_tray(app.handle())?;
             if cache.silent_start {
                 if let Some(window) = app.get_webview_window("main") {
@@ -235,6 +248,7 @@ fn main() {
                             }
                             WindowCloseAction::ExitApp => {
                                 api.prevent_close();
+                                stop_resume_recovery_watcher();
                                 shutdown_sidecar();
                                 app_handle.exit(0);
                             }
@@ -244,12 +258,11 @@ fn main() {
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
-                recover_backend_after_reopen();
-                refresh_tray_state_from_backend(&app_handle);
-                emit_backend_state_changed(&app_handle);
+                recover_backend_after_reopen(&app_handle);
                 show_main_window(app_handle);
             }
             tauri::RunEvent::Exit => {
+                stop_resume_recovery_watcher();
                 shutdown_sidecar();
             }
             _ => {}
@@ -266,6 +279,7 @@ fn window_close_action(close_to_tray: bool) -> WindowCloseAction {
 
 #[tauri::command]
 fn force_exit_app<R: Runtime>(app: AppHandle<R>) {
+    stop_resume_recovery_watcher();
     shutdown_sidecar();
     app.exit(0);
 }
@@ -290,7 +304,7 @@ fn apply_app_settings<R: Runtime>(
     let restart_required = persist_runtime_settings(cache.clone())?;
     sync_launch_agent(cache.launch_at_login)?;
     if restart_required {
-        restart_sidecar()?;
+        restart_sidecar_and_wait_ready()?;
     }
     refresh_tray_state_from_backend(&app);
     emit_backend_state_changed(&app);
@@ -497,13 +511,21 @@ fn spawn_sidecar() -> Result<(), String> {
 
 fn restart_sidecar() -> Result<(), String> {
     log_desktop_event("warn", "recovery", "restart requested");
-    shutdown_sidecar();
+    shutdown_sidecar_with_reason("restart");
     let result = spawn_sidecar();
     match &result {
         Ok(_) => log_desktop_event("info", "recovery", "restart success"),
         Err(err) => log_desktop_event("error", "recovery", format!("restart failed: {err}")),
     }
     result
+}
+
+fn restart_sidecar_and_wait_ready() -> Result<(), String> {
+    restart_sidecar()?;
+    wait_for_backend_ready(
+        &current_backend_addr(),
+        Duration::from_millis(SIDECAR_READY_WAIT_TIMEOUT_MS),
+    )
 }
 
 fn sync_launch_agent(enabled: bool) -> Result<(), String> {
@@ -635,13 +657,23 @@ fn build_tray_menu<R: Runtime>(
     } else {
         "代理状态：未开启"
     };
+    let (enable_proxy_enabled, disable_proxy_enabled) =
+        proxy_menu_enabled_states(tray_state.proxy.enabled);
+    let enable_proxy_item = MenuItemBuilder::with_id(MENU_PROXY_ENABLE, "开启代理")
+        .enabled(enable_proxy_enabled)
+        .build(app)
+        .map_err(|e| format!("build tray proxy enable item failed: {e}"))?;
+    let disable_proxy_item = MenuItemBuilder::with_id(MENU_PROXY_DISABLE, "关闭代理")
+        .enabled(disable_proxy_enabled)
+        .build(app)
+        .map_err(|e| format!("build tray proxy disable item failed: {e}"))?;
 
     let mut builder = MenuBuilder::new(app)
         .text(MENU_OPEN_MAIN, "打开主界面")
         .separator()
         .text(MENU_PROXY_STATUS, proxy_status_text)
-        .text(MENU_PROXY_ENABLE, "开启代理")
-        .text(MENU_PROXY_DISABLE, "关闭代理")
+        .item(&enable_proxy_item)
+        .item(&disable_proxy_item)
         .separator();
 
     if tray_state.accounts.is_empty() {
@@ -673,9 +705,38 @@ fn refresh_tray_state_from_backend<R: Runtime>(app: &AppHandle<R>) {
 }
 
 #[cfg(target_os = "macos")]
-fn recover_backend_after_reopen() {
-    log_desktop_event("info", "recovery", "macos reopen probe");
-    let _ = request_backend("GET", "/ai-router/api/settings/proxy/status", "");
+fn recover_backend_after_reopen<R: Runtime>(app: &AppHandle<R>) {
+    recover_backend_after_resume(app, "reopen", None);
+}
+
+#[cfg(target_os = "macos")]
+fn recover_backend_after_resume<R: Runtime>(
+    app: &AppHandle<R>,
+    trigger: &str,
+    gap: Option<Duration>,
+) {
+    let gap_suffix = gap
+        .map(|value| format!(" gap_ms={}", value.as_millis()))
+        .unwrap_or_default();
+    log_desktop_event(
+        "warn",
+        "recovery",
+        format!("backend probe trigger={trigger}{gap_suffix}"),
+    );
+    match request_backend("GET", "/ai-router/api/settings/proxy/status", "") {
+        Ok(_) => log_desktop_event(
+            "info",
+            "recovery",
+            format!("backend probe recovered trigger={trigger}{gap_suffix}"),
+        ),
+        Err(err) => log_desktop_event(
+            "error",
+            "recovery",
+            format!("backend probe failed trigger={trigger}{gap_suffix}: {err}"),
+        ),
+    }
+    refresh_tray_state_from_backend(app);
+    emit_backend_state_changed(app);
 }
 
 fn apply_tray_state<R: Runtime>(app: &AppHandle<R>, tray_state: &TrayStateSnapshot) {
@@ -708,6 +769,7 @@ fn handle_tray_menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
             );
         }
         MENU_QUIT => {
+            stop_resume_recovery_watcher();
             shutdown_sidecar();
             app.exit(0);
         }
@@ -733,6 +795,14 @@ fn should_refresh_tray_after_action(id: &str) -> bool {
     id != MENU_OPEN_MAIN && id != MENU_QUIT
 }
 
+fn proxy_menu_enabled_states(proxy_enabled: bool) -> (bool, bool) {
+    if proxy_enabled {
+        (false, true)
+    } else {
+        (true, false)
+    }
+}
+
 fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -745,8 +815,8 @@ fn parse_proxy_status_response(resp: &HttpResponse) -> Result<ProxyStatusSnapsho
     if resp.status != 200 {
         return Err(format!("unexpected proxy status code {}", resp.status));
     }
-    let value =
-        serde_json::from_str::<Value>(&resp.body).map_err(|e| format!("parse proxy status: {e}"))?;
+    let value = serde_json::from_str::<Value>(&resp.body)
+        .map_err(|e| format!("parse proxy status: {e}"))?;
     let enabled = value
         .get("enabled")
         .and_then(|v| v.as_bool())
@@ -839,6 +909,19 @@ where
     FRequest: FnMut() -> Result<HttpResponse, String>,
     FRestart: FnMut() -> Result<(), String>,
 {
+    sidecar_request_with_recovery_hooks(&mut request, &mut restart, || Ok(()))
+}
+
+fn sidecar_request_with_recovery_hooks<FRequest, FRestart, FWait>(
+    mut request: FRequest,
+    mut restart: FRestart,
+    mut wait_until_ready: FWait,
+) -> Result<HttpResponse, String>
+where
+    FRequest: FnMut() -> Result<HttpResponse, String>,
+    FRestart: FnMut() -> Result<(), String>,
+    FWait: FnMut() -> Result<(), String>,
+{
     let mut attempted_recovery = false;
 
     loop {
@@ -846,10 +929,7 @@ where
             Ok(response) => return Ok(response),
             Err(error) => {
                 let restart_worthy = should_attempt_sidecar_recovery(&error);
-                if !should_retry_sidecar_request(
-                    restart_worthy,
-                    attempted_recovery,
-                ) {
+                if !should_retry_sidecar_request(restart_worthy, attempted_recovery) {
                     if restart_worthy {
                         log_desktop_event(
                             "error",
@@ -865,6 +945,7 @@ where
                     format!("request failed, attempting sidecar restart: {error}"),
                 );
                 restart()?;
+                wait_until_ready()?;
                 attempted_recovery = true;
                 log_desktop_event("info", "recovery", "retrying backend request after restart");
             }
@@ -874,7 +955,7 @@ where
 
 fn request_backend(method: &str, path: &str, body: &str) -> Result<HttpResponse, String> {
     let backend_addr = current_backend_addr();
-    sidecar_request_with_recovery(
+    sidecar_request_with_recovery_hooks(
         || {
             request_backend_with_timeout(
                 &backend_addr,
@@ -885,7 +966,84 @@ fn request_backend(method: &str, path: &str, body: &str) -> Result<HttpResponse,
             )
         },
         restart_sidecar,
+        || {
+            wait_for_backend_ready(
+                &backend_addr,
+                Duration::from_millis(SIDECAR_READY_WAIT_TIMEOUT_MS),
+            )
+        },
     )
+}
+
+fn wait_for_backend_ready(backend_addr: &str, timeout: Duration) -> Result<(), String> {
+    let addr = backend_addr.to_string();
+    log_desktop_event(
+        "info",
+        "recovery",
+        format!(
+            "waiting for backend readiness addr={} timeout_ms={}",
+            addr,
+            timeout.as_millis()
+        ),
+    );
+    let result = wait_for_backend_ready_with_probe(
+        || probe_backend_ready(&addr),
+        timeout,
+        Duration::from_millis(SIDECAR_READY_POLL_INTERVAL_MS),
+        std::thread::sleep,
+    );
+    match &result {
+        Ok(_) => log_desktop_event("info", "recovery", format!("backend ready addr={addr}")),
+        Err(err) => log_desktop_event(
+            "error",
+            "recovery",
+            format!("backend readiness wait failed addr={addr}: {err}"),
+        ),
+    }
+    result
+}
+
+fn wait_for_backend_ready_with_probe<FProbe, FSleep>(
+    mut probe: FProbe,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut sleep_fn: FSleep,
+) -> Result<(), String>
+where
+    FProbe: FnMut() -> Result<(), String>,
+    FSleep: FnMut(Duration),
+{
+    let started_at = Instant::now();
+
+    loop {
+        match probe() {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                let elapsed = started_at.elapsed();
+                if elapsed >= timeout {
+                    return Err(format!("timed out after {} ms: {err}", timeout.as_millis()));
+                }
+
+                let remaining = timeout.saturating_sub(elapsed);
+                sleep_fn(remaining.min(poll_interval));
+            }
+        }
+    }
+}
+
+fn probe_backend_ready(backend_addr: &str) -> Result<(), String> {
+    let mut addrs = backend_addr
+        .to_socket_addrs()
+        .map_err(|e| format!("resolve backend address failed: {e}"))?;
+    let socket_addr = addrs
+        .next()
+        .ok_or_else(|| format!("resolve backend address failed: {backend_addr}"))?;
+    TcpStream::connect_timeout(
+        &socket_addr,
+        Duration::from_millis(SIDECAR_READY_POLL_INTERVAL_MS),
+    )
+    .map(|_| ())
+    .map_err(|e| format!("connect backend failed: {e}"))
 }
 
 fn request_backend_with_timeout(
@@ -1077,20 +1235,80 @@ fn resolve_sidecar_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 fn shutdown_sidecar() {
+    shutdown_sidecar_with_reason("shutdown");
+}
+
+fn shutdown_sidecar_with_reason(reason: &str) {
     let mut guard = match SIDECAR_CHILD.lock() {
         Ok(guard) => guard,
         Err(_) => return,
     };
 
     if let Some(child) = guard.as_mut() {
-        log_desktop_event("info", "sidecar", "shutdown requested");
-        let _ = child.kill();
-        let _ = child.wait();
+        log_desktop_event(
+            "info",
+            "sidecar",
+            format!("shutdown requested reason={reason}"),
+        );
+        match child.kill() {
+            Ok(()) => log_desktop_event("info", "sidecar", "kill signal sent"),
+            Err(err) => log_desktop_event("warn", "sidecar", format!("kill failed: {err}")),
+        }
+        match child.wait() {
+            Ok(status) => log_desktop_event(
+                "info",
+                "sidecar",
+                format!("sidecar exited reason={reason} status={status}"),
+            ),
+            Err(err) => log_desktop_event("warn", "sidecar", format!("wait failed: {err}")),
+        }
     }
     *guard = None;
 
     if let Ok(mut heartbeat_guard) = SIDECAR_HEARTBEAT.lock() {
         if let Some(handle) = heartbeat_guard.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn should_trigger_resume_recovery(elapsed: Duration, threshold: Duration) -> bool {
+    elapsed >= threshold
+}
+
+#[cfg(target_os = "macos")]
+fn start_resume_recovery_watcher<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String> {
+    RESUME_RECOVERY_WATCHER_STOP.store(false, Ordering::SeqCst);
+    let handle = std::thread::Builder::new()
+        .name("resume-recovery".to_string())
+        .spawn(move || {
+            let mut last_tick = Instant::now();
+            while !RESUME_RECOVERY_WATCHER_STOP.load(Ordering::SeqCst) {
+                std::thread::sleep(RESUME_RECOVERY_WATCH_INTERVAL);
+                let elapsed = last_tick.elapsed();
+                last_tick = Instant::now();
+                if should_trigger_resume_recovery(elapsed, RESUME_RECOVERY_GAP_THRESHOLD) {
+                    recover_backend_after_resume(&app, "resume_gap", Some(elapsed));
+                }
+            }
+        })
+        .map_err(|e| format!("start resume recovery watcher failed: {e}"))?;
+    let mut guard = RESUME_RECOVERY_WATCHER
+        .lock()
+        .map_err(|_| "resume recovery watcher lock poisoned".to_string())?;
+    *guard = Some(handle);
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_resume_recovery_watcher<R: Runtime + 'static>(_app: AppHandle<R>) -> Result<(), String> {
+    Ok(())
+}
+
+fn stop_resume_recovery_watcher() {
+    RESUME_RECOVERY_WATCHER_STOP.store(true, Ordering::SeqCst);
+    if let Ok(mut guard) = RESUME_RECOVERY_WATCHER.lock() {
+        if let Some(handle) = guard.take() {
             let _ = handle.join();
         }
     }
@@ -1123,16 +1341,19 @@ mod tests {
         append_recent_desktop_log, build_launch_agent_plist, clamp_recent_log_limit,
         decode_chunked_body, format_timeout_error, format_tray_title, map_backend_io_error,
         parse_account_menu_id, parse_accounts_response, parse_proxy_status_response,
+        proxy_menu_enabled_states,
         should_attempt_sidecar_recovery, should_refresh_tray_after_action,
-        should_retry_sidecar_request, sidecar_candidate_paths, sidecar_creation_flags,
-        sidecar_request_with_recovery, sidecar_resource_name, DesktopLogEntry,
-        tray_icon_bytes_for_platform, tray_icon_is_template_for_platform, window_close_action,
-        AppSettingsPayload, DesktopSettingsCache, HttpResponse, WindowCloseAction,
-        TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, SIDECAR_MACOS_NAME,
-        SIDECAR_WINDOWS_NAME,
+        should_retry_sidecar_request, should_trigger_resume_recovery, sidecar_candidate_paths,
+        sidecar_creation_flags, sidecar_request_with_recovery, sidecar_request_with_recovery_hooks,
+        sidecar_resource_name, tray_icon_bytes_for_platform, tray_icon_is_template_for_platform,
+        wait_for_backend_ready_with_probe, window_close_action, AppSettingsPayload,
+        DesktopLogEntry, DesktopSettingsCache, HttpResponse, WindowCloseAction, SIDECAR_MACOS_NAME,
+        SIDECAR_WINDOWS_NAME, TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES,
     };
+    use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     #[test]
     fn parse_account_menu_id_accepts_valid_ids() {
@@ -1161,6 +1382,16 @@ mod tests {
     fn tray_refresh_skips_non_stateful_actions() {
         assert!(!should_refresh_tray_after_action("open-main"));
         assert!(!should_refresh_tray_after_action("quit"));
+    }
+
+    #[test]
+    fn proxy_menu_states_disable_enable_when_proxy_is_active() {
+        assert_eq!(proxy_menu_enabled_states(true), (false, true));
+    }
+
+    #[test]
+    fn proxy_menu_states_disable_disable_when_proxy_is_inactive() {
+        assert_eq!(proxy_menu_enabled_states(false), (true, false));
     }
 
     #[test]
@@ -1199,10 +1430,7 @@ mod tests {
             tray_icon_bytes_for_platform("windows"),
             TRAY_ICON_COLOR_BYTES
         );
-        assert_eq!(
-            tray_icon_bytes_for_platform("linux"),
-            TRAY_ICON_COLOR_BYTES
-        );
+        assert_eq!(tray_icon_bytes_for_platform("linux"), TRAY_ICON_COLOR_BYTES);
     }
 
     #[test]
@@ -1443,6 +1671,106 @@ mod tests {
         assert_eq!(err, "read backend timed out while waiting for the sidecar");
         assert_eq!(request_calls, 2);
         assert_eq!(restart_calls, 1);
+    }
+
+    #[test]
+    fn sidecar_request_waits_for_backend_ready_before_retry() {
+        let mut request_calls = 0;
+        let mut restart_calls = 0;
+        let mut wait_calls = 0;
+        let events = RefCell::new(Vec::new());
+
+        let result = sidecar_request_with_recovery_hooks(
+            || {
+                request_calls += 1;
+                events.borrow_mut().push(format!("request-{request_calls}"));
+                if request_calls == 1 {
+                    Err("connect backend failed: Connection refused (os error 61)".to_string())
+                } else {
+                    Ok(HttpResponse {
+                        status: 200,
+                        body: "{}".to_string(),
+                    })
+                }
+            },
+            || {
+                restart_calls += 1;
+                events.borrow_mut().push("restart".to_string());
+                Ok(())
+            },
+            || {
+                wait_calls += 1;
+                events.borrow_mut().push("wait-ready".to_string());
+                Ok(())
+            },
+        )
+        .expect("request should recover after waiting");
+
+        assert_eq!(result.status, 200);
+        assert_eq!(restart_calls, 1);
+        assert_eq!(wait_calls, 1);
+        assert_eq!(
+            events.into_inner(),
+            vec!["request-1", "restart", "wait-ready", "request-2"]
+        );
+    }
+
+    #[test]
+    fn backend_ready_wait_retries_until_probe_succeeds() {
+        let mut probe_calls = 0;
+        let mut sleeps = Vec::new();
+
+        wait_for_backend_ready_with_probe(
+            || {
+                probe_calls += 1;
+                if probe_calls < 3 {
+                    Err("not ready".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            Duration::from_millis(600),
+            Duration::from_millis(100),
+            |duration| sleeps.push(duration),
+        )
+        .expect("backend should become ready");
+
+        assert_eq!(probe_calls, 3);
+        assert_eq!(
+            sleeps,
+            vec![Duration::from_millis(100), Duration::from_millis(100)]
+        );
+    }
+
+    #[test]
+    fn backend_ready_wait_times_out_when_probe_never_succeeds() {
+        let mut probe_calls = 0;
+
+        let err = wait_for_backend_ready_with_probe(
+            || {
+                probe_calls += 1;
+                Err("still booting".to_string())
+            },
+            Duration::from_millis(250),
+            Duration::from_millis(100),
+            |_| {},
+        )
+        .expect_err("backend readiness wait should time out");
+
+        assert!(err.contains("still booting"));
+        assert!(probe_calls >= 2);
+    }
+
+    #[test]
+    fn resume_recovery_triggers_only_after_large_gap() {
+        assert!(!should_trigger_resume_recovery(
+            Duration::from_secs(2),
+            Duration::from_secs(10)
+        ));
+        assert!(should_trigger_resume_recovery(
+            Duration::from_secs(15),
+            Duration::from_secs(10)
+        ));
     }
 
     #[test]
