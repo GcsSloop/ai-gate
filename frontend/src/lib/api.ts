@@ -145,6 +145,7 @@ export type AppSettings = {
   silent_start: boolean;
   close_to_tray: boolean;
   show_proxy_switch_on_home: boolean;
+  show_home_update_indicator: boolean;
   proxy_host: string;
   proxy_port: number;
   auto_failover_enabled: boolean;

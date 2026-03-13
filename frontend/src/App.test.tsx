@@ -1,5 +1,15 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+const mockedUpdateService = vi.hoisted(() => ({
+  check: vi.fn(),
+  downloadAndInstall: vi.fn(),
+  relaunch: vi.fn(),
+}));
+
+vi.mock("./features/updates/updateService", () => ({
+  createDesktopUpdateService: vi.fn(() => mockedUpdateService),
+}));
+
 import { App } from "./App";
 import { loadDesktopShellContext, refreshDesktopTrayState, subscribeDesktopBackendStateChanged } from "./lib/desktop-shell";
 
@@ -32,6 +42,9 @@ vi.mock("./lib/desktop-shell", () => ({
 describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedUpdateService.check.mockResolvedValue({ supported: true, update: null });
+    mockedUpdateService.downloadAndInstall.mockResolvedValue(undefined);
+    mockedUpdateService.relaunch.mockResolvedValue(undefined);
     vi.mocked(loadDesktopShellContext).mockResolvedValue({
       backend_addr: "127.0.0.1:6789",
       backend_api_base: "http://127.0.0.1:6789/ai-router/api",
@@ -44,6 +57,164 @@ describe("App", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("shows a themed home update indicator when a new version is available", async () => {
+    mockedUpdateService.check.mockResolvedValue({
+      supported: true,
+      update: {
+        body: "Bug fixes",
+        currentVersion: "1.0.0",
+        date: "2026-03-13T12:00:00Z",
+        version: "1.0.1",
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+                language: "zh-CN",
+                theme_mode: "system",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    expect(await screen.findByLabelText("打开更新")).toBeInTheDocument();
+  });
+
+  it("does not start home update checks when the setting is disabled", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                show_home_update_indicator: false,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+                language: "zh-CN",
+                theme_mode: "system",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("打开更新")).not.toBeInTheDocument();
+    expect(mockedUpdateService.check).not.toHaveBeenCalled();
+  });
+
+  it("opens settings when the home update indicator is clicked", async () => {
+    mockedUpdateService.check.mockResolvedValue({
+      supported: true,
+      update: {
+        body: "Bug fixes",
+        currentVersion: "1.0.0",
+        date: "2026-03-13T12:00:00Z",
+        version: "1.0.1",
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+                language: "zh-CN",
+                theme_mode: "system",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByLabelText("打开更新"));
+
+    expect(await screen.findByText("settings-page")).toBeInTheDocument();
   });
 
   it("hides the home proxy switch when app settings disable it", async () => {
@@ -62,6 +233,7 @@ describe("App", () => {
                 silent_start: false,
                 close_to_tray: true,
                 show_proxy_switch_on_home: false,
+                show_home_update_indicator: true,
                 proxy_host: "127.0.0.1",
                 proxy_port: 6789,
                 auto_failover_enabled: false,
@@ -108,6 +280,7 @@ describe("App", () => {
                 silent_start: false,
                 close_to_tray: true,
                 show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
                 proxy_host: "127.0.0.1",
                 proxy_port: 6789,
                 auto_failover_enabled: false,
@@ -155,6 +328,7 @@ describe("App", () => {
                 silent_start: false,
                 close_to_tray: true,
                 show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
                 proxy_host: "127.0.0.1",
                 proxy_port: 6789,
                 auto_failover_enabled: false,
@@ -202,6 +376,7 @@ describe("App", () => {
                 silent_start: false,
                 close_to_tray: true,
                 show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
                 proxy_host: "127.0.0.1",
                 proxy_port: 6789,
                 auto_failover_enabled: false,
@@ -254,6 +429,7 @@ describe("App", () => {
                 silent_start: false,
                 close_to_tray: true,
                 show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
                 proxy_host: "127.0.0.1",
                 proxy_port: 6789,
                 auto_failover_enabled: false,
@@ -321,6 +497,7 @@ describe("App", () => {
                 silent_start: false,
                 close_to_tray: true,
                 show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
                 proxy_host: "127.0.0.1",
                 proxy_port: 6789,
                 auto_failover_enabled: false,
@@ -375,6 +552,7 @@ describe("App", () => {
                 silent_start: false,
                 close_to_tray: true,
                 show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
                 proxy_host: "127.0.0.1",
                 proxy_port: 6789,
                 auto_failover_enabled: false,
@@ -433,6 +611,7 @@ describe("App", () => {
                 silent_start: false,
                 close_to_tray: true,
                 show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
                 proxy_host: "127.0.0.1",
                 proxy_port: 6789,
                 auto_failover_enabled: false,
@@ -486,6 +665,7 @@ describe("App", () => {
                 silent_start: false,
                 close_to_tray: true,
                 show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
                 proxy_host: "127.0.0.1",
                 proxy_port: 6789,
                 auto_failover_enabled: false,

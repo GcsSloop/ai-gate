@@ -120,8 +120,25 @@ body {
   font-size: 1.6em;
 }
 
+.top-home-update-button {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  color: #3e5be8;
+  background: rgba(62, 91, 232, 0.08);
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.top-home-update-button .anticon {
+  font-size: 1.2em;
+}
+
 .top-settings-button:hover,
-.top-settings-button:focus {
+.top-settings-button:focus,
+.top-home-update-button:hover,
+.top-home-update-button:focus {
   color: #2f49c8 !important;
   background: var(--interactive-soft) !important;
 }

@@ -54,6 +54,7 @@ var schemaStatements = []string{
 		silent_start INTEGER NOT NULL DEFAULT 0,
 		close_to_tray INTEGER NOT NULL DEFAULT 1,
 		show_proxy_switch_on_home INTEGER NOT NULL DEFAULT 1,
+		show_home_update_indicator INTEGER NOT NULL DEFAULT 1,
 		proxy_host TEXT NOT NULL DEFAULT '127.0.0.1',
 		proxy_port INTEGER NOT NULL DEFAULT 6789,
 		auto_failover_enabled INTEGER NOT NULL DEFAULT 0,

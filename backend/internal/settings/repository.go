@@ -10,6 +10,7 @@ type AppSettings struct {
 	SilentStart             bool   `json:"silent_start"`
 	CloseToTray             bool   `json:"close_to_tray"`
 	ShowProxySwitchOnHome   bool   `json:"show_proxy_switch_on_home"`
+	ShowHomeUpdateIndicator bool   `json:"show_home_update_indicator"`
 	ProxyHost               string `json:"proxy_host"`
 	ProxyPort               int    `json:"proxy_port"`
 	AutoFailoverEnabled     bool   `json:"auto_failover_enabled"`
@@ -42,6 +43,7 @@ func DefaultAppSettings() AppSettings {
 	return AppSettings{
 		CloseToTray:             true,
 		ShowProxySwitchOnHome:   true,
+		ShowHomeUpdateIndicator: true,
 		ProxyHost:               "127.0.0.1",
 		ProxyPort:               6789,
 		AutoBackupIntervalHours: 24,
@@ -53,7 +55,7 @@ func DefaultAppSettings() AppSettings {
 
 func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	row := r.db.QueryRow(
-		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language, theme_mode
+		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language, theme_mode
 		 FROM app_settings WHERE id = 1`,
 	)
 
@@ -61,6 +63,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	var silentStart int
 	var closeToTray int
 	var showProxySwitchOnHome int
+	var showHomeUpdateIndicator int
 	var proxyHost string
 	var proxyPort int
 	var autoFailoverEnabled int
@@ -74,6 +77,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		&silentStart,
 		&closeToTray,
 		&showProxySwitchOnHome,
+		&showHomeUpdateIndicator,
 		&proxyHost,
 		&proxyPort,
 		&autoFailoverEnabled,
@@ -93,6 +97,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		SilentStart:             silentStart == 1,
 		CloseToTray:             closeToTray == 1,
 		ShowProxySwitchOnHome:   showProxySwitchOnHome == 1,
+		ShowHomeUpdateIndicator: showHomeUpdateIndicator == 1,
 		ProxyHost:               proxyHost,
 		ProxyPort:               proxyPort,
 		AutoFailoverEnabled:     autoFailoverEnabled == 1,
@@ -107,13 +112,14 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 	value = sanitize(value)
 	_, err := r.db.Exec(
 		`INSERT INTO app_settings (
-			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language, theme_mode, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language, theme_mode, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			launch_at_login = excluded.launch_at_login,
 			silent_start = excluded.silent_start,
 			close_to_tray = excluded.close_to_tray,
 			show_proxy_switch_on_home = excluded.show_proxy_switch_on_home,
+			show_home_update_indicator = excluded.show_home_update_indicator,
 			proxy_host = excluded.proxy_host,
 			proxy_port = excluded.proxy_port,
 			auto_failover_enabled = excluded.auto_failover_enabled,
@@ -127,6 +133,7 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 		boolToInt(value.SilentStart),
 		boolToInt(value.CloseToTray),
 		boolToInt(value.ShowProxySwitchOnHome),
+		boolToInt(value.ShowHomeUpdateIndicator),
 		value.ProxyHost,
 		value.ProxyPort,
 		boolToInt(value.AutoFailoverEnabled),
