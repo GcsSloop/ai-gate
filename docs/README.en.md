@@ -124,11 +124,14 @@ For the precise boundary, see [thin-gateway-mode.md](thin-gateway-mode.md).
 
 ## Quick Start
 
-### For Regular Users
+### For End Users
 
-- **Official account users**: download the desktop app, import the current account, enable the proxy, and start using Codex.
-- **Third-party API users**: download the desktop app, add an API account, choose the model you want, and enable the proxy when needed.
+- **Download the desktop app**: get the latest client from [the latest release](https://github.com/GcsSloop/ai-gate/releases/latest).
+- **Official account users**: launch the app, import the current account, enable the proxy, and start using Codex.
+- **Third-party API users**: launch the app, add an API account, choose the model you want, and enable the proxy when needed.
 - **Low-friction setup**: the desktop app is the default path, so most users should not need to edit `~/.codex/config.toml` manually.
+
+### For Developers
 
 ### 1. Prepare environment
 
