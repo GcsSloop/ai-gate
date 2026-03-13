@@ -504,6 +504,14 @@ export function SettingsPage({
                         disabled={autoSavingPreference}
                       />
                     </label>
+                    <ToggleRow
+                      icon={<CloudDownloadOutlined />}
+                      title={t("首页更新提示")}
+                      description={t("定时检查 GitHub 新版本，并在首页顶栏显示更新图标提示。")}
+                      label={t("首页更新提示")}
+                      checked={draftSettings.show_home_update_indicator}
+                      onChange={(checked) => updateDraft({ show_home_update_indicator: checked })}
+                    />
                   </div>
                 </Card>
               </div>

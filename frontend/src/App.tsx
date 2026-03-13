@@ -1,10 +1,11 @@
-import { ArrowLeftOutlined, PlusOutlined, SaveOutlined, SettingOutlined } from "@ant-design/icons";
+import { ArrowLeftOutlined, CloudDownloadOutlined, PlusOutlined, SaveOutlined, SettingOutlined } from "@ant-design/icons";
 import { App as AntApp, Button, ConfigProvider, Dropdown, Modal, Spin, Switch, message, theme as antdTheme } from "antd";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { AccountsPage } from "./features/accounts/AccountsPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
+import { createDesktopUpdateService, type DesktopUpdateInfo } from "./features/updates/updateService";
 import appLogo from "./assets/aigate_1024_1024.png";
 import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus } from "./lib/api";
 import { loadDesktopShellContext, refreshDesktopTrayState, subscribeDesktopBackendStateChanged } from "./lib/desktop-shell";
@@ -13,6 +14,7 @@ import { setAPIBase } from "./lib/paths";
 import "./styles.css";
 
 const appSettingsBootstrapRetryDelays = [0, 150, 300, 600, 1_000];
+const homeUpdateCheckIntervalMs = 6 * 60 * 60 * 1_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -30,7 +32,9 @@ export function App() {
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const [shellReady, setShellReady] = useState(false);
   const [systemPrefersDark, setSystemPrefersDark] = useState(false);
+  const [homeUpdate, setHomeUpdate] = useState<DesktopUpdateInfo | null>(null);
   const settingsSaveActionRef = useRef<(() => void) | null>(null);
+  const updateService = useMemo(() => createDesktopUpdateService(), []);
   const language = normalizeLanguage(appSettings?.language);
   const t = createTranslator(language);
   const themeMode = appSettings?.theme_mode ?? "system";
@@ -149,6 +153,38 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!appSettings?.show_home_update_indicator) {
+      setHomeUpdate(null);
+      return;
+    }
+
+    let disposed = false;
+
+    async function checkForHomeUpdate() {
+      try {
+        const result = await updateService.check();
+        if (!disposed) {
+          setHomeUpdate(result.update);
+        }
+      } catch {
+        if (!disposed) {
+          setHomeUpdate(null);
+        }
+      }
+    }
+
+    void checkForHomeUpdate();
+    const timer = window.setInterval(() => {
+      void checkForHomeUpdate();
+    }, homeUpdateCheckIntervalMs);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [appSettings?.show_home_update_indicator, updateService]);
+
+  useEffect(() => {
     const translate = createTranslator(language);
     const handler = (event: Event) => {
       const custom = event as CustomEvent<{ message?: string }>;
@@ -238,6 +274,7 @@ export function App() {
   }
 
   const showProxySwitch = appSettings?.show_proxy_switch_on_home ?? true;
+  const showHomeUpdateIndicator = Boolean(appSettings?.show_home_update_indicator && homeUpdate);
 
   return (
     <ConfigProvider
@@ -306,6 +343,15 @@ export function App() {
                   className="top-settings-button"
                   onClick={() => setView("settings")}
                 />
+                {showHomeUpdateIndicator ? (
+                  <Button
+                    type="text"
+                    icon={<CloudDownloadOutlined />}
+                    aria-label={t("打开更新")}
+                    className="top-home-update-button"
+                    onClick={() => setView("settings")}
+                  />
+                ) : null}
               </div>
               <div className="top-menu-right">
                 {showProxySwitch ? (
