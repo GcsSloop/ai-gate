@@ -1,100 +1,132 @@
 # AI Gate
 
-English | [简体中文](docs/README.zh-CN.md)
+简体中文 | [English](docs/README.en.md)
 
 <p align="center">
   <img src="assets/aigate_1024_1024.png" alt="AI Gate icon" width="128" height="128">
 </p>
 
-<p align="center">
-  <strong>A local-first Codex gateway for account switching, thin routing, and desktop control.</strong>
-</p>
+AI Gate 是一个面向 Codex 工作流的本地优先网关与桌面外壳，核心目标非常明确：
 
-<p align="center">
-  <img alt="Go" src="https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white">
-  <img alt="React" src="https://img.shields.io/badge/React-19-20232A?logo=react&logoColor=61DAFB">
-  <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2.x-24C8DB?logo=tauri&logoColor=white">
-  <img alt="Mode" src="https://img.shields.io/badge/Mode-Local--Only-black">
-  <img alt="API" src="https://img.shields.io/badge/API-Responses-4B32C3">
-</p>
+- 在本地切换官方账号和兼容账号
+- 将请求路由到原生上游 `/responses` 接口
+- 保持上游响应语义，而不是在本地重造协议
+- 提供轻量的本地观测、审计与桌面控制能力
 
-AI Gate is a local gateway and desktop shell for Codex-style workflows. It focuses on a narrow, explicit contract:
+这个仓库**不是**云端部署方案，也**不是**协议兼容模拟层。
 
-- switch between official and compatible accounts locally
-- route requests to native upstream `/responses` APIs
-- preserve upstream response semantics instead of re-implementing them
-- provide lightweight local observability and desktop controls
+## 项目定位
 
-This repository is intentionally **not** a cloud deployment stack and **not** a protocol emulation layer.
+很多 Codex 用户真正需要的不是一个“全能代理”，而是一个稳定、可控、可观测的本地入口，用来解决几类现实问题：
 
-## Why This Project Exists
+- 多账号切换成本高
+- 不希望频繁修改客户端配置
+- 希望保留统一的本地入口和观测面板
+- 希望通过桌面应用降低使用门槛
 
-Codex users often need a stable local entry point for:
+AI Gate 的做法是保持“薄网关”边界：只做认证、路由、透传和观测，不伪造对话语义，不本地拼装响应协议。
 
-- switching between multiple authenticated accounts
-- routing requests without changing client behavior
-- observing usage and health locally
-- packaging the experience into a desktop app for non-terminal workflows
+## 核心原则
 
-AI Gate solves that by staying thin. It does not synthesize response state, fake retrieval endpoints, or reconstruct multi-turn semantics locally.
+- **仅本地运行**：后端只监听回环地址，桌面应用只启动本地 sidecar。
+- **薄网关优先**：`response_id`、`previous_response_id`、状态码和 SSE 生命周期全部以上游为准。
+- **不做伪实现**：做不到就显式删除，不用“看起来像支持”来掩盖语义缺失。
+- **工程可控**：账号切换、运行审计、监控摘要都保留在本地。
 
-## Core Principles
-
-- **Local only**: backend binds to loopback only and the desktop bundle starts the sidecar locally.
-- **Thin gateway**: upstream owns `response_id`, `previous_response_id`, status codes, and SSE lifecycle.
-- **No protocol cosplay**: unsupported semantics are removed instead of being faked.
-- **Operational clarity**: account switching, audit data, and monitoring stay visible locally.
-
-## Architecture
+## 架构概览
 
 ```mermaid
 flowchart LR
-    A["Codex CLI / Desktop Client"] --> B["AI Gate Router<br/>Go backend"]
-    C["AI Gate Desktop<br/>Tauri shell"] --> B
-    B --> D["Official Codex upstream<br/>chatgpt.com/backend-api/codex"]
-    B --> E["Compatible upstreams<br/>native /responses only"]
-    B --> F["Local SQLite<br/>audit + monitoring"]
+    A["Codex CLI"] --> C["AI Gate Router<br/>Go 后端"]
+    B["AI Gate Desktop<br/>Tauri 桌面壳"] --> C
+    C --> E["官方 Codex 上游<br/>chatgpt.com/backend-api/codex"]
+    C --> F["兼容提供方<br/>原生 /responses"]
+    C --> G["路由数据库<br/>审计与监控"]
 ```
 
-## Screenshots
+### 请求流转
 
-### Main Dashboard
+```mermaid
+sequenceDiagram
+    participant Client as Codex 客户端
+    participant Desktop as AI Gate 桌面端
+    participant Router as 本地路由
+    participant Config as 本地配置
+    participant Upstream as 官方或兼容上游
 
-![AI Gate main dashboard](assets/screenshot-main.png)
+    Desktop->>Config: 读取当前激活账号与代理状态
+    Client->>Router: POST /ai-router/api/v1/responses
+    Router->>Config: 解析当前启用的 provider
+    alt 官方账号
+        Router->>Upstream: 透传原生 /responses 请求
+    else 第三方 API
+        Router->>Upstream: 透传原生 /responses 请求
+    end
+    Upstream-->>Router: 返回 SSE 或 JSON
+    Router-->>Client: 按原样流式转发响应
+    Router->>Desktop: 暴露本地状态、审计和监控信息
+```
 
-### Proxy Settings
+### 核心组件职责
 
-![AI Gate proxy settings](assets/screenshot-proxy.png)
+- **Codex 客户端**：保留原有使用方式，只需要指向一个稳定的本地入口。
+- **AI Gate 桌面端**：负责账号管理、代理开关、备份恢复、菜单栏控制和本地运维入口。
+- **AI Gate 路由后端**：负责解析当前账号、转发原生 `/responses` 请求，并记录本地审计与监控数据。
+- **官方与兼容上游**：继续负责 `response_id`、`previous_response_id`、工具调用语义以及流式响应生命周期。
 
-## What It Does
+### 数据与安全边界
 
-- Routes `POST /responses` and `GET /models` through a local gateway endpoint.
-- Supports official account auth flows and token refresh.
-- Supports third-party providers only when they natively implement `/responses`.
-- Exposes a React frontend and Tauri desktop shell for local control.
-- Stores local audit and monitoring data for observability.
+- AI Gate 坚持本地优先：后端只监听 loopback，桌面端只拉起本地 sidecar。
+- 桌面端管理的状态和备份快照位于 `~/.aigate/data`。
+- Codex 客户端的配置仍然位于 `~/.codex/config.toml` 和 `~/.codex/auth.json`；只有在开启代理、关闭代理或执行恢复时，AI Gate 才会修改这些文件。
+- 路由数据库路径仍然通过 `CODEX_ROUTER_DATABASE_PATH` 配置，因此审计和监控数据可以保持本地化，同时不把部署形态写死。
+- 对于上游不支持的能力，AI Gate 会显式移除而不是伪造兼容层，这样更接近官方 Codex 的真实语义。
 
-## What It Explicitly Does Not Do
+## 界面预览
 
-- Fall back from `/responses` to `/chat/completions`
-- Generate local `response_id`
-- Rebuild `previous_response_id` chains from local history
-- Emulate response retrieval endpoints
-- Act as a public remote gateway or hosted SaaS deployment target
+### 首页总览
 
-For the precise boundary, see [docs/thin-gateway-mode.md](docs/thin-gateway-mode.md).
+![AI Gate 首页](assets/screenshot-main.png)
 
-## Quick Start
+### 代理配置页
 
-### 1. Prepare environment
+![AI Gate 代理配置页](assets/screenshot-proxy.png)
+
+## 当前能力
+
+- 通过本地网关暴露 `POST /responses` 与 `GET /models`
+- 支持官方账号认证与 token 刷新
+- 支持原生实现 `/responses` 的第三方提供方
+- 提供 React 前端与 Tauri 桌面外壳
+- 保留本地审计数据与运行观测数据
+
+## 明确不支持的能力
+
+- 从 `/responses` 回退到 `/chat/completions`
+- 在本地生成 `response_id`
+- 用本地历史重建 `previous_response_id`
+- 模拟响应检索类接口
+- 作为公网托管网关或 SaaS 服务直接部署
+
+更完整的边界说明见 [thin-gateway-mode.md](docs/thin-gateway-mode.md)。
+
+## 快速开始
+
+### 普通用户
+
+- **官方账户用户**：下载客户端，导入当前账户，开启代理后即可直接使用。
+- **第三方 API 用户**：下载客户端，添加 API 账户，选择需要的模型，按需开启代理后开始使用。
+- **不想折腾配置**：优先使用桌面客户端，常规情况下不需要手动编辑 `~/.codex/config.toml`。
+
+### 1. 准备环境变量
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and replace `CODEX_ROUTER_ENCRYPTION_KEY` with a real random secret before starting the backend.
+修改 `.env`，至少替换 `CODEX_ROUTER_ENCRYPTION_KEY`，不要继续使用示例值。
 
-Current local defaults:
+默认本地配置如下：
 
 ```env
 CODEX_ROUTER_LISTEN_ADDR=127.0.0.1:6789
@@ -103,32 +135,30 @@ CODEX_ROUTER_SCHEDULER_INTERVAL=5m
 CODEX_ROUTER_ENCRYPTION_KEY=change-this-to-a-random-32-plus-char-secret
 ```
 
-### 2. Start backend
+### 2. 启动后端
 
 ```bash
 make backend
 ```
 
-### 3. Start frontend
+### 3. 启动前端
 
 ```bash
 make frontend
 ```
 
-The frontend dev server proxies the local API surface to `http://127.0.0.1:6789`.
+前端开发服务器会将本地 API 请求代理到 `http://127.0.0.1:6789`。
 
-### 4. Start desktop shell
+### 4. 启动桌面壳
 
 ```bash
 npm --prefix desktop install
 npm --prefix desktop run dev
 ```
 
-## Use With Codex CLI
+## 与 Codex CLI 配合使用
 
-AI Gate is intended to sit behind a standard Codex client configuration while preserving upstream Responses semantics.
-
-Recommended local config:
+推荐本地配置如下：
 
 ```toml
 model_provider = "router"
@@ -140,64 +170,64 @@ wire_api = "responses"
 requires_openai_auth = true
 ```
 
-Gateway contract:
+当前网关协议面：
 
 - `POST /ai-router/api/v1/responses`
 - `GET /ai-router/api/v1/models`
 
-Important notes:
+关键说明：
 
-- Official accounts are routed to `https://chatgpt.com/backend-api/codex`.
-- Third-party accounts must already support `/responses`.
-- Upstream `response_id` is authoritative.
-- AI Gate does not fake retrieval or continuation semantics that require local response reconstruction.
+- 官方账号默认转发到 `https://chatgpt.com/backend-api/codex`
+- 第三方账号必须原生支持 `/responses`
+- `response_id` 以上游返回为准
+- 本地不会伪造依赖响应状态重建的检索/续写语义
 
-Proxy toggle behavior:
+代理开关行为：
 
-- Enabling the proxy for the default Codex provider writes a temporary `[model_providers.aigate]` block and switches `model_provider` to `aigate`.
-- Disabling the proxy for the default Codex provider removes the temporary `aigate` provider block and deletes the top-level `model_provider` key so Codex falls back to its default provider behavior.
-- If the proxy patched an existing third-party provider, disabling restores that provider's original name and `base_url`, and leaves unrelated config edits untouched.
+- 为默认 Codex provider 开启代理时，会临时写入 `[model_providers.aigate]`，并将 `model_provider` 切到 `aigate`
+- 默认官方模式关闭代理时，会删除临时的 `aigate` provider 配置，并删除顶层 `model_provider` 字段，让 Codex 回到默认 provider 行为
+- 如果开启代理时是对现有第三方 provider 做 `base_url` 补丁，关闭时会恢复原始 provider 名称和 `base_url`，不会覆盖其它独立配置修改
 
-## Session Migration Skill
+## 会话迁移 Skill
 
-Get the migration skill here:
+获取 skill 的链接：
 
-- [GitHub skill link](https://github.com/GcsSloop/ai-gate/blob/main/skills/migrating-codex-history/SKILL.md)
+- [GitHub skill 链接](https://github.com/GcsSloop/ai-gate/blob/main/skills/migrating-codex-history/SKILL.md)
 
-Use it like this:
+使用方式：
 
-1. Open the link and copy the full skill text into Codex.
-2. Tell Codex: `Use this skill and migrate my ~/.codex history from openai to aigate. Run a dry-run first, show me the summary, then wait for confirmation before the real migration.` The skill will use the local script if this repository is present, otherwise it will fetch the script from the `main` branch raw URL.
-3. On Windows, the skill tells Codex to translate the shell script behavior into equivalent PowerShell or native Windows steps before execution.
+1. 打开上面的链接，把完整 skill 文本复制到 Codex 对话里。
+2. 对 Codex 说：`使用这个 skill，把我 ~/.codex 里 openai 的会话迁移到 aigate，先 dry-run 并把 summary 给我确认，确认后再正式执行。` 如果本地有这个仓库，skill 会直接用本地脚本；如果没有，skill 会从 `main` 分支的 raw 地址拉取脚本。
+3. 如果用户在 Windows 上使用，skill 会要求 Codex 先把 `.sh` 的逻辑转换成等价的 PowerShell 或原生 Windows 步骤，再执行迁移。
 
-The repository source of truth is [skills/migrating-codex-history/SKILL.md](skills/migrating-codex-history/SKILL.md).
+这个流程在仓库里的单一事实来源是 [skills/migrating-codex-history/SKILL.md](skills/migrating-codex-history/SKILL.md)。
 
-## Local Development
+## 本地开发
 
-### Backend
+### 后端
 
 ```bash
 make backend
 ```
 
-### Frontend
+### 前端
 
 ```bash
 make frontend
 ```
 
-### Tests
+### 测试
 
 ```bash
 make test
 ```
 
-That runs:
+当前会执行：
 
 - `cd backend && go test ./...`
 - `npm --prefix frontend run test`
 
-### Optional third-party smoke
+### 可选第三方冒烟测试
 
 ```bash
 THIRD_PARTY_BASE_URL=https://code.ppchat.vip/v1 \
@@ -205,11 +235,11 @@ THIRD_PARTY_API_KEY=sk-... \
 make smoke-third-party
 ```
 
-Use this only for providers that natively implement `/responses`.
+这个测试只适用于原生支持 `/responses` 的上游。
 
-## Desktop Packaging
+## 桌面打包
 
-Local macOS package flow:
+本地 macOS 打包流程：
 
 ```bash
 npm --prefix frontend ci
@@ -220,7 +250,7 @@ bash scripts/desktop/notarize_macos.sh
 bash scripts/desktop/collect_release_assets.sh
 ```
 
-Artifacts are collected into `release-assets/`:
+产物会出现在 `release-assets/`：
 
 - `aigate-<tag>-macOS.dmg`
 - `aigate-<tag>-macOS.zip`
@@ -228,42 +258,40 @@ Artifacts are collected into `release-assets/`:
 - `aigate-<tag>-darwin-universal.app.tar.gz.sig`
 - `aigate-<tag>-<platform>-SHA256SUMS.txt`
 
-GitHub release updater also requires a signing key:
+GitHub Releases 更新还依赖 updater 签名密钥：
 
 - `TAURI_SIGNING_PRIVATE_KEY`
-- optional `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+- 可选 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 
-Tag releases upload the manual installers above plus:
+Tag 发布时，除了手动安装包，还会额外上传：
 
 - `aigate-<tag>-windows.msi.sig`
 - `latest.json`
 
-`latest.json` is generated during the release workflow and consumed by the desktop updater from GitHub Releases.
+`latest.json` 会在 release workflow 中生成，并作为桌面端检查更新的数据源。
 
-GitLab CI supports macOS packaging on tags and can optionally sign/notarize when the required Apple credentials are present.
-
-## Repository Layout
+## 仓库结构
 
 ```text
-backend/              Go router backend
-frontend/             React + Vite web UI
-desktop/              Tauri desktop shell
-docs/                 operational notes and design docs
-scripts/              packaging, migration, and smoke scripts
-references/           upstream source references used for reverse engineering
+backend/              Go 路由后端
+frontend/             React + Vite Web UI
+desktop/              Tauri 桌面壳
+docs/                 设计文档与操作说明
+scripts/              打包、迁移、冒烟测试脚本
+references/           上游源码参考与逆向分析材料
 ```
 
-## Documentation
+## 相关文档
 
-- [docs/thin-gateway-mode.md](docs/thin-gateway-mode.md) - exact protocol boundary for the thin gateway
-- [docs/testing.md](docs/testing.md) - backend, frontend, and Codex CLI verification flow
+- [thin-gateway-mode.md](docs/thin-gateway-mode.md) - 薄网关模式边界
+- [testing.md](docs/testing.md) - 测试与验证流程
 
-## Local-Only Policy
+## 仅本地运行策略
 
-AI Gate is local-only by design:
+AI Gate 明确是本地优先产品：
 
-- backend listen address is restricted to loopback (`127.0.0.1` / `localhost` / `::1`)
-- desktop bundle starts the Go sidecar locally
-- this repository does not ship cloud/server deployment artifacts
+- 后端监听地址限制在 loopback
+- 桌面包只启动本地 sidecar
+- 当前仓库不提供云端部署产物
 
-If you need a hosted gateway, that is a different product shape and should be designed explicitly rather than inferred from this codebase.
+如果你需要公网托管网关，那是另一类产品，不应该从这个仓库的现状里“顺手推导”出来。
