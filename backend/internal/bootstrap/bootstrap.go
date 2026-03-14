@@ -59,7 +59,21 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	accountRepo := accounts.NewSQLiteRepository(store.DB(), credentialCipher)
 	settingsRepo := settings.NewSQLiteRepository(store.DB())
 	usageRepo := usage.NewSQLiteRepository(store.DB())
-	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	conversationRepo := conversations.NewSQLiteRepository(store.DB(), conversations.WithAuditStoragePolicyProvider(func() conversations.AuditStoragePolicy {
+		current, err := settingsRepo.GetAppSettings()
+		if err != nil {
+			return conversations.DefaultAuditStoragePolicy()
+		}
+		return conversations.AuditStoragePolicy{
+			MessageLimit:              current.AuditLimitMessage,
+			FunctionCallLimit:         current.AuditLimitFunctionCall,
+			FunctionCallOutputLimit:   current.AuditLimitFunctionCallOutput,
+			ReasoningLimit:            current.AuditLimitReasoning,
+			CustomToolCallLimit:       current.AuditLimitCustomToolCall,
+			CustomToolCallOutputLimit: current.AuditLimitCustomToolCallOutput,
+		}
+	}))
+	auditOptimizer := conversations.NewAuditStorageOptimizer(store.DB())
 	policyRepo := policy.NewMemoryRepository()
 	authConnector := auth.NewOAuthConnector(auth.Config{})
 	stateStore := auth.NewStateStore(5 * time.Minute)
@@ -94,6 +108,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/settings/database/backups", settingsHandler)
 	apiMux.Handle("/settings/database/backup", settingsHandler)
 	apiMux.Handle("/settings/database/restore", settingsHandler)
+	apiMux.Handle("/settings/audit-storage/optimize", settingsHandler)
 	apiMux.Handle("/settings/proxy/status", settingsHandler)
 	apiMux.Handle("/settings/proxy/enable", settingsHandler)
 	apiMux.Handle("/settings/proxy/disable", settingsHandler)
@@ -133,6 +148,16 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	app.background.Add(1)
 	go func() {
 		defer app.background.Done()
+		if current, err := settingsRepo.GetAppSettings(); err == nil {
+			_, _ = auditOptimizer.Optimize(conversations.AuditStoragePolicy{
+				MessageLimit:              current.AuditLimitMessage,
+				FunctionCallLimit:         current.AuditLimitFunctionCall,
+				FunctionCallOutputLimit:   current.AuditLimitFunctionCallOutput,
+				ReasoningLimit:            current.AuditLimitReasoning,
+				CustomToolCallLimit:       current.AuditLimitCustomToolCall,
+				CustomToolCallOutputLimit: current.AuditLimitCustomToolCallOutput,
+			})
+		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
