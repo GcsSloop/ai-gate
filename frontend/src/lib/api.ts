@@ -151,8 +151,19 @@ export type AppSettings = {
   auto_failover_enabled: boolean;
   auto_backup_interval_hours: number;
   backup_retention_count: number;
+  audit_limit_message: number;
+  audit_limit_function_call: number;
+  audit_limit_function_call_output: number;
+  audit_limit_reasoning: number;
+  audit_limit_custom_tool_call: number;
+  audit_limit_custom_tool_call_output: number;
   language: "zh-CN" | "en-US";
   theme_mode: "system" | "light" | "dark";
+};
+
+export type AuditStorageOptimizeResult = {
+  compacted_rows: number;
+  vacuumed: boolean;
 };
 
 export type DatabaseBackupItem = {
@@ -355,6 +366,17 @@ export async function saveAppSettings(payload: AppSettings): Promise<AppSettings
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to save app settings");
+  }
+  return response.json();
+}
+
+export async function optimizeAuditStorage(): Promise<AuditStorageOptimizeResult> {
+  const response = await fetch(apiPath("/settings/audit-storage/optimize"), {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to optimize audit storage");
   }
   return response.json();
 }

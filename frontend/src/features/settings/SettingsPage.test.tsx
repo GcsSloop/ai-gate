@@ -21,6 +21,12 @@ const baseSettings = {
   auto_failover_enabled: false,
   auto_backup_interval_hours: 24,
   backup_retention_count: 10,
+  audit_limit_message: 200,
+  audit_limit_function_call: 100,
+  audit_limit_function_call_output: 100,
+  audit_limit_reasoning: 40,
+  audit_limit_custom_tool_call: 100,
+  audit_limit_custom_tool_call_output: 100,
   language: "zh-CN",
   theme_mode: "system",
 };
@@ -141,6 +147,14 @@ describe("SettingsPage", () => {
           }),
         );
       }
+      if (url === "/ai-router/api/settings/audit-storage/optimize" && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ compacted_rows: 12, vacuumed: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
       return Promise.resolve(new Response(null, { status: 404 }));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -163,10 +177,17 @@ describe("SettingsPage", () => {
 
     fireEvent.click(await screen.findByRole("tab", { name: "高级" }));
     expect(await screen.findByRole("button", { name: "恢复此备份" })).toBeInTheDocument();
+    expect(screen.getByText("审计存储")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "立即优化" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "立即备份" }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/ai-router/api/settings/database/backup", expect.objectContaining({ method: "POST" }));
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "立即优化" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/ai-router/api/settings/audit-storage/optimize", expect.objectContaining({ method: "POST" }));
     });
 
     fireEvent.click(screen.getByRole("button", { name: "恢复此备份" }));
