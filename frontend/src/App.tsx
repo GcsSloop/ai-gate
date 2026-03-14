@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { AccountsPage } from "./features/accounts/AccountsPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
+import { StatsPage } from "./features/stats/StatsPage";
 import { createDesktopUpdateService, type DesktopUpdateInfo } from "./features/updates/updateService";
 import appLogo from "./assets/aigate_1024_1024.png";
 import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus } from "./lib/api";
@@ -24,7 +25,7 @@ function sleep(ms: number): Promise<void> {
 
 export function App() {
   const [messageApi, contextHolder] = message.useMessage();
-  const [view, setView] = useState<"accounts" | "settings">("accounts");
+  const [view, setView] = useState<"accounts" | "stats" | "settings">("accounts");
   const [addModalMode, setAddModalMode] = useState<"official" | "third_party" | null>(null);
   const [proxyEnabled, setProxyEnabled] = useState(false);
   const [proxyLoading, setProxyLoading] = useState(false);
@@ -336,6 +337,14 @@ export function App() {
               <div className="brand-block">
                 <img src={appLogo} alt="AI Gate" className="brand-logo" />
                 <div className="brand">AI Gate</div>
+                <div className="top-view-switcher">
+                  <Button type="text" className={view === "accounts" ? "top-nav-button is-active" : "top-nav-button"} onClick={() => setView("accounts")}>
+                    {t("账户")}
+                  </Button>
+                  <Button type="text" className={view === "stats" ? "top-nav-button is-active" : "top-nav-button"} onClick={() => setView("stats")}>
+                    {t("统计")}
+                  </Button>
+                </div>
                 <Button
                   type="text"
                   icon={<SettingOutlined />}
@@ -374,14 +383,18 @@ export function App() {
                 </Dropdown>
               </div>
             </header>
-            <AccountsPage
-              language={language}
-              t={t}
-              syncToken={accountsSyncToken}
-              showAddButton={false}
-              addModalMode={addModalMode}
-              onAddModalModeConsumed={() => setAddModalMode(null)}
-            />
+            {view === "stats" ? (
+              <StatsPage language={language} t={t} />
+            ) : (
+              <AccountsPage
+                language={language}
+                t={t}
+                syncToken={accountsSyncToken}
+                showAddButton={false}
+                addModalMode={addModalMode}
+                onAddModalModeConsumed={() => setAddModalMode(null)}
+              />
+            )}
             </div>
           )}
         </div>

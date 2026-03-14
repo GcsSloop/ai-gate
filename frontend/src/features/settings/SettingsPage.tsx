@@ -31,7 +31,6 @@ import {
   importDatabaseSQL,
   listAccounts,
   listDatabaseBackups,
-  optimizeAuditStorage,
   restoreDatabaseBackup,
   saveAppSettings,
   saveFailoverQueue,
@@ -197,7 +196,6 @@ export function SettingsPage({
   const [savingQueue, setSavingQueue] = useState(false);
   const [proxySwitchBusy, setProxySwitchBusy] = useState(false);
   const [backupBusy, setBackupBusy] = useState("");
-  const [optimizingAuditStorage, setOptimizingAuditStorage] = useState(false);
   const [importingSQL, setImportingSQL] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -407,23 +405,6 @@ export function SettingsPage({
       void messageApi.error(error instanceof Error ? error.message : t("恢复数据库备份失败"));
     } finally {
       setBackupBusy("");
-    }
-  }
-
-  async function handleOptimizeAuditStorage() {
-    setOptimizingAuditStorage(true);
-    try {
-      const result = await optimizeAuditStorage();
-      void messageApi.success(
-        result.compacted_rows > 0
-          ? `${t("审计存储已优化")} · ${result.compacted_rows} ${t("条记录已摘要化")}`
-          : t("审计存储无需优化"),
-      );
-      await refreshBackups();
-    } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : t("优化审计存储失败"));
-    } finally {
-      setOptimizingAuditStorage(false);
     }
   }
 
@@ -665,41 +646,6 @@ export function SettingsPage({
                     </Button>
                     <Button icon={<CloudUploadOutlined />} loading={importingSQL} onClick={() => setImportModalOpen(true)}>
                       {t("导入 JSON")}
-                    </Button>
-                  </div>
-                </Card>
-
-                <Card className="settings-card" variant="borderless">
-                  <SectionHeader icon={<DatabaseOutlined />} title={t("审计存储")} description={t("按类型控制原始审计消息保留数量，超限后自动转成摘要记录。")} />
-                  <div className="settings-field-grid">
-                    <label className="settings-field">
-                      <span className="settings-field-label">{t("消息原文上限")}</span>
-                      <InputNumber min={1} value={draftSettings.audit_limit_message} onChange={(value) => updateDraft({ audit_limit_message: Number(value) || 200 })} className="settings-number" />
-                    </label>
-                    <label className="settings-field">
-                      <span className="settings-field-label">{t("函数调用上限")}</span>
-                      <InputNumber min={1} value={draftSettings.audit_limit_function_call} onChange={(value) => updateDraft({ audit_limit_function_call: Number(value) || 100 })} className="settings-number" />
-                    </label>
-                    <label className="settings-field">
-                      <span className="settings-field-label">{t("函数输出上限")}</span>
-                      <InputNumber min={1} value={draftSettings.audit_limit_function_call_output} onChange={(value) => updateDraft({ audit_limit_function_call_output: Number(value) || 100 })} className="settings-number" />
-                    </label>
-                    <label className="settings-field">
-                      <span className="settings-field-label">{t("推理记录上限")}</span>
-                      <InputNumber min={1} value={draftSettings.audit_limit_reasoning} onChange={(value) => updateDraft({ audit_limit_reasoning: Number(value) || 40 })} className="settings-number" />
-                    </label>
-                    <label className="settings-field">
-                      <span className="settings-field-label">{t("自定义调用上限")}</span>
-                      <InputNumber min={1} value={draftSettings.audit_limit_custom_tool_call} onChange={(value) => updateDraft({ audit_limit_custom_tool_call: Number(value) || 100 })} className="settings-number" />
-                    </label>
-                    <label className="settings-field">
-                      <span className="settings-field-label">{t("自定义输出上限")}</span>
-                      <InputNumber min={1} value={draftSettings.audit_limit_custom_tool_call_output} onChange={(value) => updateDraft({ audit_limit_custom_tool_call_output: Number(value) || 100 })} className="settings-number" />
-                    </label>
-                  </div>
-                  <div className="settings-action-row">
-                    <Button onClick={() => void handleOptimizeAuditStorage()} loading={optimizingAuditStorage}>
-                      {t("立即优化")}
                     </Button>
                   </div>
                 </Card>

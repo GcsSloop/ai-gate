@@ -147,14 +147,6 @@ describe("SettingsPage", () => {
           }),
         );
       }
-      if (url === "/ai-router/api/settings/audit-storage/optimize" && init?.method === "POST") {
-        return Promise.resolve(
-          new Response(JSON.stringify({ compacted_rows: 12, vacuumed: true }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
-      }
       return Promise.resolve(new Response(null, { status: 404 }));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -177,17 +169,12 @@ describe("SettingsPage", () => {
 
     fireEvent.click(await screen.findByRole("tab", { name: "高级" }));
     expect(await screen.findByRole("button", { name: "恢复此备份" })).toBeInTheDocument();
-    expect(screen.getByText("审计存储")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "立即优化" })).toBeInTheDocument();
+    expect(screen.queryByText("审计存储")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "立即优化" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "立即备份" }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/ai-router/api/settings/database/backup", expect.objectContaining({ method: "POST" }));
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "立即优化" }));
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/ai-router/api/settings/audit-storage/optimize", expect.objectContaining({ method: "POST" }));
     });
 
     fireEvent.click(screen.getByRole("button", { name: "恢复此备份" }));
