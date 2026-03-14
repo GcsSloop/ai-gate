@@ -51,6 +51,7 @@ const { Text, Title } = Typography;
 
 type SettingsPageProps = {
   initialSettings: AppSettings;
+  initialTab?: "general" | "proxy" | "advanced" | "about";
   language: AppLanguage;
   t: Translator;
   proxyEnabled: boolean;
@@ -171,6 +172,7 @@ function ToggleRow(props: {
 
 export function SettingsPage({
   initialSettings,
+  initialTab = "general",
   language,
   t,
   proxyEnabled,
@@ -199,10 +201,15 @@ export function SettingsPage({
   const [importingSQL, setImportingSQL] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
+  const [activeTab, setActiveTab] = useState<string>(initialTab);
 
   useEffect(() => {
     setDraftSettings(initialSettings);
   }, [initialSettings]);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
 
   useEffect(() => {
     async function loadSettingsPageData() {
@@ -434,6 +441,8 @@ export function SettingsPage({
 
       <Tabs
         className="settings-tabs"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: "general",

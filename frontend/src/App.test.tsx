@@ -30,7 +30,7 @@ vi.mock("./features/accounts/AccountsPage", () => ({
 }));
 
 vi.mock("./features/settings/SettingsPage", () => ({
-  SettingsPage: () => <div>settings-page</div>,
+  SettingsPage: ({ initialTab }: { initialTab?: string }) => <div>settings-page:{initialTab ?? "general"}</div>,
 }));
 
 vi.mock("./features/stats/StatsPage", () => ({
@@ -227,7 +227,7 @@ describe("App", () => {
     expect(mockedUpdateService.check).not.toHaveBeenCalled();
   });
 
-  it("opens settings when the home update indicator is clicked", async () => {
+  it("opens the about tab when the home update indicator is clicked", async () => {
     mockedUpdateService.check.mockResolvedValue({
       supported: true,
       update: {
@@ -286,7 +286,7 @@ describe("App", () => {
 
     fireEvent.click(await screen.findByLabelText("打开更新"));
 
-    expect(await screen.findByText("settings-page")).toBeInTheDocument();
+    expect(await screen.findByText("settings-page:about")).toBeInTheDocument();
   });
 
   it("hides the home proxy switch when app settings disable it", async () => {
@@ -759,7 +759,7 @@ describe("App", () => {
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
-    expect(await screen.findByText("settings-page")).toBeInTheDocument();
+    expect(await screen.findByText("settings-page:general")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "返回首页" }));
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
   });
