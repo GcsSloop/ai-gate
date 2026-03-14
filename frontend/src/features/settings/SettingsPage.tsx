@@ -752,6 +752,12 @@ export function SettingsPage({
                         <span>{language === "en-US" ? "Version" : "程序版本"}</span>
                         <strong>{metadata.version}</strong>
                       </div>
+                      <div className="about-meta-row">
+                        <span>GitHub</span>
+                        <a href="https://github.com/GcsSloop/ai-gate" target="_blank" rel="noreferrer">
+                          GcsSloop/ai-gate
+                        </a>
+                      </div>
                     </div>
                     <UpdateCard currentVersion={metadata.version} language={language} t={t} />
                   </div>
