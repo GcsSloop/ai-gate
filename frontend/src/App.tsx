@@ -1,6 +1,6 @@
-import { ArrowLeftOutlined, CloudDownloadOutlined, PlusOutlined, SaveOutlined, SettingOutlined } from "@ant-design/icons";
+import { CloudDownloadOutlined, PlusOutlined } from "@ant-design/icons";
 import { App as AntApp, Button, ConfigProvider, Dropdown, Modal, Spin, Switch, message, theme as antdTheme } from "antd";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { AccountsPage } from "./features/accounts/AccountsPage";
@@ -17,6 +17,8 @@ import "./styles.css";
 const appSettingsBootstrapRetryDelays = [0, 150, 300, 600, 1_000];
 const homeUpdateCheckIntervalMs = 6 * 60 * 60 * 1_000;
 
+type AppView = "accounts" | "stats" | "settings";
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
@@ -25,7 +27,7 @@ function sleep(ms: number): Promise<void> {
 
 export function App() {
   const [messageApi, contextHolder] = message.useMessage();
-  const [view, setView] = useState<"accounts" | "stats" | "settings">("accounts");
+  const [view, setView] = useState<AppView>("accounts");
   const [settingsInitialTab, setSettingsInitialTab] = useState<"general" | "proxy" | "advanced" | "about">("general");
   const [addModalMode, setAddModalMode] = useState<"official" | "third_party" | null>(null);
   const [proxyEnabled, setProxyEnabled] = useState(false);
@@ -35,7 +37,6 @@ export function App() {
   const [shellReady, setShellReady] = useState(false);
   const [systemPrefersDark, setSystemPrefersDark] = useState(false);
   const [homeUpdate, setHomeUpdate] = useState<DesktopUpdateInfo | null>(null);
-  const settingsSaveActionRef = useRef<(() => void) | null>(null);
   const updateService = useMemo(() => createDesktopUpdateService(), []);
   const language = normalizeLanguage(appSettings?.language);
   const t = createTranslator(language);
@@ -277,6 +278,7 @@ export function App() {
 
   const showProxySwitch = appSettings?.show_proxy_switch_on_home ?? true;
   const showHomeUpdateIndicator = Boolean(appSettings?.show_home_update_indicator && homeUpdate);
+  const pageTitle = view === "accounts" ? t("账户") : view === "stats" ? t("统计") : t("设置");
 
   return (
     <ConfigProvider
@@ -297,112 +299,111 @@ export function App() {
           {contextHolder}
           {!shellReady || !appSettings ? (
             <div className="app-loading">
-            <Spin size="large" />
-            <span>{t("正在载入设置中心…")}</span>
+              <Spin size="large" />
+              <span>{t("正在载入设置中心…")}</span>
             </div>
-          ) : view === "settings" ? (
-            <div className="settings-screen">
-            <header className="settings-top-bar">
-              <div className="settings-top-left">
-                <Button type="text" icon={<ArrowLeftOutlined />} aria-label={t("返回首页")} onClick={() => setView("accounts")} />
-                <span className="settings-top-title">{t("设置")}</span>
-              </div>
-              <Button
-                aria-label={t("保存设置")}
-                type="primary"
-                size="large"
-                icon={<SaveOutlined />}
-                onClick={() => settingsSaveActionRef.current?.()}
-              >
-                {t("保存设置")}
-              </Button>
-            </header>
-            <div className="settings-content-scroll">
-              <SettingsPage
-                initialSettings={appSettings}
-                initialTab={settingsInitialTab}
-                language={language}
-                t={t}
-                proxyEnabled={proxyEnabled}
-                onSettingsChanged={(next) => void handleSettingsChanged(next)}
-                onToggleProxy={(checked) => handleToggleProxy(checked)}
-                hideLocalSaveButton
-                onRegisterSaveHandler={(handler) => {
-                  settingsSaveActionRef.current = handler;
-                }}
-              />
-            </div>
-          </div>
-        ) : (
-          <div className="app-shell">
-            <header className="top-menu">
-              <div className="brand-block">
-                <img src={appLogo} alt="AI Gate" className="brand-logo" />
-                <div className="brand">AI Gate</div>
-                <div className="top-view-switcher">
-                  <Button type="text" className={view === "accounts" ? "top-nav-button is-active" : "top-nav-button"} onClick={() => setView("accounts")}>
-                    {t("账户")}
-                  </Button>
-                  <Button type="text" className={view === "stats" ? "top-nav-button is-active" : "top-nav-button"} onClick={() => setView("stats")}>
-                    {t("统计")}
-                  </Button>
-                </div>
-                <Button
-                  type="text"
-                  icon={<SettingOutlined />}
-                  aria-label={t("打开设置")}
-                  className="top-settings-button"
-                  onClick={() => {
-                    setSettingsInitialTab("general");
-                    setView("settings");
-                  }}
-                />
-                {showHomeUpdateIndicator ? (
-                  <Button
-                    type="text"
-                    icon={<CloudDownloadOutlined />}
-                    aria-label={t("打开更新")}
-                    className="top-home-update-button"
-                    onClick={() => {
-                      setSettingsInitialTab("about");
-                      setView("settings");
-                    }}
-                  />
-                ) : null}
-              </div>
-              <div className="top-menu-right">
-                {showProxySwitch ? (
-                  <div className="proxy-panel">
-                    <span className="proxy-label">{t("开启代理")}</span>
-                    <Switch checked={proxyEnabled} loading={proxyLoading} onChange={(checked) => void handleToggleProxy(checked)} />
+          ) : (
+            <div className="app-shell">
+              <header className="top-menu">
+                <div className="top-menu-section top-menu-section-left">
+                  <div className="brand-block">
+                    <img src={appLogo} alt="AI Gate" className="brand-logo" />
+                    <div className="brand">AI Gate</div>
                   </div>
-                ) : null}
-                <Dropdown
-                  trigger={["click"]}
-                  menu={{
-                    items: [
-                      { key: "official", label: t("官方账户") },
-                      { key: "third_party", label: t("第三方账户") },
-                    ],
-                    onClick: ({ key }) => setAddModalMode(key as "official" | "third_party"),
-                  }}
-                >
-                  <Button type="primary" shape="circle" icon={<PlusOutlined />} aria-label={t("添加账户")} className="global-add-button" />
-                </Dropdown>
+                  <div className="pill-switcher top-view-switcher" role="tablist" aria-label={t("主导航")}>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={view === "accounts"}
+                      className={view === "accounts" ? "pill-tab-button is-active" : "pill-tab-button"}
+                      onClick={() => setView("accounts")}
+                    >
+                      {t("账户")}
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={view === "stats"}
+                      className={view === "stats" ? "pill-tab-button is-active" : "pill-tab-button"}
+                      onClick={() => setView("stats")}
+                    >
+                      {t("统计")}
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={view === "settings"}
+                      className={view === "settings" ? "pill-tab-button is-active" : "pill-tab-button"}
+                      onClick={() => {
+                        setSettingsInitialTab("general");
+                        setView("settings");
+                      }}
+                    >
+                      {t("设置")}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="top-menu-title">{pageTitle}</div>
+
+                <div className="top-menu-section top-menu-right">
+                  {showHomeUpdateIndicator ? (
+                    <Button
+                      type="text"
+                      icon={<CloudDownloadOutlined />}
+                      aria-label={t("打开更新")}
+                      className="top-home-update-button"
+                      onClick={() => {
+                        setSettingsInitialTab("about");
+                        setView("settings");
+                      }}
+                    />
+                  ) : null}
+                  {showProxySwitch ? (
+                    <div className="proxy-panel">
+                      <span className="proxy-label">{t("开启代理")}</span>
+                      <Switch checked={proxyEnabled} loading={proxyLoading} onChange={(checked) => void handleToggleProxy(checked)} />
+                    </div>
+                  ) : null}
+                  <Dropdown
+                    trigger={["click"]}
+                    menu={{
+                      items: [
+                        { key: "official", label: t("官方账户") },
+                        { key: "third_party", label: t("第三方账户") },
+                      ],
+                      onClick: ({ key }) => setAddModalMode(key as "official" | "third_party"),
+                    }}
+                  >
+                    <Button type="primary" shape="circle" icon={<PlusOutlined />} aria-label={t("添加账户")} className="global-add-button" />
+                  </Dropdown>
+                </div>
+              </header>
+
+              <div className="app-content-scroll">
+                {view === "stats" ? (
+                  <StatsPage language={language} t={t} />
+                ) : view === "settings" ? (
+                  <SettingsPage
+                    initialSettings={appSettings}
+                    initialTab={settingsInitialTab}
+                    language={language}
+                    t={t}
+                    proxyEnabled={proxyEnabled}
+                    onSettingsChanged={(next) => void handleSettingsChanged(next)}
+                    onToggleProxy={(checked) => handleToggleProxy(checked)}
+                  />
+                ) : (
+                  <AccountsPage
+                    language={language}
+                    t={t}
+                    syncToken={accountsSyncToken}
+                    showAddButton={false}
+                    addModalMode={addModalMode}
+                    onAddModalModeConsumed={() => setAddModalMode(null)}
+                  />
+                )}
               </div>
-            </header>
-            {view === "stats" ? (
-              <StatsPage language={language} t={t} />
-            ) : (
-              <AccountsPage
-                language={language}
-                t={t}
-                syncToken={accountsSyncToken}
-                showAddButton={false}
-                addModalMode={addModalMode}
-                onAddModalModeConsumed={() => setAddModalMode(null)}
-              />
-            )}
             </div>
           )}
         </div>

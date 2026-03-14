@@ -170,8 +170,62 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "统计" }));
+    fireEvent.click(screen.getByRole("tab", { name: "统计" }));
     expect(screen.getByText("stats-page")).toBeInTheDocument();
+  });
+
+  it("renders accounts, stats, and settings as shared text tabs", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+                audit_limit_message: 200,
+                audit_limit_function_call: 100,
+                audit_limit_function_call_output: 100,
+                audit_limit_reasoning: 40,
+                audit_limit_custom_tool_call: 100,
+                audit_limit_custom_tool_call_output: 100,
+                language: "zh-CN",
+                theme_mode: "system",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    expect(await screen.findByRole("tab", { name: "账户" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "统计" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "设置" })).toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "主导航" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "设置" }));
+    expect(await screen.findByText("settings-page:general")).toBeInTheDocument();
   });
 
   it("does not start home update checks when the setting is disabled", async () => {
@@ -391,7 +445,9 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
-    expect(screen.getByLabelText("Open settings")).toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "Primary navigation" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Account" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument();
     expect(screen.getByText("Proxy")).toBeInTheDocument();
     expect(screen.getByLabelText("Add account")).toBeInTheDocument();
   });
@@ -709,7 +765,7 @@ describe("App", () => {
     });
   });
 
-  it("opens settings full-screen and supports back navigation", async () => {
+  it("switches between settings and accounts with the shared header tabs", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -758,9 +814,9 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+    fireEvent.click(screen.getByRole("tab", { name: "设置" }));
     expect(await screen.findByText("settings-page:general")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "返回首页" }));
+    fireEvent.click(screen.getByRole("tab", { name: "账户" }));
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
   });
 
