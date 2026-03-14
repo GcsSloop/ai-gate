@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,17 @@ import (
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
+
+func countGatewayRows(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+
+	var count int
+	query := "SELECT COUNT(*) FROM " + table
+	if err := db.QueryRow(query).Scan(&count); err != nil {
+		t.Fatalf("count %s returned error: %v", table, err)
+	}
+	return count
+}
 
 func TestGatewayHandlerProxiesToConfiguredAccount(t *testing.T) {
 	t.Parallel()
@@ -100,6 +112,82 @@ func TestGatewayHandlerProxiesToConfiguredAccount(t *testing.T) {
 	}
 	if response["model"] != "gpt-5.2-codex" {
 		t.Fatalf("response model = %v, want %v", response["model"], "gpt-5.2-codex")
+	}
+}
+
+func TestGatewayHandlerRecordsUsageEventWithoutAuditRows(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "chat.completion",
+			"model":  "gpt-5.2-codex",
+			"usage": map[string]any{
+				"prompt_tokens":     640,
+				"completion_tokens": 128,
+				"total_tokens":      768,
+			},
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "ok"}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat-main",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-test",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create(account) returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save(snapshot) returned error: %v", err)
+	}
+
+	handler := api.NewGatewayHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-5.2-codex",
+		"stream":false,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gateway status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if count := countGatewayRows(t, store.DB(), "usage_events"); count != 1 {
+		t.Fatalf("usage_events row count = %d, want 1", count)
+	}
+	for _, table := range []string{"conversations", "messages", "runs"} {
+		if count := countGatewayRows(t, store.DB(), table); count != 0 {
+			t.Fatalf("%s row count = %d, want 0", table, count)
+		}
 	}
 }
 

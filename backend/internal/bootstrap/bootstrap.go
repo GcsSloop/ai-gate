@@ -2,7 +2,9 @@ package bootstrap
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -46,6 +48,10 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := cleanupLegacyAuditData(store.DB()); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 
 	var credentialCipher *secrets.Cipher
 	if cfg.EncryptionKey != "" {
@@ -59,21 +65,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	accountRepo := accounts.NewSQLiteRepository(store.DB(), credentialCipher)
 	settingsRepo := settings.NewSQLiteRepository(store.DB())
 	usageRepo := usage.NewSQLiteRepository(store.DB())
-	conversationRepo := conversations.NewSQLiteRepository(store.DB(), conversations.WithAuditStoragePolicyProvider(func() conversations.AuditStoragePolicy {
-		current, err := settingsRepo.GetAppSettings()
-		if err != nil {
-			return conversations.DefaultAuditStoragePolicy()
-		}
-		return conversations.AuditStoragePolicy{
-			MessageLimit:              current.AuditLimitMessage,
-			FunctionCallLimit:         current.AuditLimitFunctionCall,
-			FunctionCallOutputLimit:   current.AuditLimitFunctionCallOutput,
-			ReasoningLimit:            current.AuditLimitReasoning,
-			CustomToolCallLimit:       current.AuditLimitCustomToolCall,
-			CustomToolCallOutputLimit: current.AuditLimitCustomToolCallOutput,
-		}
-	}))
-	auditOptimizer := conversations.NewAuditStorageOptimizer(store.DB())
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
 	policyRepo := policy.NewMemoryRepository()
 	authConnector := auth.NewOAuthConnector(auth.Config{})
 	stateStore := auth.NewStateStore(5 * time.Minute)
@@ -85,8 +77,10 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/accounts/", accountsHandler)
 	apiMux.Handle("/policy/", api.NewPolicyHandler(policyRepo))
 	apiMux.Handle("/monitoring/overview", api.NewMonitoringHandler(accountRepo, usageRepo))
-	apiMux.Handle("/dashboard/summary", api.NewDashboardHandler(conversationRepo))
-	apiMux.Handle("/dashboard/account-stats", api.NewDashboardHandler(conversationRepo))
+	dashboardHandler := api.NewDashboardHandler(usageRepo)
+	apiMux.Handle("/dashboard/summary", dashboardHandler)
+	apiMux.Handle("/dashboard/trends", dashboardHandler)
+	apiMux.Handle("/dashboard/recent-events", dashboardHandler)
 	apiMux.Handle("/conversations", conversationsHandler)
 	apiMux.Handle("/conversations/", conversationsHandler)
 	settingsHandler := api.NewSettingsHandler(
@@ -148,16 +142,6 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	app.background.Add(1)
 	go func() {
 		defer app.background.Done()
-		if current, err := settingsRepo.GetAppSettings(); err == nil {
-			_, _ = auditOptimizer.Optimize(conversations.AuditStoragePolicy{
-				MessageLimit:              current.AuditLimitMessage,
-				FunctionCallLimit:         current.AuditLimitFunctionCall,
-				FunctionCallOutputLimit:   current.AuditLimitFunctionCallOutput,
-				ReasoningLimit:            current.AuditLimitReasoning,
-				CustomToolCallLimit:       current.AuditLimitCustomToolCall,
-				CustomToolCallOutputLimit: current.AuditLimitCustomToolCallOutput,
-			})
-		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -172,6 +156,41 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	}()
 
 	return app, nil
+}
+
+func cleanupLegacyAuditData(db *sql.DB) error {
+	const cleanupKey = "audit_cleanup_v1"
+
+	var existing string
+	switch err := db.QueryRow(`SELECT value FROM maintenance_state WHERE key = ?`, cleanupKey).Scan(&existing); err {
+	case nil:
+		return nil
+	case sql.ErrNoRows:
+	default:
+		return fmt.Errorf("query maintenance state: %w", err)
+	}
+
+	for _, statement := range []string{
+		`DELETE FROM messages`,
+		`DELETE FROM runs`,
+		`DELETE FROM conversations`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			return fmt.Errorf("cleanup legacy audit data: %w", err)
+		}
+	}
+	if _, err := db.Exec(`VACUUM`); err != nil {
+		return fmt.Errorf("vacuum legacy audit data: %w", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO maintenance_state (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+		cleanupKey,
+		"done",
+	); err != nil {
+		return fmt.Errorf("mark maintenance state: %w", err)
+	}
+	return nil
 }
 
 func withCORS(next http.Handler) http.Handler {

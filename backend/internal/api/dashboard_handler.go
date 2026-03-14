@@ -2,77 +2,80 @@ package api
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
-	"github.com/gcssloop/codex-router/backend/internal/conversations"
+	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
 
-type DashboardConversationSummary interface {
-	CountConversations() (int, error)
-	CountActiveConversations() (int, error)
-	CountRuns() (int, error)
-	CountFailoverRuns() (int, error)
-	ListAccountCallStats() ([]conversations.AccountCallStats, error)
+type DashboardUsageSummary interface {
+	SummarizeEvents(filter usage.EventFilter) (usage.EventSummary, error)
+	TrendEventsByHour(filter usage.EventFilter) ([]usage.TrendPoint, error)
+	ListRecentEvents(filter usage.EventFilter) ([]usage.Event, error)
 }
 
 type DashboardHandler struct {
-	conversations DashboardConversationSummary
+	usage DashboardUsageSummary
 }
 
-func NewDashboardHandler(conversations DashboardConversationSummary) *DashboardHandler {
-	return &DashboardHandler{conversations: conversations}
+func NewDashboardHandler(usageRepo DashboardUsageSummary) *DashboardHandler {
+	return &DashboardHandler{usage: usageRepo}
 }
 
 func (h *DashboardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	filter := dashboardEventFilter(r)
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/dashboard/summary":
-		totalConversations, err := h.conversations.CountConversations()
+		summary, err := h.usage.SummarizeEvents(filter)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		activeConversations, err := h.conversations.CountActiveConversations()
+		writeJSON(w, http.StatusOK, summary)
+	case r.Method == http.MethodGet && r.URL.Path == "/dashboard/trends":
+		trends, err := h.usage.TrendEventsByHour(filter)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		totalRuns, err := h.conversations.CountRuns()
+		writeJSON(w, http.StatusOK, trends)
+	case r.Method == http.MethodGet && r.URL.Path == "/dashboard/recent-events":
+		events, err := h.usage.ListRecentEvents(filter)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		failoverRuns, err := h.conversations.CountFailoverRuns()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]int{
-			"total_conversations":  totalConversations,
-			"active_conversations": activeConversations,
-			"total_runs":           totalRuns,
-			"failover_runs":        failoverRuns,
-		})
-	case r.Method == http.MethodGet && r.URL.Path == "/dashboard/account-stats":
-		stats, err := h.conversations.ListAccountCallStats()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		type accountStatsResponseItem struct {
-			AccountID  int64          `json:"account_id"`
-			TotalCalls int            `json:"total_calls"`
-			Models     map[string]int `json:"models"`
-		}
-		response := make([]accountStatsResponseItem, 0, len(stats))
-		for _, stat := range stats {
-			response = append(response, accountStatsResponseItem{
-				AccountID:  stat.AccountID,
-				TotalCalls: stat.TotalCalls,
-				Models:     stat.ModelCalls,
-			})
-		}
-		writeJSON(w, http.StatusOK, response)
+		writeJSON(w, http.StatusOK, events)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func dashboardEventFilter(r *http.Request) usage.EventFilter {
+	query := r.URL.Query()
+	filter := usage.EventFilter{}
+
+	hours, _ := strconv.Atoi(query.Get("hours"))
+	if hours <= 0 {
+		hours = 24
+	}
+	from := time.Now().UTC().Add(-time.Duration(hours) * time.Hour)
+	filter.From = &from
+
+	if raw := query.Get("account_id"); raw != "" {
+		if accountID, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			filter.AccountID = &accountID
+		}
+	}
+	filter.Model = query.Get("model")
+
+	if raw := query.Get("limit"); raw != "" {
+		if limit, err := strconv.Atoi(raw); err == nil && limit > 0 {
+			filter.Limit = limit
+		}
+	}
+	if filter.Limit == 0 {
+		filter.Limit = 20
+	}
+	return filter
 }
