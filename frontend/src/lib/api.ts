@@ -520,6 +520,16 @@ export async function restoreDatabaseBackup(backupID: string): Promise<void> {
   }
 }
 
+export async function deleteDatabaseBackup(backupID: string): Promise<void> {
+  const response = await fetch(apiPath(`/settings/database/backups/${encodeURIComponent(backupID)}`), {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to delete database backup");
+  }
+}
+
 export async function enableProxy(): Promise<ProxyStatus> {
   const response = await fetch(apiPath("/settings/proxy/enable"), { method: "POST" });
   if (!response.ok) {

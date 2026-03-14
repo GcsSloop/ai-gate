@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { SettingsPage } from "./SettingsPage";
 import { applyDesktopAppSettings, getAppMetadata, getRecentDesktopLogs } from "../../lib/desktop-shell";
@@ -147,6 +147,14 @@ describe("SettingsPage", () => {
           }),
         );
       }
+      if (url === "/ai-router/api/settings/database/backups/20260309-101500.000" && init?.method === "DELETE") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ deleted_backup_id: "20260309-101500.000" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
       return Promise.resolve(new Response(null, { status: 404 }));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -168,7 +176,12 @@ describe("SettingsPage", () => {
     render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole("tab", { name: "高级" }));
+    const toolbar = screen.getByTestId("settings-tab-toolbar");
+    expect(within(toolbar).getByRole("tab", { name: "高级" })).toBeInTheDocument();
+    expect(within(toolbar).getByRole("button", { name: "保存设置" })).toBeInTheDocument();
+
     expect(await screen.findByRole("button", { name: "恢复此备份" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "删除此备份" })).toBeInTheDocument();
     expect(screen.queryByText("审计存储")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "立即优化" })).not.toBeInTheDocument();
 
@@ -185,6 +198,19 @@ describe("SettingsPage", () => {
           method: "POST",
           body: JSON.stringify({ backup_id: "20260309-101500.000" }),
         }),
+      );
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "删除此备份" }));
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "确认删除" }));
+    });
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/settings/database/backups/20260309-101500.000",
+        expect.objectContaining({ method: "DELETE" }),
       );
     });
 
@@ -245,6 +271,38 @@ describe("SettingsPage", () => {
     });
 
     expect(onSettingsChanged).toHaveBeenCalledWith({ ...baseSettings, language: "en-US" });
+  });
+
+  it("places interface preferences before window behavior in general settings", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/failover-queue") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/database/backups") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(getAppMetadata).mockResolvedValue({
+      name: "AI Gate",
+      version: "0.1.0",
+      description: "桌面代理与路由控制台",
+      author: "GcsSloop",
+    });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
+
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
+
+    const preferencesHeading = await screen.findByText("界面偏好");
+    const windowHeading = screen.getByText("窗口行为");
+    expect(
+      preferencesHeading.compareDocumentPosition(windowHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("saves the home update indicator preference", async () => {
