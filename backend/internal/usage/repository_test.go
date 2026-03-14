@@ -133,3 +133,186 @@ func TestSQLiteRepositoryListLatest(t *testing.T) {
 		t.Fatalf("first latest snapshot = %+v, want latest account 1 snapshot", got[0])
 	}
 }
+
+func TestSQLiteRepositorySaveEventListRecentAndSummarize(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	from := time.Date(2026, 3, 15, 8, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+
+	balanceBefore := 100.0
+	balanceAfter := 98.5
+	quotaBefore := 3000000.0
+	quotaAfter := 2997000.0
+
+	if err := repo.SaveEvent(usage.Event{
+		AccountID:     9,
+		ProviderType:  "openai",
+		RequestKind:   "responses",
+		Model:         "gpt-5.2",
+		Status:        "completed",
+		InputTokens:   1200,
+		OutputTokens:  300,
+		TotalTokens:   1500,
+		EstimatedCost: 0.42,
+		BalanceBefore: &balanceBefore,
+		BalanceAfter:  &balanceAfter,
+		QuotaBefore:   &quotaBefore,
+		QuotaAfter:    &quotaAfter,
+		LatencyMS:     321,
+		CreatedAt:     time.Date(2026, 3, 15, 10, 5, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("SaveEvent(first) returned error: %v", err)
+	}
+
+	if err := repo.SaveEvent(usage.Event{
+		AccountID:     9,
+		ProviderType:  "openai",
+		RequestKind:   "responses",
+		Model:         "gpt-5.2",
+		Status:        "rate_limited",
+		InputTokens:   200,
+		OutputTokens:  0,
+		TotalTokens:   200,
+		EstimatedCost: 0.01,
+		LatencyMS:     99,
+		CreatedAt:     time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("SaveEvent(second) returned error: %v", err)
+	}
+
+	accountID := int64(9)
+	events, err := repo.ListRecentEvents(usage.EventFilter{
+		From:      &from,
+		To:        &to,
+		AccountID: &accountID,
+		Model:     "gpt-5.2",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("ListRecentEvents returned error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
+	}
+	if events[0].Status != "rate_limited" {
+		t.Fatalf("events[0].Status = %q, want newest event first", events[0].Status)
+	}
+
+	summary, err := repo.SummarizeEvents(usage.EventFilter{
+		From:      &from,
+		To:        &to,
+		AccountID: &accountID,
+		Model:     "gpt-5.2",
+	})
+	if err != nil {
+		t.Fatalf("SummarizeEvents returned error: %v", err)
+	}
+	if summary.RequestCount != 2 {
+		t.Fatalf("RequestCount = %d, want 2", summary.RequestCount)
+	}
+	if summary.SuccessCount != 1 || summary.FailureCount != 1 {
+		t.Fatalf("success/failure = %d/%d, want 1/1", summary.SuccessCount, summary.FailureCount)
+	}
+	if summary.InputTokens != 1400 || summary.OutputTokens != 300 || summary.TotalTokens != 1700 {
+		t.Fatalf("token summary = %+v, want input=1400 output=300 total=1700", summary)
+	}
+	if summary.EstimatedCost != 0.43 {
+		t.Fatalf("EstimatedCost = %v, want 0.43", summary.EstimatedCost)
+	}
+	if summary.BalanceDelta != -1.5 {
+		t.Fatalf("BalanceDelta = %v, want -1.5", summary.BalanceDelta)
+	}
+	if summary.QuotaDelta != -3000 {
+		t.Fatalf("QuotaDelta = %v, want -3000", summary.QuotaDelta)
+	}
+}
+
+func TestSQLiteRepositoryTrendEventsByHour(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	for _, event := range []usage.Event{
+		{
+			AccountID:     1,
+			ProviderType:  "openai",
+			RequestKind:   "responses",
+			Model:         "gpt-5.2",
+			Status:        "completed",
+			InputTokens:   100,
+			OutputTokens:  10,
+			TotalTokens:   110,
+			EstimatedCost: 0.1,
+			CreatedAt:     time.Date(2026, 3, 15, 9, 15, 0, 0, time.UTC),
+		},
+		{
+			AccountID:     1,
+			ProviderType:  "openai",
+			RequestKind:   "responses",
+			Model:         "gpt-5.2",
+			Status:        "completed",
+			InputTokens:   200,
+			OutputTokens:  20,
+			TotalTokens:   220,
+			EstimatedCost: 0.2,
+			CreatedAt:     time.Date(2026, 3, 15, 9, 45, 0, 0, time.UTC),
+		},
+		{
+			AccountID:     1,
+			ProviderType:  "openai",
+			RequestKind:   "responses",
+			Model:         "gpt-5.2",
+			Status:        "completed",
+			InputTokens:   300,
+			OutputTokens:  30,
+			TotalTokens:   330,
+			EstimatedCost: 0.3,
+			CreatedAt:     time.Date(2026, 3, 15, 10, 5, 0, 0, time.UTC),
+		},
+	} {
+		if err := repo.SaveEvent(event); err != nil {
+			t.Fatalf("SaveEvent returned error: %v", err)
+		}
+	}
+
+	points, err := repo.TrendEventsByHour(usage.EventFilter{
+		From: ptrTime(time.Date(2026, 3, 15, 9, 0, 0, 0, time.UTC)),
+		To:   ptrTime(time.Date(2026, 3, 15, 11, 0, 0, 0, time.UTC)),
+	})
+	if err != nil {
+		t.Fatalf("TrendEventsByHour returned error: %v", err)
+	}
+	if len(points) != 2 {
+		t.Fatalf("len(points) = %d, want 2", len(points))
+	}
+	if !points[0].Bucket.Equal(time.Date(2026, 3, 15, 9, 0, 0, 0, time.UTC)) {
+		t.Fatalf("points[0].Bucket = %v, want 2026-03-15T09:00:00Z", points[0].Bucket)
+	}
+	if points[0].RequestCount != 2 || points[0].TotalTokens != 330 {
+		t.Fatalf("points[0] = %+v, want request_count=2 total_tokens=330", points[0])
+	}
+	if points[1].RequestCount != 1 || points[1].EstimatedCost != 0.3 {
+		t.Fatalf("points[1] = %+v, want request_count=1 estimated_cost=0.3", points[1])
+	}
+}
+
+func ptrTime(value time.Time) *time.Time {
+	return &value
+}

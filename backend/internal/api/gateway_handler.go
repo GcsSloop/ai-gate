@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -31,6 +30,8 @@ type GatewayAccounts interface {
 
 type GatewayUsage interface {
 	GetLatest(accountID int64) (usage.Snapshot, error)
+	Save(snapshot usage.Snapshot) error
+	SaveEvent(event usage.Event) error
 }
 
 type GatewayRuns interface {
@@ -114,17 +115,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		candidates = append(candidates, routing.Candidate{Account: account, Snapshot: snapshot})
 	}
 
-	conversationID, err := h.conversations.CreateConversation(conversations.Conversation{
-		ClientID:             r.RemoteAddr,
-		TargetProviderFamily: "openai",
-		DefaultModel:         req.Model,
-		State:                "active",
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	log.Printf("gateway: created conversation conversation_id=%d model=%q", conversationID, req.Model)
+	conversationID := int64(0)
 
 	if req.Stream {
 		h.serveStream(r.Context(), w, req, body, candidates, conversationID)
@@ -137,7 +128,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	executor := routing.NewExecutor(h.conversations, func(ctx context.Context, candidate routing.Candidate) error {
+	executor := routing.NewExecutor(noopRunRecorder{}, func(ctx context.Context, candidate routing.Candidate) error {
 		account := candidate.Account
 		startedAt := time.Now()
 		logUpstreamSummary("gateway", conversationID, account, "/chat/completions", req.Model)
@@ -180,6 +171,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			logFailureSummary("gateway", conversationID, account.ID, "read_response", startedAt, err)
 		} else {
 			logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, string(upstreamResponse))
+			persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", parseChatCompletionsUsage(upstreamResponse, account.ID), startedAt)
 		}
 		return err
 	})
@@ -191,6 +183,9 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		EstimatedCost:         0.01,
 	})
 	if err != nil {
+		if len(orderedCandidates) > 0 {
+			persistUsageEvent(h.usage, orderedCandidates[0].Account, "chat_completions", req.Model, "failed", usage.Snapshot{AccountID: orderedCandidates[0].Account.ID}, time.Now().UTC())
+		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -230,7 +225,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		return nil
 	}
 
-	proxy := streamproxy.NewProxy(h.conversations, func(ctx context.Context, attempt streamproxy.Attempt) error {
+	proxy := streamproxy.NewProxy(noopRunRecorder{}, func(ctx context.Context, attempt streamproxy.Attempt) error {
 		account := attempt.Candidate.Account
 		startedAt := time.Now()
 		logUpstreamSummary("gateway", conversationID, account, "/chat/completions", req.Model)
@@ -301,9 +296,11 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		}
 		if err := scanner.Err(); err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, "read_stream", startedAt, err)
+			persistUsageEvent(h.usage, account, "chat_completions", req.Model, "failed", usage.Snapshot{AccountID: account.ID}, startedAt)
 			return err
 		}
 		logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, "")
+		persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", usage.Snapshot{AccountID: account.ID}, startedAt)
 		return nil
 	})
 

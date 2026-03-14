@@ -54,24 +54,18 @@ func TestRepositoryPersistsAppSettingsAndQueue(t *testing.T) {
 
 	repo := settings.NewSQLiteRepository(store.DB())
 	wantSettings := settings.AppSettings{
-		LaunchAtLogin:                  true,
-		SilentStart:                    true,
-		CloseToTray:                    false,
-		ShowProxySwitchOnHome:          false,
-		ShowHomeUpdateIndicator:        false,
-		ProxyHost:                      "localhost",
-		ProxyPort:                      15721,
-		AutoFailoverEnabled:            true,
-		AutoBackupIntervalHours:        12,
-		BackupRetentionCount:           7,
-		AuditLimitMessage:              200,
-		AuditLimitFunctionCall:         100,
-		AuditLimitFunctionCallOutput:   100,
-		AuditLimitReasoning:            40,
-		AuditLimitCustomToolCall:       100,
-		AuditLimitCustomToolCallOutput: 100,
-		Language:                       "en-US",
-		ThemeMode:                      "dark",
+		LaunchAtLogin:           true,
+		SilentStart:             true,
+		CloseToTray:             false,
+		ShowProxySwitchOnHome:   false,
+		ShowHomeUpdateIndicator: false,
+		ProxyHost:               "localhost",
+		ProxyPort:               15721,
+		AutoFailoverEnabled:     true,
+		AutoBackupIntervalHours: 12,
+		BackupRetentionCount:    7,
+		Language:                "en-US",
+		ThemeMode:               "dark",
 	}
 
 	if err := repo.SaveAppSettings(wantSettings); err != nil {

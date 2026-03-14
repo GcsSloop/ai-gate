@@ -49,12 +49,6 @@ func TestSettingsHandlerGetAndPutAppSettings(t *testing.T) {
 		"auto_failover_enabled": true,
 		"auto_backup_interval_hours": 12,
 		"backup_retention_count": 7,
-		"audit_limit_message": 120,
-		"audit_limit_function_call": 80,
-		"audit_limit_function_call_output": 80,
-		"audit_limit_reasoning": 40,
-		"audit_limit_custom_tool_call": 60,
-		"audit_limit_custom_tool_call_output": 60,
 		"language": "en-US",
 		"theme_mode": "dark"
 	}`)
@@ -70,7 +64,7 @@ func TestSettingsHandlerGetAndPutAppSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAppSettings returned error: %v", err)
 	}
-	if !stored.LaunchAtLogin || !stored.SilentStart || stored.CloseToTray || stored.ShowProxySwitchOnHome || stored.ShowHomeUpdateIndicator || stored.ProxyHost != "localhost" || stored.ProxyPort != 15721 || !stored.AutoFailoverEnabled || stored.AutoBackupIntervalHours != 12 || stored.BackupRetentionCount != 7 || stored.AuditLimitMessage != 120 || stored.AuditLimitFunctionCall != 80 || stored.AuditLimitFunctionCallOutput != 80 || stored.AuditLimitReasoning != 40 || stored.AuditLimitCustomToolCall != 60 || stored.AuditLimitCustomToolCallOutput != 60 || stored.Language != "en-US" || stored.ThemeMode != "dark" {
+	if !stored.LaunchAtLogin || !stored.SilentStart || stored.CloseToTray || stored.ShowProxySwitchOnHome || stored.ShowHomeUpdateIndicator || stored.ProxyHost != "localhost" || stored.ProxyPort != 15721 || !stored.AutoFailoverEnabled || stored.AutoBackupIntervalHours != 12 || stored.BackupRetentionCount != 7 || stored.Language != "en-US" || stored.ThemeMode != "dark" {
 		t.Fatalf("stored settings = %+v, want updated values", stored)
 	}
 }
@@ -273,37 +267,14 @@ func TestSettingsHandlerCreatesListsAndRestoresDatabaseBackups(t *testing.T) {
 	}
 }
 
-func TestSettingsHandlerOptimizesAuditStorage(t *testing.T) {
+func TestSettingsHandlerAuditOptimizeEndpointRemoved(t *testing.T) {
 	handler, _ := newSettingsHandler(t)
 
-	createConversationReq := httptest.NewRequest(http.MethodPut, "/settings/app", bytes.NewBufferString(`{
-		"audit_limit_message": 10,
-		"audit_limit_function_call": 10,
-		"audit_limit_function_call_output": 1,
-		"audit_limit_reasoning": 10,
-		"audit_limit_custom_tool_call": 10,
-		"audit_limit_custom_tool_call_output": 10
-	}`))
-	createConversationReq.Header.Set("Content-Type", "application/json")
-	createConversationRec := httptest.NewRecorder()
-	handler.ServeHTTP(createConversationRec, createConversationReq)
-	if createConversationRec.Code != http.StatusOK {
-		t.Fatalf("seed settings status = %d, want %d; body=%s", createConversationRec.Code, http.StatusOK, createConversationRec.Body.String())
-	}
-
-	optimizeReq := httptest.NewRequest(http.MethodPost, "/settings/audit-storage/optimize", nil)
-	optimizeRec := httptest.NewRecorder()
-	handler.ServeHTTP(optimizeRec, optimizeReq)
-	if optimizeRec.Code != http.StatusOK {
-		t.Fatalf("POST /settings/audit-storage/optimize status = %d, want %d; body=%s", optimizeRec.Code, http.StatusOK, optimizeRec.Body.String())
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal(optimizeRec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("unmarshal optimize payload: %v", err)
-	}
-	if _, ok := payload["compacted_rows"]; !ok {
-		t.Fatalf("optimize payload missing compacted_rows: %v", payload)
+	req := httptest.NewRequest(http.MethodPost, "/settings/audit-storage/optimize", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("POST /settings/audit-storage/optimize status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
 

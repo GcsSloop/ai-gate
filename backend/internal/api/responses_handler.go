@@ -41,6 +41,7 @@ type ResponsesAccounts interface {
 type ResponsesUsage interface {
 	GetLatest(accountID int64) (usage.Snapshot, error)
 	Save(snapshot usage.Snapshot) error
+	SaveEvent(event usage.Event) error
 }
 
 type ResponsesRuns interface {
@@ -125,16 +126,15 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	inputItems, _ := gatewayopenai.ExtractResponsesInputItems(req.Input)
-	conversationID, nextSequence := h.startThinAudit(r, req, account.ID, inputItems)
+	conversationID := int64(0)
 	if err := ensureOfficialAccountSession(r.Context(), h.client, h.accounts, &account); err != nil {
-		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
+		persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, time.Now().UTC())
 		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
 		return
 	}
 	credential, err := resolveCredential(account)
 	if err != nil {
-		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
+		persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, time.Now().UTC())
 		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
 		return
 	}
@@ -142,7 +142,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 	logUpstreamSummary("responses", conversationID, account, "/responses", req.Model)
 	resp, err := h.executeThinResponsesUpstreamRequest(r.Context(), account, credential, rawBody, req.Stream, conversationID, req.Model, startedAt)
 	if err != nil {
-		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
+		persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 		logFailureSummary("responses", conversationID, account.ID, "upstream_request", startedAt, err)
 		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
 		return
@@ -164,25 +164,25 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		} else {
 			logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, "")
 		}
-		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatus)
+		persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
 		return
 	}
 
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatusForErrorClass(classifyRunError(err)))
+		persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 		logFailureSummary("responses", conversationID, account.ID, "read_response", startedAt, err)
 		writeThinGatewayFailure(w, false, http.StatusBadGateway, err)
 		return
 	}
 	if resp.StatusCode < 400 {
 		result := parseResponsesJSONResponse(responseBody, account.ID)
-		h.appendThinAuditOutput(conversationID, nextSequence, result)
 		logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, result.Text)
+		persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, result.Snapshot, startedAt)
 	} else {
 		logFailureSummary("responses", conversationID, account.ID, "upstream_status", startedAt, providers.HTTPError{StatusCode: resp.StatusCode})
+		persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
 	}
-	h.recordThinAuditRun(conversationID, account.ID, req.Model, runStatus)
 	w.Header().Set("OpenAI-Model", req.Model)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(responseBody)
@@ -1003,52 +1003,4 @@ func asInt(value any) int {
 
 func buildResponseItemID(responseID string) string {
 	return "msg_" + responseID
-}
-
-func (h *ResponsesHandler) mergeUsageSnapshot(snapshot usage.Snapshot) usage.Snapshot {
-	snapshot.CheckedAt = time.Now().UTC()
-	if snapshot.AccountID == 0 {
-		return snapshot
-	}
-	latest, err := h.usage.GetLatest(snapshot.AccountID)
-	if err != nil {
-		if snapshot.HealthScore == 0 {
-			snapshot.HealthScore = 1
-		}
-		return snapshot
-	}
-	if snapshot.Balance == 0 {
-		snapshot.Balance = latest.Balance
-	}
-	if snapshot.QuotaRemaining == 0 {
-		snapshot.QuotaRemaining = latest.QuotaRemaining
-	}
-	if snapshot.RPMRemaining == 0 {
-		snapshot.RPMRemaining = latest.RPMRemaining
-	}
-	if snapshot.TPMRemaining == 0 {
-		snapshot.TPMRemaining = latest.TPMRemaining
-	}
-	if snapshot.HealthScore == 0 {
-		snapshot.HealthScore = latest.HealthScore
-		if snapshot.HealthScore == 0 {
-			snapshot.HealthScore = 1
-		}
-	}
-	if snapshot.ModelContextWindow == 0 {
-		snapshot.ModelContextWindow = latest.ModelContextWindow
-	}
-	if snapshot.PrimaryUsedPercent == 0 {
-		snapshot.PrimaryUsedPercent = latest.PrimaryUsedPercent
-	}
-	if snapshot.SecondaryUsedPercent == 0 {
-		snapshot.SecondaryUsedPercent = latest.SecondaryUsedPercent
-	}
-	if snapshot.PrimaryResetsAt == nil {
-		snapshot.PrimaryResetsAt = latest.PrimaryResetsAt
-	}
-	if snapshot.SecondaryResetsAt == nil {
-		snapshot.SecondaryResetsAt = latest.SecondaryResetsAt
-	}
-	return snapshot
 }

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -17,6 +18,17 @@ import (
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
+
+func countRows(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+
+	var count int
+	query := "SELECT COUNT(*) FROM " + table
+	if err := db.QueryRow(query).Scan(&count); err != nil {
+		t.Fatalf("count %s returned error: %v", table, err)
+	}
+	return count
+}
 
 func TestResponsesHandlerThinModeThirdPartyResponsesPassthrough(t *testing.T) {
 	t.Parallel()
@@ -54,6 +66,73 @@ func TestResponsesHandlerThinModeThirdPartyResponsesPassthrough(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"output_text":"tp-pong"`) {
 		t.Fatalf("body = %s, want third-party output", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerThinModeRecordsUsageEventWithoutAuditRows(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"id":"resp_tp_usage_1",
+			"object":"response",
+			"status":"completed",
+			"output_text":"tp-pong",
+			"usage":{"input_tokens":1200,"output_tokens":300,"total_tokens":1500}
+		}`)
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AccountName:       "team3",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
+		SupportsResponses: true,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save(snapshot) returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if count := countRows(t, store.DB(), "usage_events"); count != 1 {
+		t.Fatalf("usage_events row count = %d, want 1", count)
+	}
+	for _, table := range []string{"conversations", "messages", "runs"} {
+		if count := countRows(t, store.DB(), table); count != 0 {
+			t.Fatalf("%s row count = %d, want 0", table, count)
+		}
 	}
 }
 

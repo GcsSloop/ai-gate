@@ -42,11 +42,34 @@ var schemaStatements = []string{
 		secondary_resets_at DATETIME,
 		checked_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,
+	`CREATE TABLE IF NOT EXISTS usage_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id INTEGER NOT NULL,
+		provider_type TEXT NOT NULL DEFAULT '',
+		request_kind TEXT NOT NULL DEFAULT '',
+		model TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT '',
+		input_tokens INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		total_tokens INTEGER NOT NULL DEFAULT 0,
+		estimated_cost REAL NOT NULL DEFAULT 0,
+		balance_before REAL,
+		balance_after REAL,
+		quota_before REAL,
+		quota_after REAL,
+		latency_ms REAL NOT NULL DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`,
 	`CREATE TABLE IF NOT EXISTS routing_policies (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
 		payload TEXT NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`,
+	`CREATE TABLE IF NOT EXISTS maintenance_state (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL DEFAULT '',
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,
 	`CREATE TABLE IF NOT EXISTS app_settings (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
