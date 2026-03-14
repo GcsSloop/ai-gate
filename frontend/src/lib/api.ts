@@ -56,17 +56,46 @@ export type CreateAccountPayload = {
   supports_responses?: boolean;
 };
 
-export type DashboardSummary = {
-  total_conversations: number;
-  active_conversations: number;
-  total_runs: number;
-  failover_runs: number;
+export type UsageDashboardSummary = {
+  request_count: number;
+  success_count: number;
+  failure_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost: number;
+  balance_delta: number;
+  quota_delta: number;
 };
 
-export type AccountCallStats = {
+export type UsageTrendPoint = {
+  bucket: string;
+  request_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost: number;
+  balance_delta: number;
+  quota_delta: number;
+};
+
+export type UsageEventRecord = {
+  id: number;
   account_id: number;
-  total_calls: number;
-  models: Record<string, number>;
+  provider_type: string;
+  request_kind: string;
+  model: string;
+  status: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost: number;
+  balance_before?: number;
+  balance_after?: number;
+  quota_before?: number;
+  quota_after?: number;
+  latency_ms: number;
+  created_at: string;
 };
 
 export type AccountTestResult = {
@@ -161,11 +190,6 @@ export type AppSettings = {
   theme_mode: "system" | "light" | "dark";
 };
 
-export type AuditStorageOptimizeResult = {
-  compacted_rows: number;
-  vacuumed: boolean;
-};
-
 export type DatabaseBackupItem = {
   backup_id: string;
   created_at: string;
@@ -214,18 +238,41 @@ export async function updateAccount(
   }
 }
 
-export async function getDashboardSummary(): Promise<DashboardSummary> {
-  const response = await fetch(apiPath("/dashboard/summary"));
+function dashboardQuery(hours = 24, accountID?: number, model?: string, limit?: number): string {
+  const params = new URLSearchParams();
+  params.set("hours", String(hours));
+  if (accountID && accountID > 0) {
+    params.set("account_id", String(accountID));
+  }
+  if (model && model.trim() !== "") {
+    params.set("model", model.trim());
+  }
+  if (limit && limit > 0) {
+    params.set("limit", String(limit));
+  }
+  return params.toString();
+}
+
+export async function getDashboardSummary(hours = 24, accountID?: number, model?: string): Promise<UsageDashboardSummary> {
+  const response = await fetch(apiPath(`/dashboard/summary?${dashboardQuery(hours, accountID, model)}`));
   if (!response.ok) {
     throw new Error("failed to load dashboard summary");
   }
   return response.json();
 }
 
-export async function getAccountCallStats(): Promise<AccountCallStats[]> {
-  const response = await fetch(apiPath("/dashboard/account-stats"));
+export async function getDashboardTrends(hours = 24, accountID?: number, model?: string): Promise<UsageTrendPoint[]> {
+  const response = await fetch(apiPath(`/dashboard/trends?${dashboardQuery(hours, accountID, model)}`));
   if (!response.ok) {
-    throw new Error("failed to load account call stats");
+    throw new Error("failed to load dashboard trends");
+  }
+  return response.json();
+}
+
+export async function getDashboardRecentEvents(hours = 24, accountID?: number, model?: string, limit = 20): Promise<UsageEventRecord[]> {
+  const response = await fetch(apiPath(`/dashboard/recent-events?${dashboardQuery(hours, accountID, model, limit)}`));
+  if (!response.ok) {
+    throw new Error("failed to load recent usage events");
   }
   return response.json();
 }
@@ -366,17 +413,6 @@ export async function saveAppSettings(payload: AppSettings): Promise<AppSettings
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to save app settings");
-  }
-  return response.json();
-}
-
-export async function optimizeAuditStorage(): Promise<AuditStorageOptimizeResult> {
-  const response = await fetch(apiPath("/settings/audit-storage/optimize"), {
-    method: "POST",
-  });
-  if (!response.ok) {
-    const details = await response.text();
-    throw new Error(details || "failed to optimize audit storage");
   }
   return response.json();
 }

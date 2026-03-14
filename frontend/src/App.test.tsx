@@ -33,6 +33,10 @@ vi.mock("./features/settings/SettingsPage", () => ({
   SettingsPage: () => <div>settings-page</div>,
 }));
 
+vi.mock("./features/stats/StatsPage", () => ({
+  StatsPage: () => <div>stats-page</div>,
+}));
+
 vi.mock("./lib/desktop-shell", () => ({
   loadDesktopShellContext: vi.fn(),
   refreshDesktopTrayState: vi.fn(),
@@ -118,6 +122,56 @@ describe("App", () => {
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
     expect(await screen.findByLabelText("打开更新")).toBeInTheDocument();
+  });
+
+  it("switches to the stats page from the top navigation", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+                audit_limit_message: 200,
+                audit_limit_function_call: 100,
+                audit_limit_function_call_output: 100,
+                audit_limit_reasoning: 40,
+                audit_limit_custom_tool_call: 100,
+                audit_limit_custom_tool_call_output: 100,
+                language: "zh-CN",
+                theme_mode: "system",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "统计" }));
+    expect(screen.getByText("stats-page")).toBeInTheDocument();
   });
 
   it("does not start home update checks when the setting is disabled", async () => {
