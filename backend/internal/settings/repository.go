@@ -6,18 +6,24 @@ import (
 )
 
 type AppSettings struct {
-	LaunchAtLogin           bool   `json:"launch_at_login"`
-	SilentStart             bool   `json:"silent_start"`
-	CloseToTray             bool   `json:"close_to_tray"`
-	ShowProxySwitchOnHome   bool   `json:"show_proxy_switch_on_home"`
-	ShowHomeUpdateIndicator bool   `json:"show_home_update_indicator"`
-	ProxyHost               string `json:"proxy_host"`
-	ProxyPort               int    `json:"proxy_port"`
-	AutoFailoverEnabled     bool   `json:"auto_failover_enabled"`
-	AutoBackupIntervalHours int    `json:"auto_backup_interval_hours"`
-	BackupRetentionCount    int    `json:"backup_retention_count"`
-	Language                string `json:"language"`
-	ThemeMode               string `json:"theme_mode"`
+	LaunchAtLogin                  bool   `json:"launch_at_login"`
+	SilentStart                    bool   `json:"silent_start"`
+	CloseToTray                    bool   `json:"close_to_tray"`
+	ShowProxySwitchOnHome          bool   `json:"show_proxy_switch_on_home"`
+	ShowHomeUpdateIndicator        bool   `json:"show_home_update_indicator"`
+	ProxyHost                      string `json:"proxy_host"`
+	ProxyPort                      int    `json:"proxy_port"`
+	AutoFailoverEnabled            bool   `json:"auto_failover_enabled"`
+	AutoBackupIntervalHours        int    `json:"auto_backup_interval_hours"`
+	BackupRetentionCount           int    `json:"backup_retention_count"`
+	AuditLimitMessage              int    `json:"audit_limit_message"`
+	AuditLimitFunctionCall         int    `json:"audit_limit_function_call"`
+	AuditLimitFunctionCallOutput   int    `json:"audit_limit_function_call_output"`
+	AuditLimitReasoning            int    `json:"audit_limit_reasoning"`
+	AuditLimitCustomToolCall       int    `json:"audit_limit_custom_tool_call"`
+	AuditLimitCustomToolCallOutput int    `json:"audit_limit_custom_tool_call_output"`
+	Language                       string `json:"language"`
+	ThemeMode                      string `json:"theme_mode"`
 }
 
 type ReadRepository interface {
@@ -41,21 +47,29 @@ func NewSQLiteRepository(db *sql.DB) *SQLiteRepository {
 
 func DefaultAppSettings() AppSettings {
 	return AppSettings{
-		CloseToTray:             true,
-		ShowProxySwitchOnHome:   true,
-		ShowHomeUpdateIndicator: true,
-		ProxyHost:               "127.0.0.1",
-		ProxyPort:               6789,
-		AutoBackupIntervalHours: 24,
-		BackupRetentionCount:    10,
-		Language:                "zh-CN",
-		ThemeMode:               "system",
+		CloseToTray:                    true,
+		ShowProxySwitchOnHome:          true,
+		ShowHomeUpdateIndicator:        true,
+		ProxyHost:                      "127.0.0.1",
+		ProxyPort:                      6789,
+		AutoBackupIntervalHours:        24,
+		BackupRetentionCount:           10,
+		AuditLimitMessage:              200,
+		AuditLimitFunctionCall:         100,
+		AuditLimitFunctionCallOutput:   100,
+		AuditLimitReasoning:            40,
+		AuditLimitCustomToolCall:       100,
+		AuditLimitCustomToolCallOutput: 100,
+		Language:                       "zh-CN",
+		ThemeMode:                      "system",
 	}
 }
 
 func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	row := r.db.QueryRow(
-		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language, theme_mode
+		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
+		        audit_limit_message, audit_limit_function_call, audit_limit_function_call_output, audit_limit_reasoning, audit_limit_custom_tool_call, audit_limit_custom_tool_call_output,
+		        language, theme_mode
 		 FROM app_settings WHERE id = 1`,
 	)
 
@@ -69,6 +83,12 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	var autoFailoverEnabled int
 	var autoBackupIntervalHours int
 	var backupRetentionCount int
+	var auditLimitMessage int
+	var auditLimitFunctionCall int
+	var auditLimitFunctionCallOutput int
+	var auditLimitReasoning int
+	var auditLimitCustomToolCall int
+	var auditLimitCustomToolCallOutput int
 	var language string
 	var themeMode string
 
@@ -83,6 +103,12 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		&autoFailoverEnabled,
 		&autoBackupIntervalHours,
 		&backupRetentionCount,
+		&auditLimitMessage,
+		&auditLimitFunctionCall,
+		&auditLimitFunctionCallOutput,
+		&auditLimitReasoning,
+		&auditLimitCustomToolCall,
+		&auditLimitCustomToolCallOutput,
 		&language,
 		&themeMode,
 	); err != nil {
@@ -93,18 +119,24 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	}
 
 	return sanitize(AppSettings{
-		LaunchAtLogin:           launchAtLogin == 1,
-		SilentStart:             silentStart == 1,
-		CloseToTray:             closeToTray == 1,
-		ShowProxySwitchOnHome:   showProxySwitchOnHome == 1,
-		ShowHomeUpdateIndicator: showHomeUpdateIndicator == 1,
-		ProxyHost:               proxyHost,
-		ProxyPort:               proxyPort,
-		AutoFailoverEnabled:     autoFailoverEnabled == 1,
-		AutoBackupIntervalHours: autoBackupIntervalHours,
-		BackupRetentionCount:    backupRetentionCount,
-		Language:                language,
-		ThemeMode:               themeMode,
+		LaunchAtLogin:                  launchAtLogin == 1,
+		SilentStart:                    silentStart == 1,
+		CloseToTray:                    closeToTray == 1,
+		ShowProxySwitchOnHome:          showProxySwitchOnHome == 1,
+		ShowHomeUpdateIndicator:        showHomeUpdateIndicator == 1,
+		ProxyHost:                      proxyHost,
+		ProxyPort:                      proxyPort,
+		AutoFailoverEnabled:            autoFailoverEnabled == 1,
+		AutoBackupIntervalHours:        autoBackupIntervalHours,
+		BackupRetentionCount:           backupRetentionCount,
+		AuditLimitMessage:              auditLimitMessage,
+		AuditLimitFunctionCall:         auditLimitFunctionCall,
+		AuditLimitFunctionCallOutput:   auditLimitFunctionCallOutput,
+		AuditLimitReasoning:            auditLimitReasoning,
+		AuditLimitCustomToolCall:       auditLimitCustomToolCall,
+		AuditLimitCustomToolCallOutput: auditLimitCustomToolCallOutput,
+		Language:                       language,
+		ThemeMode:                      themeMode,
 	}), nil
 }
 
@@ -112,8 +144,10 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 	value = sanitize(value)
 	_, err := r.db.Exec(
 		`INSERT INTO app_settings (
-			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count, language, theme_mode, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
+			audit_limit_message, audit_limit_function_call, audit_limit_function_call_output, audit_limit_reasoning, audit_limit_custom_tool_call, audit_limit_custom_tool_call_output,
+			language, theme_mode, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			launch_at_login = excluded.launch_at_login,
 			silent_start = excluded.silent_start,
@@ -125,6 +159,12 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 			auto_failover_enabled = excluded.auto_failover_enabled,
 			auto_backup_interval_hours = excluded.auto_backup_interval_hours,
 			backup_retention_count = excluded.backup_retention_count,
+			audit_limit_message = excluded.audit_limit_message,
+			audit_limit_function_call = excluded.audit_limit_function_call,
+			audit_limit_function_call_output = excluded.audit_limit_function_call_output,
+			audit_limit_reasoning = excluded.audit_limit_reasoning,
+			audit_limit_custom_tool_call = excluded.audit_limit_custom_tool_call,
+			audit_limit_custom_tool_call_output = excluded.audit_limit_custom_tool_call_output,
 			language = excluded.language,
 			theme_mode = excluded.theme_mode,
 			updated_at = CURRENT_TIMESTAMP`,
@@ -139,6 +179,12 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 		boolToInt(value.AutoFailoverEnabled),
 		value.AutoBackupIntervalHours,
 		value.BackupRetentionCount,
+		value.AuditLimitMessage,
+		value.AuditLimitFunctionCall,
+		value.AuditLimitFunctionCallOutput,
+		value.AuditLimitReasoning,
+		value.AuditLimitCustomToolCall,
+		value.AuditLimitCustomToolCallOutput,
 		value.Language,
 		value.ThemeMode,
 	)
@@ -211,6 +257,24 @@ func sanitize(value AppSettings) AppSettings {
 	}
 	if value.BackupRetentionCount <= 0 {
 		value.BackupRetentionCount = defaults.BackupRetentionCount
+	}
+	if value.AuditLimitMessage <= 0 {
+		value.AuditLimitMessage = defaults.AuditLimitMessage
+	}
+	if value.AuditLimitFunctionCall <= 0 {
+		value.AuditLimitFunctionCall = defaults.AuditLimitFunctionCall
+	}
+	if value.AuditLimitFunctionCallOutput <= 0 {
+		value.AuditLimitFunctionCallOutput = defaults.AuditLimitFunctionCallOutput
+	}
+	if value.AuditLimitReasoning <= 0 {
+		value.AuditLimitReasoning = defaults.AuditLimitReasoning
+	}
+	if value.AuditLimitCustomToolCall <= 0 {
+		value.AuditLimitCustomToolCall = defaults.AuditLimitCustomToolCall
+	}
+	if value.AuditLimitCustomToolCallOutput <= 0 {
+		value.AuditLimitCustomToolCallOutput = defaults.AuditLimitCustomToolCallOutput
 	}
 	if value.Language != "en-US" {
 		value.Language = defaults.Language

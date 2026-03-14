@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/conversations"
 	"github.com/gcssloop/codex-router/backend/internal/secrets"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 )
@@ -166,6 +167,8 @@ func (h *SettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.createDatabaseBackup(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/settings/database/restore":
 		h.restoreDatabaseBackup(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/settings/audit-storage/optimize":
+		h.optimizeAuditStorage(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/settings/codex/backup":
 		h.createCodexBackup(w)
 	case r.Method == http.MethodGet && r.URL.Path == "/settings/codex/backups":
@@ -314,7 +317,23 @@ func (h *SettingsHandler) saveAppSettings(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if auditStorageSettingsChanged(current, payload) {
+		go h.optimizeAuditStorageSilently(payload)
+	}
 	writeJSON(w, http.StatusOK, h.appSettings())
+}
+
+func (h *SettingsHandler) optimizeAuditStorage(w http.ResponseWriter) {
+	if h.db == nil {
+		http.Error(w, "settings database is not configured", http.StatusInternalServerError)
+		return
+	}
+	result, err := conversations.NewAuditStorageOptimizer(h.db).Optimize(auditStoragePolicyFromSettings(h.appSettings()))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *SettingsHandler) getFailoverQueue(w http.ResponseWriter) {
@@ -555,6 +574,24 @@ func (h *SettingsHandler) appSettings() settings.AppSettings {
 	return value
 }
 
+func (h *SettingsHandler) optimizeAuditStorageSilently(value settings.AppSettings) {
+	if h.db == nil {
+		return
+	}
+	_, _ = conversations.NewAuditStorageOptimizer(h.db).Optimize(auditStoragePolicyFromSettings(value))
+}
+
+func auditStoragePolicyFromSettings(value settings.AppSettings) conversations.AuditStoragePolicy {
+	return conversations.AuditStoragePolicy{
+		MessageLimit:              value.AuditLimitMessage,
+		FunctionCallLimit:         value.AuditLimitFunctionCall,
+		FunctionCallOutputLimit:   value.AuditLimitFunctionCallOutput,
+		ReasoningLimit:            value.AuditLimitReasoning,
+		CustomToolCallLimit:       value.AuditLimitCustomToolCall,
+		CustomToolCallOutputLimit: value.AuditLimitCustomToolCallOutput,
+	}
+}
+
 func (h *SettingsHandler) proxyBaseURL() string {
 	value := h.appSettings()
 	return "http://" + net.JoinHostPort(value.ProxyHost, strconv.Itoa(value.ProxyPort)) + "/ai-router/api"
@@ -566,6 +603,15 @@ func proxyBaseURLForSettings(value settings.AppSettings) string {
 
 func proxyEndpointChanged(current settings.AppSettings, next settings.AppSettings) bool {
 	return strings.TrimSpace(current.ProxyHost) != strings.TrimSpace(next.ProxyHost) || current.ProxyPort != next.ProxyPort
+}
+
+func auditStorageSettingsChanged(current settings.AppSettings, next settings.AppSettings) bool {
+	return current.AuditLimitMessage != next.AuditLimitMessage ||
+		current.AuditLimitFunctionCall != next.AuditLimitFunctionCall ||
+		current.AuditLimitFunctionCallOutput != next.AuditLimitFunctionCallOutput ||
+		current.AuditLimitReasoning != next.AuditLimitReasoning ||
+		current.AuditLimitCustomToolCall != next.AuditLimitCustomToolCall ||
+		current.AuditLimitCustomToolCallOutput != next.AuditLimitCustomToolCallOutput
 }
 
 func normalizeAppSettings(value settings.AppSettings) settings.AppSettings {
@@ -581,6 +627,24 @@ func normalizeAppSettings(value settings.AppSettings) settings.AppSettings {
 	}
 	if value.BackupRetentionCount <= 0 {
 		value.BackupRetentionCount = defaults.BackupRetentionCount
+	}
+	if value.AuditLimitMessage <= 0 {
+		value.AuditLimitMessage = defaults.AuditLimitMessage
+	}
+	if value.AuditLimitFunctionCall <= 0 {
+		value.AuditLimitFunctionCall = defaults.AuditLimitFunctionCall
+	}
+	if value.AuditLimitFunctionCallOutput <= 0 {
+		value.AuditLimitFunctionCallOutput = defaults.AuditLimitFunctionCallOutput
+	}
+	if value.AuditLimitReasoning <= 0 {
+		value.AuditLimitReasoning = defaults.AuditLimitReasoning
+	}
+	if value.AuditLimitCustomToolCall <= 0 {
+		value.AuditLimitCustomToolCall = defaults.AuditLimitCustomToolCall
+	}
+	if value.AuditLimitCustomToolCallOutput <= 0 {
+		value.AuditLimitCustomToolCallOutput = defaults.AuditLimitCustomToolCallOutput
 	}
 	if value.Language != "en-US" {
 		value.Language = defaults.Language

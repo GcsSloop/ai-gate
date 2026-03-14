@@ -190,3 +190,138 @@ func TestSQLiteRepositoryListAccountCallStats(t *testing.T) {
 		t.Fatalf("account 2 gpt-5.4 = %d, want 1", stats[1].ModelCalls["gpt-5.4"])
 	}
 }
+
+func TestSQLiteRepositoryCompactsOlderAuditMessages(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := conversations.NewSQLiteRepository(
+		store.DB(),
+		conversations.WithAuditStoragePolicyProvider(func() conversations.AuditStoragePolicy {
+			return conversations.AuditStoragePolicy{
+				MessageLimit:              10,
+				FunctionCallLimit:         10,
+				FunctionCallOutputLimit:   2,
+				ReasoningLimit:            10,
+				CustomToolCallLimit:       10,
+				CustomToolCallOutputLimit: 10,
+			}
+		}),
+	)
+
+	conversationID, err := repo.CreateConversation(conversations.Conversation{
+		ClientID:             "client-1",
+		TargetProviderFamily: "openai",
+		DefaultModel:         "gpt-5.4",
+		State:                "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateConversation returned error: %v", err)
+	}
+
+	for i, payload := range []string{
+		`{"type":"function_call_output","call_id":"call_1","name":"shell","output":"first result"}`,
+		`{"type":"function_call_output","call_id":"call_2","name":"shell","output":"second result"}`,
+		`{"type":"function_call_output","call_id":"call_3","name":"shell","output":"third result"}`,
+	} {
+		if err := repo.AppendMessage(conversations.Message{
+			ConversationID: conversationID,
+			Role:           "assistant",
+			Content:        "output payload",
+			ItemType:       "function_call_output",
+			RawItemJSON:    payload,
+			SequenceNo:     i,
+		}); err != nil {
+			t.Fatalf("AppendMessage(%d) returned error: %v", i, err)
+		}
+	}
+
+	messages, err := repo.ListMessages(conversationID)
+	if err != nil {
+		t.Fatalf("ListMessages returned error: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("len(messages) = %d, want 3", len(messages))
+	}
+	if messages[0].StorageMode != "summary" {
+		t.Fatalf("messages[0].StorageMode = %q, want summary", messages[0].StorageMode)
+	}
+	if messages[0].RawItemJSON != "" {
+		t.Fatalf("messages[0].RawItemJSON = %q, want empty after compaction", messages[0].RawItemJSON)
+	}
+	if messages[0].ToolName != "shell" {
+		t.Fatalf("messages[0].ToolName = %q, want shell", messages[0].ToolName)
+	}
+	if messages[0].RawBytes == 0 || messages[0].RawSHA256 == "" {
+		t.Fatalf("messages[0] summary metadata missing: %+v", messages[0])
+	}
+	if messages[1].StorageMode != "full" || messages[2].StorageMode != "full" {
+		t.Fatalf("newest messages should remain full, got %q and %q", messages[1].StorageMode, messages[2].StorageMode)
+	}
+}
+
+func TestOptimizeAuditStorageCompactsHistoricalRows(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := conversations.NewSQLiteRepository(store.DB())
+	conversationID, err := repo.CreateConversation(conversations.Conversation{
+		ClientID:             "client-1",
+		TargetProviderFamily: "openai",
+		DefaultModel:         "gpt-5.4",
+		State:                "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateConversation returned error: %v", err)
+	}
+
+	for i := 0; i < 4; i++ {
+		if err := repo.AppendMessage(conversations.Message{
+			ConversationID: conversationID,
+			Role:           "assistant",
+			Content:        "message body",
+			ItemType:       "reasoning",
+			RawItemJSON:    `{"type":"reasoning","summary":"very long chain of thought"}`,
+			SequenceNo:     i,
+		}); err != nil {
+			t.Fatalf("AppendMessage(%d) returned error: %v", i, err)
+		}
+	}
+
+	optimizer := conversations.NewAuditStorageOptimizer(store.DB())
+	result, err := optimizer.Optimize(conversations.AuditStoragePolicy{
+		MessageLimit:              10,
+		FunctionCallLimit:         10,
+		FunctionCallOutputLimit:   10,
+		ReasoningLimit:            2,
+		CustomToolCallLimit:       10,
+		CustomToolCallOutputLimit: 10,
+	})
+	if err != nil {
+		t.Fatalf("Optimize returned error: %v", err)
+	}
+	if result.CompactedRows != 2 {
+		t.Fatalf("CompactedRows = %d, want 2", result.CompactedRows)
+	}
+
+	messages, err := repo.ListMessages(conversationID)
+	if err != nil {
+		t.Fatalf("ListMessages returned error: %v", err)
+	}
+	if messages[0].StorageMode != "summary" || messages[1].StorageMode != "summary" {
+		t.Fatalf("oldest reasoning rows should be summary, got %q and %q", messages[0].StorageMode, messages[1].StorageMode)
+	}
+	if messages[2].StorageMode != "full" || messages[3].StorageMode != "full" {
+		t.Fatalf("newest reasoning rows should remain full, got %q and %q", messages[2].StorageMode, messages[3].StorageMode)
+	}
+}

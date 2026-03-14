@@ -6,11 +6,31 @@ import (
 )
 
 type SQLiteRepository struct {
-	db *sql.DB
+	db             *sql.DB
+	policyProvider func() AuditStoragePolicy
 }
 
-func NewSQLiteRepository(db *sql.DB) *SQLiteRepository {
-	return &SQLiteRepository{db: db}
+type SQLiteRepositoryOption func(*SQLiteRepository)
+
+func WithAuditStoragePolicyProvider(provider func() AuditStoragePolicy) SQLiteRepositoryOption {
+	return func(repo *SQLiteRepository) {
+		repo.policyProvider = provider
+	}
+}
+
+func NewSQLiteRepository(db *sql.DB, opts ...SQLiteRepositoryOption) *SQLiteRepository {
+	repo := &SQLiteRepository{
+		db: db,
+		policyProvider: func() AuditStoragePolicy {
+			return DefaultAuditStoragePolicy()
+		},
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(repo)
+		}
+	}
+	return repo
 }
 
 func (r *SQLiteRepository) CreateConversation(conversation Conversation) (int64, error) {
@@ -72,17 +92,37 @@ func (r *SQLiteRepository) ListConversations(offset, limit int) ([]Conversation,
 }
 
 func (r *SQLiteRepository) AppendMessage(message Message) error {
+	message = compactMessageRecord(message, false)
 	_, err := r.db.Exec(
-		`INSERT INTO messages (conversation_id, role, content, item_type, raw_item_json, sequence_no) VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (
+			conversation_id, role, content, item_type, raw_item_json,
+			content_preview, content_sha256, content_bytes,
+			raw_preview, raw_sha256, raw_bytes,
+			tool_name, tool_call_id, summary_json, storage_mode,
+			sequence_no
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		message.ConversationID,
 		message.Role,
 		message.Content,
 		message.ItemType,
 		message.RawItemJSON,
+		message.ContentPreview,
+		message.ContentSHA256,
+		message.ContentBytes,
+		message.RawPreview,
+		message.RawSHA256,
+		message.RawBytes,
+		message.ToolName,
+		message.ToolCallID,
+		message.SummaryJSON,
+		message.StorageMode,
 		message.SequenceNo,
 	)
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)
+	}
+	if _, err := r.compactOlderMessages(message.ItemType); err != nil {
+		return err
 	}
 	return nil
 }
@@ -107,7 +147,11 @@ func (r *SQLiteRepository) CreateRun(run Run) (int64, error) {
 
 func (r *SQLiteRepository) ListMessages(conversationID int64) ([]Message, error) {
 	rows, err := r.db.Query(
-		`SELECT id, conversation_id, role, content, item_type, raw_item_json, sequence_no, created_at
+		`SELECT id, conversation_id, role, content, item_type, raw_item_json,
+		        content_preview, content_sha256, content_bytes,
+		        raw_preview, raw_sha256, raw_bytes,
+		        tool_name, tool_call_id, summary_json, storage_mode,
+		        sequence_no, created_at
 		 FROM messages WHERE conversation_id = ? ORDER BY sequence_no ASC, id ASC`,
 		conversationID,
 	)
@@ -126,6 +170,16 @@ func (r *SQLiteRepository) ListMessages(conversationID int64) ([]Message, error)
 			&message.Content,
 			&message.ItemType,
 			&message.RawItemJSON,
+			&message.ContentPreview,
+			&message.ContentSHA256,
+			&message.ContentBytes,
+			&message.RawPreview,
+			&message.RawSHA256,
+			&message.RawBytes,
+			&message.ToolName,
+			&message.ToolCallID,
+			&message.SummaryJSON,
+			&message.StorageMode,
 			&message.SequenceNo,
 			&message.CreatedAt,
 		); err != nil {
@@ -137,6 +191,100 @@ func (r *SQLiteRepository) ListMessages(conversationID int64) ([]Message, error)
 		return nil, fmt.Errorf("iterate messages: %w", err)
 	}
 	return messages, nil
+}
+
+func (r *SQLiteRepository) compactOlderMessages(itemType string) (int, error) {
+	limit := r.limitForItemType(itemType)
+	if limit <= 0 {
+		return 0, nil
+	}
+	rows, err := r.db.Query(
+		`SELECT id, role, content, item_type, raw_item_json
+		 FROM messages
+		 WHERE item_type = ? AND storage_mode = ?
+		 ORDER BY id DESC
+		 LIMIT -1 OFFSET ?`,
+		itemType,
+		messageStorageModeFull,
+		limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("query compact candidates for %s: %w", itemType, err)
+	}
+	defer rows.Close()
+
+	type candidate struct {
+		id      int64
+		role    string
+		content string
+		raw     string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var item candidate
+		var storedItemType string
+		if err := rows.Scan(&item.id, &item.role, &item.content, &storedItemType, &item.raw); err != nil {
+			return 0, fmt.Errorf("scan compact candidate for %s: %w", itemType, err)
+		}
+		candidates = append(candidates, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate compact candidates for %s: %w", itemType, err)
+	}
+	for _, candidate := range candidates {
+		compacted := compactMessageRecord(Message{
+			Role:        candidate.role,
+			Content:     candidate.content,
+			ItemType:    itemType,
+			RawItemJSON: candidate.raw,
+		}, true)
+		if _, err := r.db.Exec(
+			`UPDATE messages
+			 SET content = ?, raw_item_json = ?, content_preview = ?, content_sha256 = ?, content_bytes = ?,
+			     raw_preview = ?, raw_sha256 = ?, raw_bytes = ?, tool_name = ?, tool_call_id = ?,
+			     summary_json = ?, storage_mode = ?
+			 WHERE id = ?`,
+			compacted.Content,
+			compacted.RawItemJSON,
+			compacted.ContentPreview,
+			compacted.ContentSHA256,
+			compacted.ContentBytes,
+			compacted.RawPreview,
+			compacted.RawSHA256,
+			compacted.RawBytes,
+			compacted.ToolName,
+			compacted.ToolCallID,
+			compacted.SummaryJSON,
+			compacted.StorageMode,
+			candidate.id,
+		); err != nil {
+			return 0, fmt.Errorf("compact message %d: %w", candidate.id, err)
+		}
+	}
+	return len(candidates), nil
+}
+
+func (r *SQLiteRepository) limitForItemType(itemType string) int {
+	policy := DefaultAuditStoragePolicy()
+	if r.policyProvider != nil {
+		policy = r.policyProvider()
+	}
+	switch itemType {
+	case "function_call":
+		return policy.FunctionCallLimit
+	case "function_call_output":
+		return policy.FunctionCallOutputLimit
+	case "reasoning":
+		return policy.ReasoningLimit
+	case "custom_tool_call":
+		return policy.CustomToolCallLimit
+	case "custom_tool_call_output":
+		return policy.CustomToolCallOutputLimit
+	case "message":
+		return policy.MessageLimit
+	default:
+		return policy.MessageLimit
+	}
 }
 
 func (r *SQLiteRepository) ListRuns(conversationID int64) ([]Run, error) {
