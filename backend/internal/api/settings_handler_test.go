@@ -267,6 +267,59 @@ func TestSettingsHandlerCreatesListsAndRestoresDatabaseBackups(t *testing.T) {
 	}
 }
 
+func TestSettingsHandlerDeleteDatabaseBackup(t *testing.T) {
+	handler, _ := newSettingsHandler(t)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/settings/database/backup", nil)
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("POST /settings/database/backup status = %d, want %d; body=%s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var created map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal created backup: %v", err)
+	}
+	backupID, _ := created["backup_id"].(string)
+	if strings.TrimSpace(backupID) == "" {
+		t.Fatal("backup_id is empty")
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/settings/database/backups/"+backupID, nil)
+	deleteRec := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("DELETE /settings/database/backups/%s status = %d, want %d; body=%s", backupID, deleteRec.Code, http.StatusOK, deleteRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/settings/database/backups", nil)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("GET /settings/database/backups status = %d, want %d", listRec.Code, http.StatusOK)
+	}
+
+	var listed []map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("unmarshal listed backups: %v", err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("len(listed) = %d, want 0 after delete", len(listed))
+	}
+}
+
+func TestSettingsHandlerDeleteDatabaseBackupNotFound(t *testing.T) {
+	handler, _ := newSettingsHandler(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/settings/database/backups/missing-backup", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("DELETE /settings/database/backups/missing-backup status = %d, want %d; body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
 func TestSettingsHandlerAuditOptimizeEndpointRemoved(t *testing.T) {
 	handler, _ := newSettingsHandler(t)
 

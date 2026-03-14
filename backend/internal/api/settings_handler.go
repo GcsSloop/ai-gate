@@ -162,6 +162,8 @@ func (h *SettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.importDatabaseJSON(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/settings/database/backups":
 		h.listDatabaseBackups(w)
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/settings/database/backups/"):
+		h.deleteDatabaseBackup(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/settings/database/backup":
 		h.createDatabaseBackup(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/settings/database/restore":
@@ -262,6 +264,28 @@ func (h *SettingsHandler) createDatabaseBackup(w http.ResponseWriter) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
+}
+
+func (h *SettingsHandler) deleteDatabaseBackup(w http.ResponseWriter, r *http.Request) {
+	manager, err := h.dbBackupManager()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	backupID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/settings/database/backups/"))
+	if backupID == "" {
+		http.Error(w, "missing backup_id", http.StatusBadRequest)
+		return
+	}
+	if err := manager.DeleteBackup(backupID); err != nil {
+		if err.Error() == "backup_id not found" {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted_backup_id": backupID})
 }
 
 func (h *SettingsHandler) restoreDatabaseBackup(w http.ResponseWriter, r *http.Request) {
