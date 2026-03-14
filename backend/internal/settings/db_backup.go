@@ -61,6 +61,23 @@ func (m *DBBackupManager) RestoreBackup(backupID string) error {
 	return replaceOwnedTablesFromDatabase(m.db, backupPath)
 }
 
+func (m *DBBackupManager) DeleteBackup(backupID string) error {
+	backupPath := filepath.Join(m.backupRoot(), backupID+".sqlite")
+	if _, err := os.Stat(backupPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("backup_id not found")
+		}
+		return fmt.Errorf("stat backup %s: %w", backupID, err)
+	}
+	if err := os.Remove(backupPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("backup_id not found")
+		}
+		return fmt.Errorf("remove backup %s: %w", backupID, err)
+	}
+	return nil
+}
+
 func (m *DBBackupManager) pruneBackups(retention int) error {
 	items, err := m.ListBackups()
 	if err != nil {
