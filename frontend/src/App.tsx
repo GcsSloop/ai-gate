@@ -26,6 +26,7 @@ function sleep(ms: number): Promise<void> {
 export function App() {
   const [messageApi, contextHolder] = message.useMessage();
   const [view, setView] = useState<"accounts" | "stats" | "settings">("accounts");
+  const [settingsInitialTab, setSettingsInitialTab] = useState<"general" | "proxy" | "advanced" | "about">("general");
   const [addModalMode, setAddModalMode] = useState<"official" | "third_party" | null>(null);
   const [proxyEnabled, setProxyEnabled] = useState(false);
   const [proxyLoading, setProxyLoading] = useState(false);
@@ -319,6 +320,7 @@ export function App() {
             <div className="settings-content-scroll">
               <SettingsPage
                 initialSettings={appSettings}
+                initialTab={settingsInitialTab}
                 language={language}
                 t={t}
                 proxyEnabled={proxyEnabled}
@@ -350,7 +352,10 @@ export function App() {
                   icon={<SettingOutlined />}
                   aria-label={t("打开设置")}
                   className="top-settings-button"
-                  onClick={() => setView("settings")}
+                  onClick={() => {
+                    setSettingsInitialTab("general");
+                    setView("settings");
+                  }}
                 />
                 {showHomeUpdateIndicator ? (
                   <Button
@@ -358,7 +363,10 @@ export function App() {
                     icon={<CloudDownloadOutlined />}
                     aria-label={t("打开更新")}
                     className="top-home-update-button"
-                    onClick={() => setView("settings")}
+                    onClick={() => {
+                      setSettingsInitialTab("about");
+                      setView("settings");
+                    }}
                   />
                 ) : null}
               </div>
