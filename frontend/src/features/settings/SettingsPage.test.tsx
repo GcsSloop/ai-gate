@@ -183,6 +183,8 @@ describe("SettingsPage", () => {
     fireEvent.click(screen.getByRole("tab", { name: "关于" }));
     expect(await screen.findByText("GcsSloop")).toBeInTheDocument();
     expect(screen.getByText("桌面代理与路由控制台")).toBeInTheDocument();
+    expect(screen.getByText("GitHub")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "GcsSloop/ai-gate" })).toHaveAttribute("href", "https://github.com/GcsSloop/ai-gate");
     expect(screen.getByText("应用更新")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "检查更新" })).toBeInTheDocument();
   });
