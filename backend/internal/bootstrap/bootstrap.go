@@ -100,6 +100,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/settings/database/json-export", settingsHandler)
 	apiMux.Handle("/settings/database/json-import", settingsHandler)
 	apiMux.Handle("/settings/database/backups", settingsHandler)
+	apiMux.Handle("/settings/database/backups/", settingsHandler)
 	apiMux.Handle("/settings/database/backup", settingsHandler)
 	apiMux.Handle("/settings/database/restore", settingsHandler)
 	apiMux.Handle("/settings/audit-storage/optimize", settingsHandler)

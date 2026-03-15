@@ -278,8 +278,6 @@ export function App() {
 
   const showProxySwitch = appSettings?.show_proxy_switch_on_home ?? true;
   const showHomeUpdateIndicator = Boolean(appSettings?.show_home_update_indicator && homeUpdate);
-  const pageTitle = view === "accounts" ? t("账户") : view === "stats" ? t("统计") : t("设置");
-
   return (
     <ConfigProvider
       locale={getAntdLocale(language)}
@@ -310,12 +308,12 @@ export function App() {
                     <img src={appLogo} alt="AI Gate" className="brand-logo" />
                     <div className="brand">AI Gate</div>
                   </div>
-                  <div className="pill-switcher top-view-switcher" role="tablist" aria-label={t("主导航")}>
+                  <div className="menu-pill-group top-view-switcher" role="tablist" aria-label={t("主导航")}>
                     <button
                       type="button"
                       role="tab"
                       aria-selected={view === "accounts"}
-                      className={view === "accounts" ? "pill-tab-button is-active" : "pill-tab-button"}
+                      className={view === "accounts" ? "menu-pill-button is-active" : "menu-pill-button"}
                       onClick={() => setView("accounts")}
                     >
                       {t("账户")}
@@ -324,7 +322,7 @@ export function App() {
                       type="button"
                       role="tab"
                       aria-selected={view === "stats"}
-                      className={view === "stats" ? "pill-tab-button is-active" : "pill-tab-button"}
+                      className={view === "stats" ? "menu-pill-button is-active" : "menu-pill-button"}
                       onClick={() => setView("stats")}
                     >
                       {t("统计")}
@@ -333,7 +331,7 @@ export function App() {
                       type="button"
                       role="tab"
                       aria-selected={view === "settings"}
-                      className={view === "settings" ? "pill-tab-button is-active" : "pill-tab-button"}
+                      className={view === "settings" ? "menu-pill-button is-active" : "menu-pill-button"}
                       onClick={() => {
                         setSettingsInitialTab("general");
                         setView("settings");
@@ -343,8 +341,6 @@ export function App() {
                     </button>
                   </div>
                 </div>
-
-                <div className="top-menu-title">{pageTitle}</div>
 
                 <div className="top-menu-section top-menu-right">
                   {showHomeUpdateIndicator ? (
