@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { Modal } from "antd";
 
 import { SettingsPage } from "./SettingsPage";
 import { applyDesktopAppSettings, getAppMetadata, getRecentDesktopLogs } from "../../lib/desktop-shell";
@@ -33,6 +34,17 @@ const baseSettings = {
 
 describe("SettingsPage", () => {
   const identity = (value: string) => value;
+
+  async function openBackupMenu(label = "备份操作 20260309-101500.000") {
+    const trigger = await screen.findByRole("button", { name: label });
+    await act(async () => {
+      fireEvent.click(trigger);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: label })).toHaveAttribute("aria-expanded", "true");
+    });
+    return screen.getByRole("button", { name: label });
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -115,6 +127,13 @@ describe("SettingsPage", () => {
   });
 
   it("supports database backup actions and about metadata", async () => {
+    const confirmSpy = vi.spyOn(Modal, "confirm").mockImplementation((config) => {
+      void config.onOk?.();
+      return {
+        destroy: vi.fn(),
+        update: vi.fn(),
+      } as ReturnType<typeof Modal.confirm>;
+    });
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/ai-router/api/accounts") {
@@ -180,8 +199,7 @@ describe("SettingsPage", () => {
     expect(within(toolbar).getByRole("tab", { name: "高级" })).toBeInTheDocument();
     expect(within(toolbar).getByRole("button", { name: "保存设置" })).toBeInTheDocument();
 
-    expect(await screen.findByRole("button", { name: "恢复此备份" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "删除此备份" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "备份操作 20260309-101500.000" })).toBeInTheDocument();
     expect(screen.queryByText("审计存储")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "立即优化" })).not.toBeInTheDocument();
 
@@ -189,8 +207,15 @@ describe("SettingsPage", () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/ai-router/api/settings/database/backup", expect.objectContaining({ method: "POST" }));
     });
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([input, init]) => String(input) === "/ai-router/api/settings/database/backups" && (!init?.method || init.method === "GET"))
+          .length,
+      ).toBeGreaterThanOrEqual(2);
+    });
 
-    fireEvent.click(screen.getByRole("button", { name: "恢复此备份" }));
+    await openBackupMenu();
+    fireEvent.click(await screen.findByText("恢复此备份"));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/ai-router/api/settings/database/restore",
@@ -202,12 +227,13 @@ describe("SettingsPage", () => {
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "删除此备份" }));
+      await openBackupMenu();
     });
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "确认删除" }));
+      fireEvent.click(await screen.findByText("删除此备份"));
     });
     await waitFor(() => {
+      expect(confirmSpy).toHaveBeenCalled();
       expect(fetchMock).toHaveBeenCalledWith(
         "/ai-router/api/settings/database/backups/20260309-101500.000",
         expect.objectContaining({ method: "DELETE" }),
@@ -221,6 +247,8 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("link", { name: "GcsSloop/ai-gate" })).toHaveAttribute("href", "https://github.com/GcsSloop/ai-gate");
     expect(screen.getByText("应用更新")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "检查更新" })).toBeInTheDocument();
+
+    confirmSpy.mockRestore();
   });
 
   it("auto-saves language changes immediately", async () => {
@@ -439,5 +467,91 @@ describe("SettingsPage", () => {
     expect(screen.getByText("spawn success")).toBeInTheDocument();
     expect(screen.getByText("restart triggered")).toBeInTheDocument();
     expect(screen.getByTestId("settings-recent-logs")).toBeInTheDocument();
+  });
+
+  it("renders backup actions in a compact menu and keeps backup settings spaced from the list", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/failover-queue") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/database/backups") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([{ backup_id: "20260309-101500.000", created_at: "2026-03-09T10:15:00Z", size_bytes: 4096 }]),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(getAppMetadata).mockResolvedValue({
+      name: "AI Gate",
+      version: "0.1.0",
+      description: "桌面代理与路由控制台",
+      author: "GcsSloop",
+    });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
+
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "高级" }));
+
+    const actionsButton = await screen.findByRole("button", { name: "备份操作 20260309-101500.000" });
+    expect(actionsButton).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "恢复此备份" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除此备份" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("backup-settings-grid")).toBeInTheDocument();
+    expect(screen.getByTestId("backup-list")).toBeInTheDocument();
+
+    await openBackupMenu();
+    expect(await screen.findByText("恢复此备份")).toBeInTheDocument();
+    expect(screen.getByText("删除此备份")).toBeInTheDocument();
+  });
+
+  it("closes the backup action menu when clicking outside", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/failover-queue") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/database/backups") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([{ backup_id: "20260309-101500.000", created_at: "2026-03-09T10:15:00Z", size_bytes: 4096 }]),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(getAppMetadata).mockResolvedValue({
+      name: "AI Gate",
+      version: "0.1.0",
+      description: "桌面代理与路由控制台",
+      author: "GcsSloop",
+    });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
+
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "高级" }));
+    await openBackupMenu();
+    expect(await screen.findByText("恢复此备份")).toBeInTheDocument();
+
+    fireEvent.mouseDown(document.body);
+
+    await waitFor(() => {
+      expect(screen.queryByText("恢复此备份")).not.toBeInTheDocument();
+      expect(screen.queryByText("删除此备份")).not.toBeInTheDocument();
+    });
   });
 });

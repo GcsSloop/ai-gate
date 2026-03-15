@@ -12,7 +12,9 @@ import {
   EyeInvisibleOutlined,
   FileTextOutlined,
   InfoCircleOutlined,
+  MoreOutlined,
   PoweroffOutlined,
+  RollbackOutlined,
   SaveOutlined,
   SwapOutlined,
   ThunderboltOutlined,
@@ -196,6 +198,7 @@ export function SettingsPage({
   const [savingQueue, setSavingQueue] = useState(false);
   const [proxySwitchBusy, setProxySwitchBusy] = useState(false);
   const [backupBusy, setBackupBusy] = useState("");
+  const [openBackupMenuID, setOpenBackupMenuID] = useState<string | null>(null);
   const [importingSQL, setImportingSQL] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -231,6 +234,27 @@ export function SettingsPage({
 
     void loadSettingsPageData();
   }, [messageApi, t]);
+
+  useEffect(() => {
+    if (!openBackupMenuID) {
+      return;
+    }
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        setOpenBackupMenuID(null);
+        return;
+      }
+      const owner = target.closest(`[data-backup-menu-id="${openBackupMenuID}"]`);
+      if (!owner) {
+        setOpenBackupMenuID(null);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [openBackupMenuID]);
 
   const orderedAccounts = failoverQueue
     .map((accountID) => accounts.find((account) => account.id === accountID))
@@ -394,6 +418,7 @@ export function SettingsPage({
   }
 
   async function handleRestoreBackup(item: DatabaseBackupItem) {
+    setOpenBackupMenuID(null);
     setBackupBusy(item.backup_id);
     try {
       await restoreDatabaseBackup(item.backup_id);
@@ -414,6 +439,7 @@ export function SettingsPage({
   }
 
   function handleDeleteBackup(item: DatabaseBackupItem) {
+    setOpenBackupMenuID(null);
     Modal.confirm({
       title: t("删除备份"),
       content: `${t("确认删除此备份")} ${item.backup_id}？`,
@@ -662,7 +688,7 @@ export function SettingsPage({
                 </Button>
               }
             />
-            <div className="settings-field-grid">
+            <div className="settings-field-grid settings-field-grid-spacious" data-testid="backup-settings-grid">
               <label className="settings-field">
                 <span className="settings-field-label">{t("自动备份间隔（小时）")}</span>
                 <InputNumber
@@ -684,7 +710,7 @@ export function SettingsPage({
                 />
               </label>
             </div>
-            <div className="backup-list">
+            <div className="backup-list" data-testid="backup-list">
               {dbBackups.length === 0 ? (
                 <div className="settings-empty">{t("暂无数据库备份")}</div>
               ) : (
@@ -697,18 +723,43 @@ export function SettingsPage({
                       </div>
                     </div>
                     <div className="backup-row-actions">
-                      <Button onClick={() => void handleRestoreBackup(item)} loading={backupBusy === item.backup_id}>
-                        {t("恢复此备份")}
-                      </Button>
-                      <Button
-                        danger
-                        icon={<DeleteOutlined />}
-                        aria-label={t("删除此备份")}
-                        onClick={() => handleDeleteBackup(item)}
-                        loading={backupBusy === `delete:${item.backup_id}`}
-                      >
-                        {t("删除")}
-                      </Button>
+                      <div className="backup-menu-shell" data-backup-menu-id={item.backup_id}>
+                        <button
+                          type="button"
+                          className="backup-menu-button"
+                          aria-label={`${t("备份操作")} ${item.backup_id}`}
+                          aria-haspopup="menu"
+                          aria-expanded={openBackupMenuID === item.backup_id}
+                          onClick={() => setOpenBackupMenuID((current) => (current === item.backup_id ? null : item.backup_id))}
+                          disabled={backupBusy === item.backup_id || backupBusy === `delete:${item.backup_id}`}
+                        >
+                          <MoreOutlined />
+                        </button>
+                        {openBackupMenuID === item.backup_id ? (
+                          <div className="backup-menu-popover" role="menu" aria-label={`${t("更多操作")} ${item.backup_id}`}>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="backup-menu-item"
+                              disabled={backupBusy === item.backup_id || backupBusy === `delete:${item.backup_id}`}
+                              onClick={() => void handleRestoreBackup(item)}
+                            >
+                              <RollbackOutlined />
+                              <span>{t("恢复此备份")}</span>
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="backup-menu-item is-danger"
+                              disabled={backupBusy === item.backup_id || backupBusy === `delete:${item.backup_id}`}
+                              onClick={() => handleDeleteBackup(item)}
+                            >
+                              <DeleteOutlined />
+                              <span>{t("删除此备份")}</span>
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                 ))
@@ -789,14 +840,14 @@ export function SettingsPage({
     <div className="settings-page">
       {contextHolder}
       <div className="settings-tab-toolbar" data-testid="settings-tab-toolbar">
-        <div className="pill-switcher settings-tab-switcher" role="tablist" aria-label={t("设置标签页")}>
+        <div className="menu-pill-group settings-tab-switcher" role="tablist" aria-label={t("设置标签页")}>
           {tabItems.map((item) => (
             <button
               key={item.key}
               type="button"
               role="tab"
               aria-selected={activeTabItem.key === item.key}
-              className={activeTabItem.key === item.key ? "pill-tab-button is-active" : "pill-tab-button"}
+              className={activeTabItem.key === item.key ? "menu-pill-button is-active" : "menu-pill-button"}
               onClick={() => setActiveTab(item.key)}
             >
               {item.label}
@@ -808,6 +859,7 @@ export function SettingsPage({
             aria-label={t("保存设置")}
             type="primary"
             size="large"
+            className="menu-action-button"
             icon={<SaveOutlined />}
             loading={savingSettings}
             onClick={() => void handleSaveSettings()}

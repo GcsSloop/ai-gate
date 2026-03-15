@@ -2,6 +2,7 @@ package bootstrap_test
 
 import (
 	"context"
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,6 +52,28 @@ func TestNewApp(t *testing.T) {
 	app.Handler().ServeHTTP(responsesRec, responsesReq)
 	if responsesRec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("POST /ai-router/api/responses status = %d, want %d when proxy disabled", responsesRec.Code, http.StatusServiceUnavailable)
+	}
+
+	backupCreateReq := httptest.NewRequest(http.MethodPost, "/ai-router/api/settings/database/backup", nil)
+	backupCreateRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(backupCreateRec, backupCreateReq)
+	if backupCreateRec.Code != http.StatusCreated {
+		t.Fatalf("POST /ai-router/api/settings/database/backup status = %d, want %d; body=%s", backupCreateRec.Code, http.StatusCreated, backupCreateRec.Body.String())
+	}
+
+	backupListReq := httptest.NewRequest(http.MethodGet, "/ai-router/api/settings/database/backups", nil)
+	backupListRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(backupListRec, backupListReq)
+	if backupListRec.Code != http.StatusOK {
+		t.Fatalf("GET /ai-router/api/settings/database/backups status = %d, want %d; body=%s", backupListRec.Code, http.StatusOK, backupListRec.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/ai-router/api/settings/database/backups", bytes.NewBuffer(nil))
+	deleteReq.URL.Path = "/ai-router/api/settings/database/backups/"
+	deleteRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code == http.StatusNotFound {
+		t.Fatalf("DELETE /ai-router/api/settings/database/backups/{id} unexpectedly returned 404; body=%s", deleteRec.Body.String())
 	}
 }
 
