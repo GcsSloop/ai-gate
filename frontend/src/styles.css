@@ -1064,6 +1064,12 @@ body {
   min-height: 52px;
 }
 
+.account-usage-mini-single {
+  min-height: 52px;
+  align-content: center;
+  transform: translateY(-3px);
+}
+
 .account-usage-mini-row {
   display: grid;
   gap: 4px;

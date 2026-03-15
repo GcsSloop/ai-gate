@@ -6,6 +6,7 @@ import {
   CloudDownloadOutlined,
   CloudUploadOutlined,
   ControlOutlined,
+  DashboardOutlined,
   DatabaseOutlined,
   DeleteOutlined,
   DesktopOutlined,
@@ -509,21 +510,6 @@ export function SettingsPage({
                 checked={draftSettings.show_home_update_indicator}
                 onChange={(checked) => updateDraft({ show_home_update_indicator: checked })}
               />
-              <label className="settings-field">
-                <span className="settings-field-label">{t("状态刷新间隔（秒）")}</span>
-                <InputNumber
-                  aria-label={t("状态刷新间隔（秒）")}
-                  min={5}
-                  max={3600}
-                  value={draftSettings.status_refresh_interval_seconds}
-                  onChange={(value) =>
-                    updateDraft({
-                      status_refresh_interval_seconds: Math.min(Math.max(Number(value) || 60, 5), 3600),
-                    })
-                  }
-                  className="settings-number"
-                />
-              </label>
             </div>
           </Card>
 
@@ -677,7 +663,7 @@ export function SettingsPage({
     },
     {
       key: "advanced",
-      label: t("高级"),
+      label: t("数据"),
       content: (
         <div className="settings-grid">
           <Card className="settings-card" variant="borderless">
@@ -689,6 +675,27 @@ export function SettingsPage({
               <Button icon={<CloudUploadOutlined />} loading={importingSQL} onClick={() => setImportModalOpen(true)}>
                 {t("导入 JSON")}
               </Button>
+            </div>
+          </Card>
+
+          <Card className="settings-card" variant="borderless">
+            <SectionHeader icon={<DashboardOutlined />} title={t("账户状态")} description={t("控制账户状态卡片与后台状态轮询的刷新节奏。")} />
+            <div className="settings-field-grid">
+              <label className="settings-field">
+                <span className="settings-field-label">{t("状态刷新间隔（秒）")}</span>
+                <InputNumber
+                  aria-label={t("状态刷新间隔（秒）")}
+                  min={5}
+                  max={3600}
+                  value={draftSettings.status_refresh_interval_seconds}
+                  onChange={(value) =>
+                    updateDraft({
+                      status_refresh_interval_seconds: Math.min(Math.max(Number(value) || 60, 5), 3600),
+                    })
+                  }
+                  className="settings-number"
+                />
+              </label>
             </div>
           </Card>
 

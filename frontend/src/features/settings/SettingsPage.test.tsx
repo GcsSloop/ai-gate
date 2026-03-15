@@ -108,7 +108,7 @@ describe("SettingsPage", () => {
 
     expect(await screen.findByRole("tab", { name: "通用" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "代理" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "高级" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "数据" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "关于" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch", { name: "开机自启" }));
@@ -195,10 +195,11 @@ describe("SettingsPage", () => {
 
     render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "高级" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "数据" }));
     const toolbar = screen.getByTestId("settings-tab-toolbar");
-    expect(within(toolbar).getByRole("tab", { name: "高级" })).toBeInTheDocument();
+    expect(within(toolbar).getByRole("tab", { name: "数据" })).toBeInTheDocument();
     expect(within(toolbar).getByRole("button", { name: "保存设置" })).toBeInTheDocument();
+    expect(screen.getByText("账户状态")).toBeInTheDocument();
     expect(screen.getByText("备份与恢复").closest(".settings-card")).toHaveClass("settings-card-overflow-visible");
 
     expect(await screen.findByRole("button", { name: "备份操作 20260309-101500.000" })).toBeInTheDocument();
@@ -470,6 +471,7 @@ describe("SettingsPage", () => {
 
     render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={onSettingsChanged} />);
 
+    fireEvent.click(await screen.findByRole("tab", { name: "数据" }));
     fireEvent.change(await screen.findByLabelText("状态刷新间隔（秒）"), { target: { value: "5" } });
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
 
@@ -515,7 +517,7 @@ describe("SettingsPage", () => {
 
     render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "高级" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "数据" }));
     expect(await screen.findByText("最近日志")).toBeInTheDocument();
     expect(screen.getByText("spawn success")).toBeInTheDocument();
     expect(screen.getByText("restart triggered")).toBeInTheDocument();
@@ -552,7 +554,7 @@ describe("SettingsPage", () => {
 
     render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "高级" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "数据" }));
 
     const actionsButton = await screen.findByRole("button", { name: "备份操作 20260309-101500.000" });
     expect(actionsButton).toBeInTheDocument();
@@ -596,7 +598,7 @@ describe("SettingsPage", () => {
 
     render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "高级" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "数据" }));
     await openBackupMenu();
     expect(await screen.findByText("恢复此备份")).toBeInTheDocument();
 
