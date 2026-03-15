@@ -413,6 +413,92 @@ func TestAccountsHandlerDeleteAccount(t *testing.T) {
 	}
 }
 
+func TestAccountsHandlerDuplicateAccountCreatesInactiveCopyWithIncrementedName(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	if err := repo.Create(accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AccountName:       "mirror-east",
+		SourceIcon:        "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           "https://code.ppchat.vip/v1",
+		CredentialRef:     "sk-origin",
+		Status:            accounts.StatusActive,
+		Priority:          3,
+		IsActive:          true,
+		SupportsResponses: true,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if err := repo.Create(accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AccountName:       "mirror-east 1",
+		SourceIcon:        "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           "https://code.ppchat.vip/v1",
+		CredentialRef:     "sk-existing",
+		Status:            accounts.StatusActive,
+		Priority:          2,
+		IsActive:          false,
+		SupportsResponses: true,
+	}); err != nil {
+		t.Fatalf("Create second account returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/1/duplicate", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /accounts/1/duplicate status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	listed, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(listed) != 3 {
+		t.Fatalf("List returned %d accounts, want 3", len(listed))
+	}
+
+	var duplicate accounts.Account
+	found := false
+	for _, item := range listed {
+		if item.AccountName == "mirror-east 2" {
+			duplicate = item
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("List did not contain duplicate account: %+v", listed)
+	}
+	if duplicate.AccountName != "mirror-east 2" {
+		t.Fatalf("duplicate name = %q, want %q", duplicate.AccountName, "mirror-east 2")
+	}
+	if duplicate.CredentialRef != "sk-origin" {
+		t.Fatalf("duplicate credential = %q, want %q", duplicate.CredentialRef, "sk-origin")
+	}
+	if duplicate.IsActive {
+		t.Fatal("duplicate IsActive = true, want false")
+	}
+	if duplicate.ProviderType != accounts.ProviderOpenAICompatible {
+		t.Fatalf("duplicate provider_type = %q, want %q", duplicate.ProviderType, accounts.ProviderOpenAICompatible)
+	}
+	if duplicate.SourceIcon != "ppchat" {
+		t.Fatalf("duplicate source_icon = %q, want ppchat", duplicate.SourceIcon)
+	}
+}
+
 func TestAccountsHandlerListAccountsFetchesOfficialWhamUsage(t *testing.T) {
 	t.Parallel()
 
