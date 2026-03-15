@@ -28,4 +28,14 @@ describe("shared control geometry", () => {
     expect(css).toMatch(/\.account-enable-button\s*\{[^}]*height:\s*32px;/s);
     expect(css).toMatch(/\.account-action-button\s*\{[^}]*width:\s*32px;[^}]*height:\s*32px;/s);
   });
+
+  it("keeps stats panels compact so the content matches the lighter top bar", () => {
+    expect(css).toMatch(/\.stats-page\s*\{[^}]*gap:\s*16px;/s);
+    expect(css).toMatch(/\.stats-title\s*\{[^}]*font-size:\s*24px;/s);
+    expect(css).toMatch(/\.stats-summary-grid\s*\{[^}]*gap:\s*12px;/s);
+    expect(css).toMatch(/\.stats-summary-card,\s*\.stats-panel\s*\{[^}]*border-radius:\s*16px;/s);
+    expect(css).toMatch(/\.stats-summary-card\.ant-card\s*\.ant-card-body,\s*\.stats-panel\.ant-card\s*\.ant-card-body\s*\{[^}]*padding:\s*16px\s+18px;/s);
+    expect(css).toMatch(/\.stats-card-value\s*\{[^}]*margin-top:\s*8px;[^}]*font-size:\s*22px;/s);
+    expect(css).toMatch(/\.stats-event-row\s*\{[^}]*padding:\s*12px\s+0;/s);
+  });
 });

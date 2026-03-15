@@ -321,41 +321,42 @@ body {
 .stats-page {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
 }
 
 .stats-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
 }
 
 .stats-title {
-  font-size: 30px;
+  font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.03em;
   color: var(--text-primary);
 }
 
 .stats-subtitle {
-  margin-top: 6px;
+  margin-top: 4px;
+  font-size: 14px;
   color: var(--text-secondary);
 }
 
 .stats-filters {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
 .stats-account-filter {
-  min-width: 180px;
+  min-width: 168px;
 }
 
 .stats-model-filter {
-  width: 180px;
+  width: 168px;
 }
 
 .stats-loading {
@@ -368,33 +369,48 @@ body {
 .stats-summary-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 16px;
+  gap: 12px;
 }
 
 .stats-summary-card,
 .stats-panel {
-  border-radius: 18px;
+  border-radius: 16px;
   border: 1px solid var(--panel-border);
   box-shadow: var(--card-shadow);
   background: var(--panel-bg);
 }
 
+.stats-summary-card.ant-card .ant-card-body,
+.stats-panel.ant-card .ant-card-body {
+  padding: 16px 18px;
+}
+
+.stats-panel.ant-card .ant-card-head {
+  min-height: 52px;
+  padding: 0 18px;
+}
+
+.stats-panel.ant-card .ant-card-head-title {
+  padding: 14px 0;
+}
+
 .stats-card-label {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-secondary);
 }
 
 .stats-card-value {
-  margin-top: 10px;
-  font-size: 28px;
+  margin-top: 8px;
+  font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.03em;
   color: var(--text-primary);
 }
 
 .stats-card-hint {
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 12px;
+  line-height: 1.35;
   color: var(--text-secondary);
 }
 
@@ -409,13 +425,13 @@ body {
 .stats-events-list {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .stats-trend-row {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .stats-trend-meta,
@@ -428,11 +444,11 @@ body {
   justify-content: space-between;
   gap: 12px;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .stats-trend-bar-shell {
-  height: 12px;
+  height: 10px;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.14);
   overflow: hidden;
@@ -448,8 +464,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 16px 0;
+  gap: 12px;
+  padding: 12px 0;
   border-bottom: 1px solid var(--panel-border);
 }
 
@@ -461,7 +477,7 @@ body {
 .stats-event-title {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   font-weight: 600;
   color: var(--text-primary);
 }
