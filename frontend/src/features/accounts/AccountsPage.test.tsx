@@ -90,7 +90,28 @@ describe("AccountsPage", () => {
         );
       }
       if (url.startsWith("/ai-router/api/accounts/1/ppchat-token-logs") && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify({ success: true, data: { logs: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 0 }, token_info: { name: "ppchat", today_usage_count: 0, today_used_quota: 0, remain_quota_display: 0, expired_time_formatted: "2099-01-01 00:00:00" } } }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              success: true,
+              data: {
+                logs: [],
+                pagination: { page: 1, page_size: 10, total: 0, total_pages: 0 },
+                token_info: {
+                  name: "edwardtoday-xmax",
+                  today_usage_count: 172,
+                  today_used_quota: 1068,
+                  remain_quota_display: 13931,
+                  today_added_quota: 14999,
+                  today_opus_usage: 0,
+                  today_big_token_requests: 0,
+                  expired_time_formatted: "2026-04-23 08:18:32",
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
       }
       return Promise.resolve(new Response(null, { status: 404 }));
     });
@@ -178,7 +199,16 @@ describe("AccountsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "详情-mirror-east" }));
     const detailModal = await screen.findByRole("dialog", { name: "账户详情" });
-    expect(await within(detailModal).findByText("TOKEN 名称")).toBeInTheDocument();
+    expect(await within(detailModal).findByText("今日配额进度")).toBeInTheDocument();
+    expect(within(detailModal).getByText("当天增加配额")).toBeInTheDocument();
+    expect(within(detailModal).getByText("今日已用次数")).toBeInTheDocument();
+    expect(within(detailModal).getByText("剩余 13,931")).toBeInTheDocument();
+    expect(within(detailModal).getByText("已用 1,068 / 新增 14,999")).toBeInTheDocument();
+    expect(within(detailModal).queryByText("TOKEN 名称")).not.toBeInTheDocument();
+    expect(within(detailModal).queryByText("套餐类型")).not.toBeInTheDocument();
+    expect(within(detailModal).queryByText("到期时间")).not.toBeInTheDocument();
+    expect(within(detailModal).queryByText("今日 OPUS 使用次数")).not.toBeInTheDocument();
+    expect(within(detailModal).queryByText("今日大TOKEN请求数")).not.toBeInTheDocument();
     expect(await within(detailModal).findByText("PPChat Token 日志")).toBeInTheDocument();
     fireEvent.click(within(detailModal).getByRole("button", { name: "Close" }));
 
@@ -288,6 +318,221 @@ describe("AccountsPage", () => {
     await waitFor(() => {
       expect(refreshDesktopTrayState).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("duplicates an account with the copy action", async () => {
+    const initialList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "mirror-east",
+        source_icon: "ppchat",
+        auth_mode: "api_key",
+        base_url: "https://code.ppchat.vip/v1",
+        status: "active",
+        is_active: true,
+        priority: 2,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+    const duplicatedList = [
+      initialList[0],
+      {
+        ...initialList[0],
+        id: 2,
+        account_name: "mirror-east 1",
+        is_active: false,
+      },
+    ];
+    let listCallCount = 0;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        const payload = listCallCount === 0 ? initialList : duplicatedList;
+        listCallCount += 1;
+        return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/1/duplicate" && init?.method === "POST") {
+        return Promise.resolve(new Response(null, { status: 201 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("mirror-east")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "复制-mirror-east" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1/duplicate",
+        expect.objectContaining({
+          method: "POST",
+        }),
+      );
+    });
+
+    expect(await screen.findByText("mirror-east 1")).toBeInTheDocument();
+    expect(refreshDesktopTrayState).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders dual official remaining meters with warning thresholds", async () => {
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "codex",
+        account_name: "official-main",
+        source_icon: "openai",
+        auth_mode: "codex_local_import",
+        base_url: "",
+        status: "active",
+        is_active: true,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                account_id: 1,
+                balance: 0,
+                quota_remaining: 0,
+                rpm_remaining: 0,
+                tpm_remaining: 0,
+                health_score: 1,
+                recent_error_rate: 0,
+                last_total_tokens: 0,
+                last_input_tokens: 0,
+                last_output_tokens: 0,
+                model_context_window: 0,
+                primary_used_percent: 75,
+                secondary_used_percent: 95,
+              },
+            ]),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("official-main")).toBeInTheDocument();
+    expect(await screen.findByText("5H")).toBeInTheDocument();
+    expect(screen.getByText("7D")).toBeInTheDocument();
+    expect(screen.getByText("25%")).toBeInTheDocument();
+    expect(screen.getByText("5%")).toBeInTheDocument();
+    expect(document.querySelector('[aria-label="official-main-5H"] .account-usage-mini-fill')).toHaveClass("is-warning");
+    expect(document.querySelector('[aria-label="official-main-7D"] .account-usage-mini-fill')).toHaveClass("is-danger");
+  });
+
+  it("renders ppchat daily remaining usage meter on the card", async () => {
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "ppchat-main",
+        source_icon: "ppchat",
+        auth_mode: "api_key",
+        base_url: "https://code.ppchat.vip/v1",
+        status: "active",
+        is_active: false,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.startsWith("/ai-router/api/accounts/1/ppchat-token-logs") && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              success: true,
+              data: {
+                logs: [],
+                pagination: { page: 1, page_size: 10, total: 0, total_pages: 0 },
+                token_info: {
+                  name: "ppchat-main",
+                  today_usage_count: 172,
+                  today_used_quota: 1068,
+                  remain_quota_display: 13931,
+                  today_added_quota: 14999,
+                  expired_time_formatted: "2026-04-23 08:18:32",
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("ppchat-main")).toBeInTheDocument();
+    expect(await screen.findByText("1D")).toBeInTheDocument();
+    expect(screen.getByText("93%")).toBeInTheDocument();
   });
 
   it("reorders account cards during pointer drag before release", async () => {

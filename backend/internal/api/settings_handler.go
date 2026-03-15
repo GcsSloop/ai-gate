@@ -606,6 +606,15 @@ func normalizeAppSettings(value settings.AppSettings) settings.AppSettings {
 	if value.BackupRetentionCount <= 0 {
 		value.BackupRetentionCount = defaults.BackupRetentionCount
 	}
+	if value.StatusRefreshIntervalSeconds <= 0 {
+		value.StatusRefreshIntervalSeconds = defaults.StatusRefreshIntervalSeconds
+	}
+	if value.StatusRefreshIntervalSeconds < 5 {
+		value.StatusRefreshIntervalSeconds = 5
+	}
+	if value.StatusRefreshIntervalSeconds > 3600 {
+		value.StatusRefreshIntervalSeconds = 3600
+	}
 	if value.Language != "en-US" {
 		value.Language = defaults.Language
 	}

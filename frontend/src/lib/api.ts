@@ -26,6 +26,9 @@ export type AccountRecord = {
   secondary_used_percent: number;
   primary_resets_at?: string;
   secondary_resets_at?: string;
+  ppchat_today_used_quota?: number;
+  ppchat_today_added_quota?: number;
+  ppchat_today_remaining_quota?: number;
 };
 
 export type AccountUsageRecord = {
@@ -44,6 +47,9 @@ export type AccountUsageRecord = {
   secondary_used_percent: number;
   primary_resets_at?: string;
   secondary_resets_at?: string;
+  ppchat_today_used_quota?: number;
+  ppchat_today_added_quota?: number;
+  ppchat_today_remaining_quota?: number;
 };
 
 export type CreateAccountPayload = {
@@ -175,6 +181,7 @@ export type AppSettings = {
   close_to_tray: boolean;
   show_proxy_switch_on_home: boolean;
   show_home_update_indicator: boolean;
+  status_refresh_interval_seconds: number;
   proxy_host: string;
   proxy_port: number;
   auto_failover_enabled: boolean;
@@ -235,6 +242,16 @@ export async function updateAccount(
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to update account");
+  }
+}
+
+export async function duplicateAccount(id: number): Promise<void> {
+  const response = await fetch(apiPath(`/accounts/${id}/duplicate`), {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to duplicate account");
   }
 }
 

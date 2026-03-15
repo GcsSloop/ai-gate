@@ -16,6 +16,7 @@ import "./styles.css";
 
 const appSettingsBootstrapRetryDelays = [0, 150, 300, 600, 1_000];
 const homeUpdateCheckIntervalMs = 6 * 60 * 60 * 1_000;
+const defaultStatusRefreshIntervalSeconds = 60;
 
 type AppView = "accounts" | "stats" | "settings";
 
@@ -154,6 +155,23 @@ export function App() {
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!appSettings) {
+      return;
+    }
+
+    const refreshIntervalSeconds = Math.min(Math.max(appSettings.status_refresh_interval_seconds ?? defaultStatusRefreshIntervalSeconds, 5), 3600);
+    const timer = window.setInterval(() => {
+      void refreshProxyState();
+      void refreshDesktopTrayState();
+      setAccountsSyncToken((value) => value + 1);
+    }, refreshIntervalSeconds * 1_000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [appSettings]);
 
   useEffect(() => {
     if (!appSettings?.show_home_update_indicator) {

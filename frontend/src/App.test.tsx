@@ -282,6 +282,65 @@ describe("App", () => {
     expect(mockedUpdateService.check).not.toHaveBeenCalled();
   });
 
+  it("refreshes proxy status and account sync token with the configured cadence", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+        return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              launch_at_login: false,
+              silent_start: false,
+              close_to_tray: true,
+              show_proxy_switch_on_home: true,
+              show_home_update_indicator: false,
+              status_refresh_interval_seconds: 5,
+              proxy_host: "127.0.0.1",
+              proxy_port: 6789,
+              auto_failover_enabled: false,
+              auto_backup_interval_hours: 24,
+              backup_retention_count: 10,
+              audit_limit_message: 200,
+              audit_limit_function_call: 100,
+              audit_limit_function_call_output: 100,
+              audit_limit_reasoning: 40,
+              audit_limit_custom_tool_call: 100,
+              audit_limit_custom_tool_call_output: 100,
+              language: "zh-CN",
+              theme_mode: "system",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/accounts-sync:0/)).toBeInTheDocument();
+    expect(vi.mocked(refreshDesktopTrayState)).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/accounts-sync:1/)).toBeInTheDocument();
+    expect(vi.mocked(refreshDesktopTrayState)).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:6789/ai-router/api/settings/proxy/status");
+  });
+
   it("opens the about tab when the home update indicator is clicked", async () => {
     mockedUpdateService.check.mockResolvedValue({
       supported: true,
