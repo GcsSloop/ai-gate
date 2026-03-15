@@ -498,6 +498,10 @@ body {
   background: var(--panel-bg);
 }
 
+.settings-card.settings-card-overflow-visible {
+  overflow: visible;
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: 1fr;

@@ -198,6 +198,7 @@ describe("SettingsPage", () => {
     const toolbar = screen.getByTestId("settings-tab-toolbar");
     expect(within(toolbar).getByRole("tab", { name: "高级" })).toBeInTheDocument();
     expect(within(toolbar).getByRole("button", { name: "保存设置" })).toBeInTheDocument();
+    expect(screen.getByText("备份与恢复").closest(".settings-card")).toHaveClass("settings-card-overflow-visible");
 
     expect(await screen.findByRole("button", { name: "备份操作 20260309-101500.000" })).toBeInTheDocument();
     expect(screen.queryByText("审计存储")).not.toBeInTheDocument();

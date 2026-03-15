@@ -467,7 +467,7 @@ export function SettingsPage({
       label: t("通用"),
       content: (
         <div className="settings-grid">
-          <Card className="settings-card" variant="borderless">
+          <Card className="settings-card settings-card-overflow-visible" variant="borderless">
             <SectionHeader icon={<DesktopOutlined />} title={t("界面偏好")} description={t("即时切换界面语言与主题，自动保存并立即生效。")} />
             <div className="settings-stack">
               <label className="settings-field">
@@ -512,7 +512,7 @@ export function SettingsPage({
             </div>
           </Card>
 
-          <Card className="settings-card" variant="borderless">
+          <Card className="settings-card settings-card-overflow-visible" variant="borderless" data-testid="backup-settings-card">
             <SectionHeader icon={<DesktopOutlined />} title={t("窗口行为")} description={t("控制桌面应用的启动与关闭方式。")} />
             <div className="settings-stack">
               <ToggleRow
@@ -677,7 +677,7 @@ export function SettingsPage({
             </div>
           </Card>
 
-          <Card className="settings-card" variant="borderless">
+          <Card className="settings-card settings-card-overflow-visible" variant="borderless" data-testid="backup-settings-card">
             <SectionHeader
               icon={<DatabaseOutlined />}
               title={t("备份与恢复")}
