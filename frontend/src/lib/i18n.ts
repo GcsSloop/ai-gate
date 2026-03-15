@@ -45,6 +45,7 @@ const enUSMessages: Record<string, string> = {
   "界面语言": "Language",
   "首页更新提示": "Home update indicator",
   "定时检查 GitHub 新版本，并在首页顶栏显示更新图标提示。": "Check GitHub for new releases on a schedule and show an update icon in the home header.",
+  "状态刷新间隔（秒）": "Status refresh interval (seconds)",
   "跟随系统": "Follow system",
   "浅色模式": "Light mode",
   "深色模式": "Dark mode",

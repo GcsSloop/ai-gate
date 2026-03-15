@@ -17,6 +17,7 @@ const baseSettings = {
   close_to_tray: true,
   show_proxy_switch_on_home: true,
   show_home_update_indicator: true,
+  status_refresh_interval_seconds: 60,
   proxy_host: "127.0.0.1",
   proxy_port: 6789,
   auto_failover_enabled: false,
@@ -432,6 +433,57 @@ describe("SettingsPage", () => {
     });
 
     expect(onSettingsChanged).toHaveBeenCalledWith({ ...baseSettings, theme_mode: "dark" });
+  });
+
+  it("saves the configurable status refresh interval within the allowed range", async () => {
+    const onSettingsChanged = vi.fn();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/failover-queue") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/database/backups") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/app" && init?.method === "PUT") {
+        return Promise.resolve(
+          new Response(String(init.body), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(getAppMetadata).mockResolvedValue({
+      name: "AI Gate",
+      version: "0.1.0",
+      description: "桌面代理与路由控制台",
+      author: "GcsSloop",
+    });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
+    vi.mocked(applyDesktopAppSettings).mockResolvedValue(null);
+
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={onSettingsChanged} />);
+
+    fireEvent.change(await screen.findByLabelText("状态刷新间隔（秒）"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/settings/app",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ ...baseSettings, status_refresh_interval_seconds: 5 }),
+        }),
+      );
+    });
+
+    expect(onSettingsChanged).toHaveBeenCalledWith({ ...baseSettings, status_refresh_interval_seconds: 5 });
   });
 
   it("renders recent desktop logs inside a bounded scroll panel", async () => {

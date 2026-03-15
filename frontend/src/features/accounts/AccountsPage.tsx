@@ -58,6 +58,7 @@ import {
 import {
   createAccount,
   deleteAccount,
+  duplicateAccount,
   importCurrentCodexAuth,
   fetchPPChatTokenLogs,
   listAccountUsage,
@@ -144,6 +145,57 @@ function formatResetAt(value: string | undefined, language: AppLanguage) {
     return date.toLocaleTimeString(language, { hour: "2-digit", minute: "2-digit", hour12: false });
   }
   return date.toLocaleDateString(language, { month: "numeric", day: "numeric" });
+}
+
+function formatInteger(language: AppLanguage, value: number): string {
+  return new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(value);
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(Math.max(value, 0), 100);
+}
+
+function getRemainingTone(value: number): "ok" | "warning" | "danger" {
+  if (value < 10) {
+    return "danger";
+  }
+  if (value < 30) {
+    return "warning";
+  }
+  return "ok";
+}
+
+function isOfficialAccount(record: AccountRecord): boolean {
+  return record.auth_mode === "oauth" || record.auth_mode === "codex_local_import";
+}
+
+function isPPChatAccount(record: AccountRecord): boolean {
+  return normalizeSourceIcon(record.source_icon) === "ppchat" || /ppchat\.vip/i.test(record.base_url);
+}
+
+function buildPPChatUsageSummary(data: PPChatTokenLogsPayload["data"] | null | undefined): Pick<
+  AccountRecord,
+  "ppchat_today_added_quota" | "ppchat_today_used_quota" | "ppchat_today_remaining_quota"
+> | null {
+  const info = data?.token_info;
+  if (!info) {
+    return null;
+  }
+  const added = Math.max(info.today_added_quota ?? 0, 0);
+  const used = Math.max(info.today_used_quota ?? 0, 0);
+  const remaining = Math.max(info.remain_quota_display ?? 0, 0);
+  const total = Math.max(added, used+ remaining, 0);
+  if (total <= 0 && used <= 0 && remaining <= 0) {
+    return null;
+  }
+  return {
+    ppchat_today_added_quota: total,
+    ppchat_today_used_quota: used,
+    ppchat_today_remaining_quota: remaining,
+  };
 }
 
 type AccountsPageProps = {
@@ -288,17 +340,34 @@ export function AccountsPage({
 
   async function refreshUsage() {
     try {
-      const usageItems = await listAccountUsage();
+      const currentAccounts = accountsRef.current;
+      const ppchatAccounts = currentAccounts.filter((item) => isPPChatAccount(item));
+      const [usageItems, ppchatSummaries] = await Promise.all([
+        listAccountUsage(),
+        Promise.all(
+          ppchatAccounts.map(async (item) => {
+            try {
+              const payload = await fetchPPChatTokenLogs(item.id);
+              return [item.id, buildPPChatUsageSummary(payload.data)] as const;
+            } catch {
+              return [item.id, null] as const;
+            }
+          }),
+        ),
+      ]);
       const usageByAccount = new Map(usageItems.map((item) => [item.account_id, item]));
+      const ppchatByAccount = new Map(ppchatSummaries.filter((entry): entry is readonly [number, NonNullable<typeof entry[1]>] => entry[1] !== null));
       setAccountsState((items) =>
         items.map((item) => {
           const usage = usageByAccount.get(item.id);
+          const ppchatUsage = ppchatByAccount.get(item.id);
           if (!usage) {
-            return item;
+            return ppchatUsage ? { ...item, ...ppchatUsage } : item;
           }
           return {
             ...item,
             ...usage,
+            ...(ppchatUsage ?? {}),
           };
         }),
       );
@@ -410,12 +479,13 @@ export function AccountsPage({
   }
 
   async function handleCopyAccount(record: AccountRecord) {
-    const copied = `${record.account_name}\n${record.base_url || t("OpenAI 官方")}`;
     try {
-      await navigator.clipboard.writeText(copied);
-      void messageApi.success(t("已复制账户名称和 API 地址"));
-    } catch {
-      void messageApi.warning(t("复制失败，请检查系统剪贴板权限"));
+      await duplicateAccount(record.id);
+      await refreshAll();
+      void refreshDesktopTrayState();
+      void messageApi.success(t("已复制账户"));
+    } catch (error) {
+      void messageApi.warning(error instanceof Error ? error.message : t("复制失败，请稍后重试"));
     }
   }
 
@@ -507,23 +577,27 @@ export function AccountsPage({
     return Math.max(...detailLogs.logs.map((log) => log.prompt_tokens + log.completion_tokens), 1);
   }, [detailLogs]);
 
-  const ppchatSummaryCards = useMemo(() => {
+  const ppchatQuotaSummary = useMemo(() => {
     const info = detailLogs?.token_info;
     if (!info) {
-      return [];
+      return null;
     }
-    const expiryTime = info.expiry?.time || info.expired_time_formatted || "-";
-    return [
-      { key: "token", title: "TOKEN 名称", value: info.name || "-", valueClass: "is-text" },
-      { key: "plan", title: "套餐类型", value: inferPPChatPackageType(info.name || ""), valueClass: "is-text" },
-      { key: "expiry", title: "到期时间", value: expiryTime, valueClass: "is-datetime" },
-      { key: "remain", title: "剩余配额", value: `${info.remain_quota_display ?? 0}` },
-      { key: "used", title: "当天已用配额", value: `${info.today_used_quota ?? 0}` },
-      { key: "added", title: "当天增加配额", value: `${info.today_added_quota ?? 0}` },
-      { key: "count", title: "今日已用次数", value: `${info.today_usage_count ?? 0}` },
-      { key: "opus", title: "今日 OPUS 使用次数", value: `${info.today_opus_usage ?? 0}` },
-      { key: "big", title: "今日大TOKEN请求数", value: `${info.today_big_token_requests ?? 0}` },
-    ];
+    const added = Math.max(info.today_added_quota ?? 0, 0);
+    const used = Math.max(info.today_used_quota ?? 0, 0);
+    const remain = info.remain_quota_display ?? 0;
+    const remainingVisible = Math.max(remain, 0);
+    const total = Math.max(added, used+ remainingVisible, 1);
+    const overflow = remain < 0 ? Math.abs(remain) : Math.max(used - total, 0);
+
+    return {
+      added,
+      used,
+      remain,
+      total,
+      overflow,
+      usageCount: info.today_usage_count ?? 0,
+      progressPercent: Math.min((used / total) * 100, 100),
+    };
   }, [detailLogs]);
 
   const draggingAccount =
@@ -535,6 +609,22 @@ export function AccountsPage({
 
   function renderAccountCard(record: AccountRecord, options: AccountCardRenderOptions = {}) {
     const sourceIcon = sourceIconMap[normalizeSourceIcon(record.source_icon)];
+    const usageWindows = isOfficialAccount(record)
+      ? [
+          { label: "5H", remainingPercent: clampPercent(100 - record.primary_used_percent) },
+          { label: "7D", remainingPercent: clampPercent(100 - record.secondary_used_percent) },
+        ]
+      : isPPChatAccount(record) &&
+          (record.ppchat_today_added_quota ?? 0) > 0
+        ? [
+            {
+              label: "1D",
+              remainingPercent: clampPercent(
+                ((record.ppchat_today_remaining_quota ?? 0) / Math.max(record.ppchat_today_added_quota ?? 0, 1)) * 100,
+              ),
+            },
+          ]
+      : [];
 
     return (
       <div
@@ -569,58 +659,76 @@ export function AccountsPage({
                 </Text>
               </div>
             </div>
-            <div className="account-actions">
-              <Button
-                type="primary"
-                className="account-enable-button"
-                aria-label={`${language === "en-US" ? "Set active" : "设为激活"}-${record.account_name}`}
-                icon={<CheckCircleOutlined />}
-                disabled={record.is_active || options.actionsDisabled}
-                onClick={() => void handleSetActive(record)}
-              >
-                {t("启用")}
-              </Button>
-              <Button
-                type="text"
-                className="account-action-button"
-                aria-label={`${language === "en-US" ? "Edit" : "编辑"}-${record.account_name}`}
-                icon={<EditOutlined />}
-                disabled={options.actionsDisabled}
-                onClick={() => openEditModal(record)}
-              />
-              <Button
-                type="text"
-                className="account-action-button"
-                aria-label={`${language === "en-US" ? "Copy" : "复制"}-${record.account_name}`}
-                icon={<CopyOutlined />}
-                disabled={options.actionsDisabled}
-                onClick={() => void handleCopyAccount(record)}
-              />
-              <Button
-                type="text"
-                className="account-action-button"
-                aria-label={`${language === "en-US" ? "Details" : "详情"}-${record.account_name}`}
-                icon={<InfoCircleOutlined />}
-                disabled={options.actionsDisabled}
-                onClick={() => setDetailAccount(record)}
-              />
-              <Button
-                type="text"
-                danger
-                className="account-action-button"
-                aria-label={`${language === "en-US" ? "Delete" : "删除"}-${record.account_name}`}
-                icon={<DeleteOutlined />}
-                disabled={options.actionsDisabled}
-                onClick={() =>
-                  void modal.confirm({
-                    title: language === "en-US" ? `Delete account "${record.account_name}"?` : `确认删除账户「${record.account_name}」吗？`,
-                    okText: t("删除"),
-                    cancelText: t("取消"),
-                    okButtonProps: { danger: true },
-                    onOk: () => handleDelete(record),
-                  })
-                }
-              />
+            <div className="account-side-slot">
+              <div className={`account-usage-mini ${usageWindows.length === 0 ? "account-usage-mini-empty" : ""}`.trim()}>
+                {usageWindows.map((item) => (
+                  <div className="account-usage-mini-row" key={item.label}>
+                    <div className="account-usage-mini-head">
+                      <span className="account-usage-mini-label">{item.label}</span>
+                      <span className={`account-usage-mini-value is-${getRemainingTone(item.remainingPercent)}`}>{`${Math.round(item.remainingPercent)}%`}</span>
+                    </div>
+                    <div className="account-usage-mini-track" aria-label={`${record.account_name}-${item.label}`}>
+                      <div
+                        className={`account-usage-mini-fill is-${getRemainingTone(item.remainingPercent)}`}
+                        style={{ width: `${item.remainingPercent}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="account-actions">
+                <Button
+                  type="primary"
+                  className="account-enable-button"
+                  aria-label={`${language === "en-US" ? "Set active" : "设为激活"}-${record.account_name}`}
+                  icon={<CheckCircleOutlined />}
+                  disabled={record.is_active || options.actionsDisabled}
+                  onClick={() => void handleSetActive(record)}
+                >
+                  {t("启用")}
+                </Button>
+                <Button
+                  type="text"
+                  className="account-action-button"
+                  aria-label={`${language === "en-US" ? "Edit" : "编辑"}-${record.account_name}`}
+                  icon={<EditOutlined />}
+                  disabled={options.actionsDisabled}
+                  onClick={() => openEditModal(record)}
+                />
+                <Button
+                  type="text"
+                  className="account-action-button"
+                  aria-label={`${language === "en-US" ? "Copy" : "复制"}-${record.account_name}`}
+                  icon={<CopyOutlined />}
+                  disabled={options.actionsDisabled}
+                  onClick={() => void handleCopyAccount(record)}
+                />
+                <Button
+                  type="text"
+                  className="account-action-button"
+                  aria-label={`${language === "en-US" ? "Details" : "详情"}-${record.account_name}`}
+                  icon={<InfoCircleOutlined />}
+                  disabled={options.actionsDisabled}
+                  onClick={() => setDetailAccount(record)}
+                />
+                <Button
+                  type="text"
+                  danger
+                  className="account-action-button"
+                  aria-label={`${language === "en-US" ? "Delete" : "删除"}-${record.account_name}`}
+                  icon={<DeleteOutlined />}
+                  disabled={options.actionsDisabled}
+                  onClick={() =>
+                    void modal.confirm({
+                      title: language === "en-US" ? `Delete account "${record.account_name}"?` : `确认删除账户「${record.account_name}」吗？`,
+                      okText: t("删除"),
+                      cancelText: t("取消"),
+                      okButtonProps: { danger: true },
+                      onOk: () => handleDelete(record),
+                    })
+                  }
+                />
+              </div>
             </div>
           </div>
         </Card>
@@ -701,15 +809,41 @@ export function AccountsPage({
                 </Card>
               ) : (
                 <div className="ppchat-metrics-grid">
-                  {ppchatSummaryCards.map((item) => (
-                    <Card key={item.key} variant="borderless" className="ppchat-metric-card">
-                      <Statistic
-                        title={<span className="ppchat-stat-title">{item.title}</span>}
-                        value={item.value}
-                        valueRender={(node) => <span className={`ppchat-stat-value ${item.valueClass ?? ""}`}>{node}</span>}
+                  <Card variant="borderless" className="ppchat-progress-card">
+                    <div className="ppchat-stat-title">{t("今日配额进度")}</div>
+                    <div className="ppchat-progress-head">
+                      <span className={`ppchat-progress-primary ${ppchatQuotaSummary?.overflow ? "is-danger" : ""}`}>
+                        {ppchatQuotaSummary
+                          ? `${ppchatQuotaSummary.overflow ? t("超出") : t("剩余")} ${formatInteger(language, ppchatQuotaSummary.overflow || ppchatQuotaSummary.remain)}`
+                          : "--"}
+                      </span>
+                      <span className={`ppchat-progress-secondary ${ppchatQuotaSummary?.overflow ? "is-danger" : ""}`}>
+                        {ppchatQuotaSummary
+                          ? `${t("已用")} ${formatInteger(language, ppchatQuotaSummary.used)} / ${t("新增")} ${formatInteger(language, ppchatQuotaSummary.added)}`
+                          : "--"}
+                      </span>
+                    </div>
+                    <div className="ppchat-progress-bar-shell" aria-label={t("今日配额进度")}>
+                      <div
+                        className={`ppchat-progress-bar ${ppchatQuotaSummary?.overflow ? "is-danger" : ""}`}
+                        style={{ width: `${ppchatQuotaSummary?.progressPercent ?? 0}%` }}
                       />
-                    </Card>
-                  ))}
+                    </div>
+                  </Card>
+                  <Card variant="borderless" className="ppchat-metric-card ppchat-metric-card-compact">
+                    <Statistic
+                      title={<span className="ppchat-stat-title">{t("当天增加配额")}</span>}
+                      value={ppchatQuotaSummary ? formatInteger(language, ppchatQuotaSummary.added) : "--"}
+                      valueRender={(node) => <span className="ppchat-stat-value">{node}</span>}
+                    />
+                  </Card>
+                  <Card variant="borderless" className="ppchat-metric-card ppchat-metric-card-compact">
+                    <Statistic
+                      title={<span className="ppchat-stat-title">{t("今日已用次数")}</span>}
+                      value={ppchatQuotaSummary ? formatInteger(language, ppchatQuotaSummary.usageCount) : "--"}
+                      valueRender={(node) => <span className="ppchat-stat-value">{node}</span>}
+                    />
+                  </Card>
                 </div>
               )}
               <Card variant="borderless" className="account-detail-chart-card" title={t("PPChat Token 日志")} extra={<BarChartOutlined />}>
@@ -918,14 +1052,4 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
-}
-
-function inferPPChatPackageType(tokenName: string): string {
-  const normalized = tokenName.trim();
-  if (!normalized) {
-    return "-";
-  }
-  const parts = normalized.split("-");
-  const suffix = parts[parts.length - 1] || normalized;
-  return suffix.toUpperCase();
 }

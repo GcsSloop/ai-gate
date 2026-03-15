@@ -509,6 +509,21 @@ export function SettingsPage({
                 checked={draftSettings.show_home_update_indicator}
                 onChange={(checked) => updateDraft({ show_home_update_indicator: checked })}
               />
+              <label className="settings-field">
+                <span className="settings-field-label">{t("状态刷新间隔（秒）")}</span>
+                <InputNumber
+                  aria-label={t("状态刷新间隔（秒）")}
+                  min={5}
+                  max={3600}
+                  value={draftSettings.status_refresh_interval_seconds}
+                  onChange={(value) =>
+                    updateDraft({
+                      status_refresh_interval_seconds: Math.min(Math.max(Number(value) || 60, 5), 3600),
+                    })
+                  }
+                  className="settings-number"
+                />
+              </label>
             </div>
           </Card>
 
