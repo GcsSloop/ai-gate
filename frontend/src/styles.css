@@ -914,7 +914,7 @@ body {
 
 .account-cards {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .accounts-empty {
@@ -922,7 +922,7 @@ body {
 }
 
 .account-card-item {
-  border-radius: 18px;
+  border-radius: 16px;
   border: 1px solid var(--panel-border);
   box-shadow: var(--card-shadow);
   background: var(--panel-bg);
@@ -931,6 +931,10 @@ body {
 .account-card-surface.ant-card {
   background: transparent;
   box-shadow: none;
+}
+
+.account-card-surface.ant-card .ant-card-body {
+  padding: 16px 18px;
 }
 
 .account-card-item.active-account-card {
@@ -956,18 +960,18 @@ body {
 .account-card-shell {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 76px;
+  gap: 10px;
+  min-height: 60px;
 }
 
 .account-drag-handle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 9px;
   background: transparent;
   color: #9aa3b2;
   cursor: grab;
@@ -992,7 +996,7 @@ body {
 .account-main {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
   flex: 1;
 }
@@ -1010,13 +1014,14 @@ body {
 .account-title-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .account-base-url {
   display: block;
-  margin-top: 4px;
-  font-size: 13px;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .account-actions {
@@ -1037,15 +1042,17 @@ body {
 }
 
 .account-enable-button {
-  border-radius: 12px;
-  height: 36px;
-  margin-right: 6px;
+  border-radius: 10px;
+  height: 32px;
+  margin-right: 4px;
+  padding: 0 12px;
+  font-size: 13px;
 }
 
 .account-action-button {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
   color: var(--text-secondary);
 }
 
