@@ -61,6 +61,8 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.updateAccount(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/accounts/") && countPathSegments(r.URL.Path) == 2:
 		h.deleteAccount(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/duplicate"):
+		h.duplicateAccount(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/test"):
 		h.testAccount(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/ppchat-token-logs"):
@@ -944,6 +946,39 @@ func (h *AccountsHandler) deleteAccount(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *AccountsHandler) duplicateAccount(w http.ResponseWriter, r *http.Request) {
+	id, err := accountIDFromPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	source, err := h.repo.GetByID(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	accountList, err := h.repo.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	duplicate := source
+	duplicate.ID = 0
+	duplicate.AccountName = nextDuplicatedAccountName(source.AccountName, accountList)
+	duplicate.IsActive = false
+	duplicate.CooldownUntil = nil
+
+	if err := h.repo.Create(duplicate); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+}
+
 func (h *AccountsHandler) disableAccount(w http.ResponseWriter, r *http.Request) {
 	id, err := accountIDFromPath(r.URL.Path)
 	if err != nil {
@@ -962,12 +997,32 @@ func (h *AccountsHandler) disableAccount(w http.ResponseWriter, r *http.Request)
 func accountIDFromPath(path string) (int64, error) {
 	trimmed := strings.TrimPrefix(path, "/accounts/")
 	trimmed = strings.TrimSuffix(trimmed, "/disable")
+	trimmed = strings.TrimSuffix(trimmed, "/duplicate")
 	trimmed = strings.TrimSuffix(trimmed, "/test")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		return 0, errors.New("missing account id")
 	}
 	return strconv.ParseInt(trimmed, 10, 64)
+}
+
+func nextDuplicatedAccountName(baseName string, accountList []accounts.Account) string {
+	baseName = strings.TrimSpace(baseName)
+	if baseName == "" {
+		baseName = "account"
+	}
+
+	used := make(map[string]struct{}, len(accountList))
+	for _, account := range accountList {
+		used[strings.TrimSpace(account.AccountName)] = struct{}{}
+	}
+
+	for index := 1; ; index += 1 {
+		candidate := fmt.Sprintf("%s %d", baseName, index)
+		if _, exists := used[candidate]; !exists {
+			return candidate
+		}
+	}
 }
 
 func countPathSegments(path string) int {
