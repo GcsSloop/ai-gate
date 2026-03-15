@@ -533,6 +533,7 @@ describe("AccountsPage", () => {
     expect(await screen.findByText("ppchat-main")).toBeInTheDocument();
     expect(await screen.findByText("1D")).toBeInTheDocument();
     expect(screen.getByText("93%")).toBeInTheDocument();
+    expect(document.querySelector(".account-usage-mini")).toHaveClass("account-usage-mini-single");
   });
 
   it("reorders account cards during pointer drag before release", async () => {

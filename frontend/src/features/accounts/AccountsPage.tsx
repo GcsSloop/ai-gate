@@ -660,7 +660,9 @@ export function AccountsPage({
               </div>
             </div>
             <div className="account-side-slot">
-              <div className={`account-usage-mini ${usageWindows.length === 0 ? "account-usage-mini-empty" : ""}`.trim()}>
+              <div
+                className={`account-usage-mini ${usageWindows.length === 0 ? "account-usage-mini-empty" : ""} ${usageWindows.length === 1 ? "account-usage-mini-single" : ""}`.trim()}
+              >
                 {usageWindows.map((item) => (
                   <div className="account-usage-mini-row" key={item.label}>
                     <div className="account-usage-mini-head">
