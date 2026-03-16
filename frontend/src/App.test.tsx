@@ -588,6 +588,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe("en-US");
     expect(screen.getByRole("tablist", { name: "Primary navigation" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Account" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument();

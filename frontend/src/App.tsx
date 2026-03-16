@@ -92,7 +92,7 @@ export function App() {
         void refreshDesktopTrayState();
       } catch (error) {
         if (!disposed) {
-          void messageApi.error(error instanceof Error ? error.message : "初始化设置中心失败");
+          void messageApi.error(error instanceof Error ? t(error.message) : t("初始化设置中心失败"));
         }
       } finally {
         if (!disposed) {
@@ -128,13 +128,14 @@ export function App() {
       target.dataset.themeMode = resolvedThemeMode;
       target.dataset.themePreference = themeMode;
     });
+    document.documentElement.lang = language;
     return () => {
       targets.forEach((target) => {
         delete target.dataset.themeMode;
         delete target.dataset.themePreference;
       });
     };
-  }, [resolvedThemeMode, themeMode]);
+  }, [language, resolvedThemeMode, themeMode]);
 
   useEffect(() => {
     if (!shellReady) {
@@ -215,10 +216,10 @@ export function App() {
     const translate = createTranslator(language);
     const handler = (event: Event) => {
       const custom = event as CustomEvent<{ message?: string }>;
-      const details = custom.detail?.message || "当前配置已被外部修改，无法自动恢复备份。";
+      const details = custom.detail?.message || translate("当前配置已被外部修改，无法自动恢复备份。");
       Modal.confirm({
         title: translate("退出前恢复失败"),
-        content: language === "en-US" ? `${details} Force quit anyway?` : `${details} 是否强制退出？`,
+        content: `${details} ${translate("是否强制退出？")}`,
         okText: translate("强制退出"),
         cancelText: translate("取消"),
         onOk: async () => {
@@ -250,10 +251,7 @@ export function App() {
       if (!checked && error instanceof Error && error.message.includes("config.toml changed externally")) {
         Modal.confirm({
           title: t("检测到配置冲突"),
-          content:
-            language === "en-US"
-              ? "The current config.toml was modified externally. Choose whether to overwrite and disable, or disable the proxy without overwriting."
-              : "当前 config.toml 已被外部修改。请选择关闭方式：覆盖恢复后关闭，或不覆盖直接关闭代理。",
+          content: t("当前 config.toml 已被外部修改。请选择关闭方式：覆盖恢复后关闭，或不覆盖直接关闭代理。"),
           okText: t("覆盖并关闭"),
           cancelText: t("不覆盖直接关闭"),
           onOk: async () => {
@@ -264,7 +262,7 @@ export function App() {
               void refreshDesktopTrayState();
               void messageApi.success(t("代理已关闭"));
             } catch (forceError) {
-              void messageApi.error(forceError instanceof Error ? forceError.message : t("覆盖恢复失败"));
+              void messageApi.error(forceError instanceof Error ? t(forceError.message) : t("覆盖恢复失败"));
               setProxyEnabled(true);
             } finally {
               setProxyLoading(false);
@@ -278,7 +276,7 @@ export function App() {
               void refreshDesktopTrayState();
               void messageApi.success(t("代理已关闭（未覆盖当前配置）"));
             } catch (cancelError) {
-              void messageApi.error(cancelError instanceof Error ? cancelError.message : t("关闭代理失败"));
+              void messageApi.error(cancelError instanceof Error ? t(cancelError.message) : t("关闭代理失败"));
               setProxyEnabled(true);
             } finally {
               setProxyLoading(false);
@@ -287,7 +285,7 @@ export function App() {
         });
         return;
       }
-      void messageApi.error(error instanceof Error ? error.message : t("代理切换失败，请检查配置冲突后重试"));
+      void messageApi.error(error instanceof Error ? t(error.message) : t("代理切换失败，请检查配置冲突后重试"));
       setProxyEnabled(!checked);
     } finally {
       setProxyLoading(false);

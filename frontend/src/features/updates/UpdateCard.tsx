@@ -65,7 +65,7 @@ export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, 
         return;
       }
     } catch (error) {
-      setState({ status: "error", message: error instanceof Error ? error.message : t("检查更新失败") });
+      setState({ status: "error", message: error instanceof Error ? t(error.message) : t("检查更新失败") });
     }
   }
 
@@ -91,7 +91,7 @@ export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, 
         update,
       });
     } catch (error) {
-      setState({ status: "error", message: error instanceof Error ? error.message : t("安装更新失败") });
+      setState({ status: "error", message: error instanceof Error ? t(error.message) : t("安装更新失败") });
     }
   }
 
@@ -121,23 +121,23 @@ export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, 
 
       <div className="update-card-body">
         <div className="about-meta-row">
-          <span>{language === "en-US" ? "Current version" : "当前版本"}</span>
+          <span>{t("当前版本")}</span>
           <strong>{currentVersion}</strong>
         </div>
         <div className="about-meta-row">
-          <span>{language === "en-US" ? "Status" : "状态"}</span>
+          <span>{t("状态")}</span>
           <strong className={`update-status-value${state.status === "checking" ? " is-checking" : ""}`}>{state.message}</strong>
         </div>
 
         {"update" in state && state.update ? (
           <>
             <div className="about-meta-row">
-              <span>{state.status === "unsupported" ? (language === "en-US" ? "Latest version" : "最新版本") : language === "en-US" ? "Target version" : "目标版本"}</span>
+              <span>{state.status === "unsupported" ? t("最新版本") : t("目标版本")}</span>
               <strong>{state.update.version}</strong>
             </div>
             {state.update.date ? (
               <div className="about-meta-row">
-                <span>{language === "en-US" ? "Published at" : "发布时间"}</span>
+                <span>{t("发布时间")}</span>
                 <strong>{formatDate(state.update.date, language)}</strong>
               </div>
             ) : null}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import type { AppLanguage, Translator } from "../../lib/i18n";
 import { apiPath } from "../../lib/paths";
 
 type Overview = {
@@ -7,7 +8,12 @@ type Overview = {
   totals: { balance: number; quota: number };
 };
 
-export function MonitoringPage() {
+type MonitoringPageProps = {
+  language?: AppLanguage;
+  t?: Translator;
+};
+
+export function MonitoringPage({ t = (value) => value }: MonitoringPageProps) {
   const [overview, setOverview] = useState<Overview>({
     status_counts: {},
     totals: { balance: 0, quota: 0 },
@@ -21,18 +27,18 @@ export function MonitoringPage() {
 
   return (
     <section className="panel">
-      <h2>监控面板</h2>
+      <h2>{t("监控面板")}</h2>
       <div className="metric-grid">
         <article className="metric-card">
-          <span>总余额</span>
+          <span>{t("总余额")}</span>
           <strong>{overview.totals.balance}</strong>
         </article>
         <article className="metric-card">
-          <span>总额度</span>
+          <span>{t("总额度")}</span>
           <strong>{overview.totals.quota}</strong>
         </article>
         <article className="metric-card">
-          <span>冷却中的账户</span>
+          <span>{t("冷却中的账户")}</span>
           <strong>{overview.status_counts.cooldown ?? 0}</strong>
         </article>
       </div>

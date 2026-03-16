@@ -18,6 +18,7 @@ const enUSMessages: Record<string, string> = {
   "初始化设置中心失败": "Failed to initialize settings center",
   "退出前恢复失败": "Restore failed before exit",
   "强制退出": "Force quit",
+  "是否强制退出？": "Force quit anyway?",
   "取消": "Cancel",
   "恢复失败，仍将退出": "Restore failed, quitting anyway",
   "检测到配置冲突": "Configuration conflict detected",
@@ -96,10 +97,16 @@ const enUSMessages: Record<string, string> = {
   "查看桌面端 sidecar 与自动恢复事件。": "View desktop sidecar lifecycle and auto-recovery events.",
   "暂无桌面日志": "No desktop logs yet",
   "程序介绍": "About the app",
+  "程序作者": "Author",
+  "程序版本": "Version",
+  "主题模式": "Theme",
   "验证并导入": "Validate and import",
   "请选择导入文件": "Choose a file to import",
   "当前后端导出格式不受支持，请升级后端后重试": "The current backend export format is unsupported. Upgrade the backend and try again.",
+  "当前后端版本不支持 JSON 导入，请升级到最新版本后重试": "The current backend version does not support JSON import. Upgrade to the latest version and try again.",
   "AI Gate 是一个本地桌面代理与账号编排工具，用于统一管理路由、故障转移与数据备份。": "AI Gate is a local desktop proxy and account orchestration tool for unified routing, failover, and data backup management.",
+  "当前配置已被外部修改，无法自动恢复备份。": "The current config was modified externally, so the backup cannot be restored automatically.",
+  "当前 config.toml 已被外部修改。请选择关闭方式：覆盖恢复后关闭，或不覆盖直接关闭代理。": "The current config.toml was modified externally. Choose whether to overwrite and disable, or disable the proxy without overwriting.",
   "加载设置数据失败": "Failed to load settings data",
   "设置已保存": "Settings saved",
   "保存设置失败": "Failed to save settings",
@@ -184,6 +191,11 @@ const enUSMessages: Record<string, string> = {
   "已复制账户名称和 API 地址": "Copied account name and API address",
   "复制失败，请检查系统剪贴板权限": "Copy failed. Check clipboard permissions.",
   "排序已更新到界面，但保存顺序失败，请稍后重试": "The order updated in the UI, but saving the new order failed. Try again later.",
+  "拖拽排序": "Drag sort",
+  "设为激活": "Set active",
+  "编辑": "Edit",
+  "复制": "Copy",
+  "详情": "Details",
   "TOKEN 名称": "Token name",
   "套餐类型": "Plan type",
   "到期时间": "Expires at",
@@ -194,6 +206,51 @@ const enUSMessages: Record<string, string> = {
   "今日 OPUS 使用次数": "OPUS usage today",
   "今日大TOKEN请求数": "Large-token requests today",
   "删除": "Delete",
+  "统计": "Stats",
+  "成功": "Success",
+  "失败": "Failure",
+  "加载统计数据失败": "Failed to load statistics",
+  "按模型费率估算": "Estimated using model pricing",
+  "与费用视角分开展示": "Shown separately from estimated cost",
+  "适合 quota 型账户": "Best for quota-based accounts",
+  "Token 与费用统计": "Token and cost statistics",
+  "聚焦请求量、Token 消耗、预估费用与余额/额度变化。": "Focus on request volume, token consumption, estimated cost, and balance/quota changes.",
+  "全部账户": "All accounts",
+  "筛选模型": "Filter model",
+  "Token 趋势": "Token trends",
+  "暂无趋势数据": "No trend data",
+  "次请求": "requests",
+  "状态分布": "Status distribution",
+  "暂无状态数据": "No status data",
+  "最近记录": "Recent events",
+  "暂无最近记录": "No recent events",
+  "已用": "Used",
+  "新增": "Added",
+  "剩余": "Remaining",
+  "超出": "Exceeded",
+  "请求账户测试接口失败": "Failed to request the account test endpoint",
+  "测试失败": "Test failed",
+  "当前版本": "Current version",
+  "最新版本": "Latest version",
+  "目标版本": "Target version",
+  "发布时间": "Published at",
+  "路由策略": "Routing policy",
+  "候选账户顺序": "Candidate account order",
+  "Token 预算系数": "Token budget factor",
+  "保存策略": "Save policy",
+  "监控面板": "Monitoring",
+  "总余额": "Total balance",
+  "总额度": "Total quota",
+  "冷却中的账户": "Cooling accounts",
+  "会话列表": "Conversations",
+  "切换链路": "Routing chain",
+  "额度不足": "Insufficient quota",
+  "被限流": "Rate limited",
+  "用量受限": "Usage limited",
+  "硬失败": "Hard failure",
+  "软失败": "Soft failure",
+  "进行中": "In progress",
+  "账户 #": "Account #",
 };
 
 export function normalizeLanguage(value?: string): AppLanguage {
@@ -211,4 +268,18 @@ export function createTranslator(language: AppLanguage): Translator {
 
 export function getAntdLocale(language: AppLanguage) {
   return language === "en-US" ? enUS : zhCN;
+}
+
+export function getRuntimeLanguage(): AppLanguage {
+  if (typeof document !== "undefined") {
+    return normalizeLanguage(document.documentElement.lang);
+  }
+  if (typeof navigator !== "undefined") {
+    return normalizeLanguage(navigator.language);
+  }
+  return "zh-CN";
+}
+
+export function runtimeTranslate(text: string): string {
+  return createTranslator(getRuntimeLanguage())(text);
 }

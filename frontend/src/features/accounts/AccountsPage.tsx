@@ -160,6 +160,18 @@ function formatInteger(language: AppLanguage, value: number): string {
   return new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(value);
 }
 
+function formatDeletedAccountMessage(language: AppLanguage, accountName: string): string {
+  return language === "en-US" ? `Deleted account ${accountName}` : `已删除账户 ${accountName}`;
+}
+
+function formatActiveAccountMessage(language: AppLanguage, accountName: string): string {
+  return language === "en-US" ? `Current account switched to ${accountName}` : `已切换当前使用中账户为 ${accountName}`;
+}
+
+function formatDeleteAccountTitle(language: AppLanguage, accountName: string): string {
+  return language === "en-US" ? `Delete account "${accountName}"?` : `确认删除账户「${accountName}」吗？`;
+}
+
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) {
     return 0;
@@ -454,7 +466,7 @@ export function AccountsPage({
     await deleteAccount(account.id);
     await refreshAll();
     void refreshDesktopTrayState();
-    void messageApi.success(`已删除账户 ${account.account_name}`);
+    void messageApi.success(formatDeletedAccountMessage(language, account.account_name));
   }
 
   async function handleTest(values: { model: string; input: string }) {
@@ -479,12 +491,10 @@ export function AccountsPage({
     try {
       await updateAccount(account.id, { is_active: true });
       void refreshDesktopTrayState();
-      void messageApi.success(
-        language === "en-US" ? `Current account switched to ${account.account_name}` : `已切换当前使用中账户为 ${account.account_name}`,
-      );
+      void messageApi.success(formatActiveAccountMessage(language, account.account_name));
     } catch (error) {
       setAccountsState(previous);
-      void messageApi.error(error instanceof Error ? error.message : t("切换激活账户失败"));
+      void messageApi.error(error instanceof Error ? t(error.message) : t("切换激活账户失败"));
     }
   }
 
@@ -495,7 +505,7 @@ export function AccountsPage({
       void refreshDesktopTrayState();
       void messageApi.success(t("已复制账户"));
     } catch (error) {
-      void messageApi.warning(error instanceof Error ? error.message : t("复制失败，请稍后重试"));
+      void messageApi.warning(error instanceof Error ? t(error.message) : t("复制失败，请稍后重试"));
     }
   }
 
@@ -648,7 +658,7 @@ export function AccountsPage({
               type="button"
               ref={options.setHandleRef}
               className="account-drag-handle"
-              aria-label={`${language === "en-US" ? "Drag sort" : "拖拽排序"}-${record.account_name}`}
+              aria-label={`${t("拖拽排序")}-${record.account_name}`}
               {...(options.handleAttributes as ButtonHTMLAttributes<HTMLButtonElement> | undefined)}
               {...(options.handleListeners as ButtonHTMLAttributes<HTMLButtonElement> | undefined)}
             >
@@ -692,7 +702,7 @@ export function AccountsPage({
                 <Button
                   type="primary"
                   className="account-enable-button"
-                  aria-label={`${language === "en-US" ? "Set active" : "设为激活"}-${record.account_name}`}
+                  aria-label={`${t("设为激活")}-${record.account_name}`}
                   icon={<CheckCircleOutlined />}
                   disabled={record.is_active || options.actionsDisabled}
                   onClick={() => void handleSetActive(record)}
@@ -702,7 +712,7 @@ export function AccountsPage({
                 <Button
                   type="text"
                   className="account-action-button"
-                  aria-label={`${language === "en-US" ? "Edit" : "编辑"}-${record.account_name}`}
+                  aria-label={`${t("编辑")}-${record.account_name}`}
                   icon={<EditOutlined />}
                   disabled={options.actionsDisabled}
                   onClick={() => openEditModal(record)}
@@ -710,7 +720,7 @@ export function AccountsPage({
                 <Button
                   type="text"
                   className="account-action-button"
-                  aria-label={`${language === "en-US" ? "Copy" : "复制"}-${record.account_name}`}
+                  aria-label={`${t("复制")}-${record.account_name}`}
                   icon={<CopyOutlined />}
                   disabled={options.actionsDisabled}
                   onClick={() => void handleCopyAccount(record)}
@@ -718,7 +728,7 @@ export function AccountsPage({
                 <Button
                   type="text"
                   className="account-action-button"
-                  aria-label={`${language === "en-US" ? "Details" : "详情"}-${record.account_name}`}
+                  aria-label={`${t("详情")}-${record.account_name}`}
                   icon={<InfoCircleOutlined />}
                   disabled={options.actionsDisabled}
                   onClick={() => setDetailAccount(record)}
@@ -727,12 +737,12 @@ export function AccountsPage({
                   type="text"
                   danger
                   className="account-action-button"
-                  aria-label={`${language === "en-US" ? "Delete" : "删除"}-${record.account_name}`}
+                  aria-label={`${t("删除")}-${record.account_name}`}
                   icon={<DeleteOutlined />}
                   disabled={options.actionsDisabled}
                   onClick={() =>
                     void modal.confirm({
-                      title: language === "en-US" ? `Delete account "${record.account_name}"?` : `确认删除账户「${record.account_name}」吗？`,
+                      title: formatDeleteAccountTitle(language, record.account_name),
                       okText: t("删除"),
                       cancelText: t("取消"),
                       okButtonProps: { danger: true },

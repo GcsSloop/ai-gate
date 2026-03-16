@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 
+import type { AppLanguage, Translator } from "../../lib/i18n";
 import { apiPath } from "../../lib/paths";
 
 type PolicyDefinition = {
@@ -11,7 +12,12 @@ type PolicyDefinition = {
   model_pool_rules: Record<string, string[]>;
 };
 
-export function PolicyPage() {
+type PolicyPageProps = {
+  language?: AppLanguage;
+  t?: Translator;
+};
+
+export function PolicyPage({ t = (value) => value }: PolicyPageProps) {
   const [policy, setPolicy] = useState<PolicyDefinition>({
     name: "default",
     candidate_order: [],
@@ -38,10 +44,10 @@ export function PolicyPage() {
 
   return (
     <section className="panel">
-      <h2>路由策略</h2>
+      <h2>{t("路由策略")}</h2>
       <form className="stack" onSubmit={(event) => void handleSubmit(event)}>
         <label>
-          候选账户顺序
+          {t("候选账户顺序")}
           <input
             value={policy.candidate_order.join(",")}
             onChange={(event) =>
@@ -53,9 +59,9 @@ export function PolicyPage() {
           />
         </label>
         <label>
-          Token 预算系数
+          {t("Token 预算系数")}
           <input
-            aria-label="Token 预算系数"
+            aria-label={t("Token 预算系数")}
             value={policy.token_budget_factor}
             onChange={(event) =>
               setPolicy((current) => ({
@@ -65,7 +71,7 @@ export function PolicyPage() {
             }
           />
         </label>
-        <button type="submit">保存策略</button>
+        <button type="submit">{t("保存策略")}</button>
       </form>
     </section>
   );
