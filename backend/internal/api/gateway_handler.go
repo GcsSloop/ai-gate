@@ -89,18 +89,18 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := gatewayopenai.ParseChatCompletionRequest(r.Body)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	req, err := gatewayopenai.ParseChatCompletionRequest(bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	logRequestSummary("gateway", r.URL.Path, r.Method, req.Model, r.RemoteAddr, summarizeChatRequestLog(req.Messages, req.Stream))
-
-	body, err := json.Marshal(req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 	accountList, err := h.accounts.List()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

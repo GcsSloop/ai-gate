@@ -59,10 +59,11 @@ func summarizeChatRequestLog(messages []gatewayopenai.Message, stream bool) stri
 			role = "user"
 		}
 		roles = append(roles, role)
-		content := strings.TrimSpace(message.Content)
-		if content != "" {
-			textParts = append(textParts, content)
-			totalChars += len([]rune(content))
+		for _, content := range gatewayopenai.ExtractMessageText(message.Content) {
+			if content != "" {
+				textParts = append(textParts, content)
+				totalChars += len([]rune(content))
+			}
 		}
 	}
 	return fmt.Sprintf(
