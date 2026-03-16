@@ -191,7 +191,7 @@ export function SettingsPage({
         setMetadata(about);
         setRecentDesktopLogs(logs);
       } catch (error) {
-        void messageApi.error(error instanceof Error ? error.message : t("加载设置数据失败"));
+        void messageApi.error(error instanceof Error ? t(error.message) : t("加载设置数据失败"));
       }
     }
 
@@ -245,7 +245,7 @@ export function SettingsPage({
       await onSettingsChanged(saved);
       void messageApi.success(t("设置已保存"));
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : t("保存设置失败"));
+      void messageApi.error(error instanceof Error ? t(error.message) : t("保存设置失败"));
     } finally {
       setSavingSettings(false);
     }
@@ -269,7 +269,7 @@ export function SettingsPage({
       await onSettingsChanged(saved);
     } catch (error) {
       setDraftSettings(previous);
-      void messageApi.error(error instanceof Error ? error.message : t("保存设置失败"));
+      void messageApi.error(error instanceof Error ? t(error.message) : t("保存设置失败"));
     } finally {
       setAutoSavingPreference(false);
     }
@@ -295,7 +295,7 @@ export function SettingsPage({
       triggerTextDownload(filename, raw);
       void messageApi.success(t("JSON 已导出"));
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : t("导出 JSON 失败"));
+      void messageApi.error(error instanceof Error ? t(error.message) : t("导出 JSON 失败"));
     }
   }
 
@@ -325,7 +325,7 @@ export function SettingsPage({
       setImportModalOpen(false);
       setImportFile(null);
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : t("导入 JSON 失败"));
+      void messageApi.error(error instanceof Error ? t(error.message) : t("导入 JSON 失败"));
     } finally {
       setImportingSQL(false);
     }
@@ -342,7 +342,7 @@ export function SettingsPage({
       await refreshBackups();
       void messageApi.success(t("数据库备份已创建"));
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : t("创建数据库备份失败"));
+      void messageApi.error(error instanceof Error ? t(error.message) : t("创建数据库备份失败"));
     } finally {
       setBackupBusy("");
     }
@@ -363,7 +363,7 @@ export function SettingsPage({
       await refreshBackups();
       void messageApi.success(t("数据库已恢复到所选备份"));
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : t("恢复数据库备份失败"));
+      void messageApi.error(error instanceof Error ? t(error.message) : t("恢复数据库备份失败"));
     } finally {
       setBackupBusy("");
     }
@@ -384,7 +384,7 @@ export function SettingsPage({
           await refreshBackups();
           void messageApi.success(t("数据库备份已删除"));
         } catch (error) {
-          void messageApi.error(error instanceof Error ? error.message : t("删除数据库备份失败"));
+          void messageApi.error(error instanceof Error ? t(error.message) : t("删除数据库备份失败"));
         } finally {
           setBackupBusy("");
         }
@@ -417,9 +417,9 @@ export function SettingsPage({
                 />
               </label>
               <label className="settings-field">
-                <span className="settings-field-label">{language === "en-US" ? "Theme" : "主题模式"}</span>
+                <span className="settings-field-label">{t("主题模式")}</span>
                 <Radio.Group
-                  aria-label={language === "en-US" ? "Theme" : "主题模式"}
+                  aria-label={t("主题模式")}
                   buttonStyle="solid"
                   optionType="button"
                   options={[
@@ -710,18 +710,18 @@ export function SettingsPage({
                 <Title level={3} style={{ marginBottom: 4 }}>
                   {metadata.name}
                 </Title>
-                <Text type="secondary">{language === "en-US" ? `Version ${metadata.version}` : `版本 ${metadata.version}`}</Text>
+                <Text type="secondary">{`${t("程序版本")} ${metadata.version}`}</Text>
               </div>
             </div>
             <div className="about-copy">
               <SectionHeader icon={<InfoCircleOutlined />} title={t("程序介绍")} description={t(metadata.description)} />
               <div className="about-meta">
                 <div className="about-meta-row">
-                  <span>{language === "en-US" ? "Author" : "程序作者"}</span>
+                  <span>{t("程序作者")}</span>
                   <strong>{metadata.author}</strong>
                 </div>
                 <div className="about-meta-row">
-                  <span>{language === "en-US" ? "Version" : "程序版本"}</span>
+                  <span>{t("程序版本")}</span>
                   <strong>{metadata.version}</strong>
                 </div>
                 <div className="about-meta-row">

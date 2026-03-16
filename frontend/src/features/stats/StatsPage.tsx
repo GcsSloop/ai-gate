@@ -83,7 +83,7 @@ export function StatsPage({ language, t }: StatsPageProps) {
         setEvents(nextEvents);
       } catch (loadError) {
         if (!disposed) {
-          setError(loadError instanceof Error ? loadError.message : t("加载统计数据失败"));
+          setError(loadError instanceof Error ? t(loadError.message) : t("加载统计数据失败"));
         }
       } finally {
         if (!disposed) {
@@ -255,7 +255,7 @@ export function StatsPage({ language, t }: StatsPageProps) {
                         <Tag color={eventStatusColor(event.status)}>{event.status}</Tag>
                       </div>
                       <div className="stats-event-meta">
-                        <span>{`${accountNameByID.get(event.account_id) ?? "账户"} · #${event.account_id}`}</span>
+                        <span>{`${accountNameByID.get(event.account_id) ?? t("账户")} · #${event.account_id}`}</span>
                         <span>{new Date(event.created_at).toLocaleString(language, { hour12: false })}</span>
                         <span>{Math.round(event.latency_ms)} ms</span>
                       </div>

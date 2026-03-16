@@ -1,3 +1,4 @@
+import { runtimeTranslate } from "./i18n";
 import { apiPath } from "./paths";
 
 export type AccountRecord = {
@@ -320,8 +321,8 @@ export async function testAccount(id: number, payload: AccountChatTestPayload): 
   if (!response.ok) {
     return {
       ok: false,
-      message: data.message || "测试失败",
-      details: data.details || "请求账户测试接口失败",
+      message: data.message || runtimeTranslate("测试失败"),
+      details: data.details || runtimeTranslate("请求账户测试接口失败"),
       content: data.content,
     };
   }
@@ -507,7 +508,7 @@ export async function importDatabaseSQL(raw: string): Promise<void> {
   const trimmed = raw.trimStart();
   const isAIGateJSONExchange = trimmed.startsWith("{") && raw.includes('"format":"aigate-db-exchange"');
   if (isAIGateJSONExchange) {
-    throw new Error("当前后端版本不支持 JSON 导入，请升级到最新版本后重试");
+    throw new Error(runtimeTranslate("当前后端版本不支持 JSON 导入，请升级到最新版本后重试"));
   }
 
   // Backward compatibility for legacy SQL import route.
