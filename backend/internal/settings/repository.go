@@ -48,6 +48,7 @@ func DefaultAppSettings() AppSettings {
 		StatusRefreshIntervalSeconds: 60,
 		ProxyHost:                    "127.0.0.1",
 		ProxyPort:                    6789,
+		AutoFailoverEnabled:          true,
 		AutoBackupIntervalHours:      24,
 		BackupRetentionCount:         10,
 		Language:                     "zh-CN",

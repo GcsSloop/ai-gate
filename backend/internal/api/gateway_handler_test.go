@@ -191,12 +191,12 @@ func TestGatewayHandlerRecordsUsageEventWithoutAuditRows(t *testing.T) {
 	}
 }
 
-func TestGatewayHandlerUsesExplicitFailoverQueueWhenEnabled(t *testing.T) {
+func TestGatewayHandlerUsesPriorityOrderWhenAutoFailoverEnabled(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer sk-queued" {
-			t.Fatalf("Authorization = %q, want %q", got, "Bearer sk-queued")
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-priority" {
+			t.Fatalf("Authorization = %q, want %q", got, "Bearer sk-priority")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -219,19 +219,19 @@ func TestGatewayHandlerUsesExplicitFailoverQueueWhenEnabled(t *testing.T) {
 	for _, item := range []accounts.Account{
 		{
 			ProviderType:  accounts.ProviderOpenAICompatible,
-			AccountName:   "score-first",
+			AccountName:   "high-priority",
 			AuthMode:      accounts.AuthModeAPIKey,
 			BaseURL:       upstream.URL + "/v1",
-			CredentialRef: "sk-score",
+			CredentialRef: "sk-priority",
 			Status:        accounts.StatusActive,
 			Priority:      100,
 		},
 		{
 			ProviderType:  accounts.ProviderOpenAICompatible,
-			AccountName:   "queued-first",
+			AccountName:   "low-priority",
 			AuthMode:      accounts.AuthModeAPIKey,
 			BaseURL:       upstream.URL + "/v1",
-			CredentialRef: "sk-queued",
+			CredentialRef: "sk-low",
 			Status:        accounts.StatusActive,
 			Priority:      10,
 		},
@@ -275,6 +275,211 @@ func TestGatewayHandlerUsesExplicitFailoverQueueWhenEnabled(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("gateway status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestGatewayHandlerUsesOnlyActiveAccountWhenAutoFailoverDisabled(t *testing.T) {
+	t.Parallel()
+
+	activeCalls := 0
+	activeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		activeCalls++
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer activeUpstream.Close()
+
+	otherCalls := 0
+	otherUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		otherCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "chat.completion",
+			"model":  "gpt-5.2-codex",
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "should-not-switch"}},
+			},
+		})
+	}))
+	defer otherUpstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, item := range []accounts.Account{
+		{
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "higher-priority",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       otherUpstream.URL + "/v1",
+			CredentialRef: "sk-other",
+			Status:        accounts.StatusActive,
+			Priority:      100,
+		},
+		{
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "selected-active",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       activeUpstream.URL + "/v1",
+			CredentialRef: "sk-active",
+			Status:        accounts.StatusActive,
+			Priority:      10,
+			IsActive:      true,
+		},
+	} {
+		if err := accountRepo.Create(item); err != nil {
+			t.Fatalf("Create(account) returned error: %v", err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for id := int64(1); id <= 2; id++ {
+		if err := usageRepo.Save(usage.Snapshot{
+			AccountID:      id,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.9,
+		}); err != nil {
+			t.Fatalf("Save(snapshot %d) returned error: %v", id, err)
+		}
+	}
+
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = false
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := api.NewGatewayHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()), api.WithGatewaySettings(settingsRepo))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-5.2-codex",
+		"stream":false,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("gateway status = %d, want %d body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if activeCalls != 1 {
+		t.Fatalf("activeCalls = %d, want 1", activeCalls)
+	}
+	if otherCalls != 0 {
+		t.Fatalf("otherCalls = %d, want 0", otherCalls)
+	}
+}
+
+func TestGatewayHandlerSyncsActiveAccountAfterFailover(t *testing.T) {
+	t.Parallel()
+
+	primaryCalls := 0
+	primaryUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls++
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer primaryUpstream.Close()
+
+	fallbackUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-fallback" {
+			t.Fatalf("Authorization = %q, want %q", got, "Bearer sk-fallback")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "chat.completion",
+			"model":  "gpt-5.2-codex",
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "ok"}},
+			},
+		})
+	}))
+	defer fallbackUpstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, item := range []accounts.Account{
+		{
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "selected-primary",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       primaryUpstream.URL + "/v1",
+			CredentialRef: "sk-primary",
+			Status:        accounts.StatusActive,
+			Priority:      100,
+			IsActive:      true,
+		},
+		{
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "fallback-next",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       fallbackUpstream.URL + "/v1",
+			CredentialRef: "sk-fallback",
+			Status:        accounts.StatusActive,
+			Priority:      90,
+		},
+	} {
+		if err := accountRepo.Create(item); err != nil {
+			t.Fatalf("Create(account) returned error: %v", err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for id := int64(1); id <= 2; id++ {
+		if err := usageRepo.Save(usage.Snapshot{
+			AccountID:      id,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.9,
+		}); err != nil {
+			t.Fatalf("Save(snapshot %d) returned error: %v", id, err)
+		}
+	}
+
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := api.NewGatewayHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()), api.WithGatewaySettings(settingsRepo))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-5.2-codex",
+		"stream":false,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gateway status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if primaryCalls != 1 {
+		t.Fatalf("primaryCalls = %d, want 1", primaryCalls)
+	}
+	account, err := accountRepo.GetByID(2)
+	if err != nil {
+		t.Fatalf("GetByID returned error: %v", err)
+	}
+	if !account.IsActive {
+		t.Fatal("fallback account IsActive = false, want true")
 	}
 }
 

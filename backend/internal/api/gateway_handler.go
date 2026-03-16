@@ -26,6 +26,7 @@ import (
 type GatewayAccounts interface {
 	List() ([]accounts.Account, error)
 	Update(account accounts.Account) error
+	SetActive(id int64) error
 }
 
 type GatewayUsage interface {
@@ -172,6 +173,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, string(upstreamResponse))
 			persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", parseChatCompletionsUsage(upstreamResponse, account.ID), startedAt)
+			_ = syncActiveAccount(h.accounts, account)
 		}
 		return err
 	})
@@ -301,6 +303,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		}
 		logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, "")
 		persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", usage.Snapshot{AccountID: account.ID}, startedAt)
+		_ = syncActiveAccount(h.accounts, account)
 		return nil
 	})
 
@@ -323,10 +326,13 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 }
 
 func (h *GatewayHandler) orderedCandidates(candidates []routing.Candidate) ([]routing.Candidate, error) {
-	if h.settings == nil {
-		return routing.ScoreCandidates(candidates), nil
+	if !autoFailoverEnabled(h.settings) {
+		if candidate, ok := activeCandidate(candidates); ok {
+			return []routing.Candidate{candidate}, nil
+		}
+		return orderCandidatesByPriority(candidates), nil
 	}
-	return settings.OrderCandidates(h.settings, candidates)
+	return orderCandidatesByPriority(candidates), nil
 }
 
 func resolveCredential(account accounts.Account) (string, error) {

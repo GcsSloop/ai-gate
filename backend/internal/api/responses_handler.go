@@ -40,6 +40,7 @@ var errThinGatewayNoHealthyCandidate = errors.New("no healthy responses account 
 type ResponsesAccounts interface {
 	List() ([]accounts.Account, error)
 	Update(account accounts.Account) error
+	SetActive(id int64) error
 }
 
 type ResponsesUsage interface {
@@ -255,6 +256,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 			_ = resp.Body.Close()
 			logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, "")
 			persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
+			_ = syncActiveAccount(h.accounts, account)
 			return
 		}
 
@@ -274,6 +276,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		result := parseResponsesJSONResponse(responseBody, account.ID)
 		logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, result.Text)
 		persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, result.Snapshot, startedAt)
+		_ = syncActiveAccount(h.accounts, account)
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(responseBody)
 		return
@@ -388,18 +391,7 @@ func (h *ResponsesHandler) selectThinGatewayAccount() (accounts.Account, error) 
 }
 
 func (h *ResponsesHandler) autoFailoverEnabled() bool {
-	if h.settings == nil {
-		return false
-	}
-	appSettings, err := h.settings.GetAppSettings()
-	if err != nil || !appSettings.AutoFailoverEnabled {
-		return false
-	}
-	queue, err := h.settings.ListFailoverQueue()
-	if err != nil {
-		return false
-	}
-	return len(queue) > 0
+	return autoFailoverEnabled(h.settings)
 }
 
 func (h *ResponsesHandler) orderedThinGatewayCandidates() ([]routing.Candidate, error) {
@@ -408,11 +400,21 @@ func (h *ResponsesHandler) orderedThinGatewayCandidates() ([]routing.Candidate, 
 		return nil, err
 	}
 	candidates := h.buildCandidates(accountList)
-	if h.autoFailoverEnabled() {
-		return settings.OrderCandidates(h.settings, candidates)
+	if !h.autoFailoverEnabled() {
+		for _, candidate := range candidates {
+			if !candidate.Account.IsActive {
+				continue
+			}
+			if !candidate.Account.NativeResponsesCapable() {
+				logThinGatewayCandidate(candidate.Account, "reject", "active_account_missing_responses_capability")
+				return nil, errThinGatewayActiveAccountUnsupported
+			}
+			logThinGatewayCandidate(candidate.Account, "select", "active_account")
+			return []routing.Candidate{candidate}, nil
+		}
 	}
 
-	scored := routing.ScoreCandidates(candidates)
+	ordered := orderCandidatesByPriority(candidates)
 	for _, candidate := range candidates {
 		if !candidate.Account.IsActive {
 			continue
@@ -421,18 +423,9 @@ func (h *ResponsesHandler) orderedThinGatewayCandidates() ([]routing.Candidate, 
 			logThinGatewayCandidate(candidate.Account, "reject", "active_account_missing_responses_capability")
 			return nil, errThinGatewayActiveAccountUnsupported
 		}
-		logThinGatewayCandidate(candidate.Account, "select", "active_account")
-		ordered := []routing.Candidate{candidate}
-		for _, fallback := range scored {
-			if fallback.Account.ID == candidate.Account.ID {
-				continue
-			}
-			ordered = append(ordered, fallback)
-		}
-		return ordered, nil
+		break
 	}
-
-	return scored, nil
+	return ordered, nil
 }
 
 func (h *ResponsesHandler) nextThinFailoverTarget(candidates []routing.Candidate, currentIndex int) (routing.Candidate, bool) {

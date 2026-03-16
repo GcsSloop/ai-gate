@@ -117,7 +117,19 @@ func TestResponsesHandlerThinModeRecordsUsageEventWithoutAuditRows(t *testing.T)
 		t.Fatalf("Save(snapshot) returned error: %v", err)
 	}
 
-	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithResponsesSettings(settingsRepo),
+	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -165,15 +177,15 @@ func TestResponsesHandlerThinModeRejectsUnsupportedActiveAccount(t *testing.T) {
 	}
 }
 
-func TestResponsesHandlerThinModeUsesExplicitFailoverQueueWhenEnabled(t *testing.T) {
+func TestResponsesHandlerThinModeUsesPriorityOrderWhenAutoFailoverEnabled(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer sk-queued" {
-			t.Fatalf("authorization = %q, want Bearer sk-queued", got)
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-priority" {
+			t.Fatalf("authorization = %q, want Bearer sk-priority", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"resp_tp_q","object":"response","status":"completed","output_text":"queued-first"}`)
+		_, _ = io.WriteString(w, `{"id":"resp_tp_q","object":"response","status":"completed","output_text":"priority-first"}`)
 	}))
 	defer upstream.Close()
 
@@ -187,23 +199,22 @@ func TestResponsesHandlerThinModeUsesExplicitFailoverQueueWhenEnabled(t *testing
 	for _, item := range []accounts.Account{
 		{
 			ProviderType:      accounts.ProviderOpenAICompatible,
-			AccountName:       "active-unsupported",
+			AccountName:       "lower-priority",
 			AuthMode:          accounts.AuthModeAPIKey,
 			BaseURL:           upstream.URL + "/v1",
-			CredentialRef:     "sk-unsupported",
+			CredentialRef:     "sk-lower",
 			Status:            accounts.StatusActive,
-			Priority:          100,
-			SupportsResponses: false,
-			IsActive:          true,
+			Priority:          10,
+			SupportsResponses: true,
 		},
 		{
 			ProviderType:      accounts.ProviderOpenAICompatible,
-			AccountName:       "queued-supported",
+			AccountName:       "higher-priority",
 			AuthMode:          accounts.AuthModeAPIKey,
 			BaseURL:           upstream.URL + "/v1",
-			CredentialRef:     "sk-queued",
+			CredentialRef:     "sk-priority",
 			Status:            accounts.StatusActive,
-			Priority:          10,
+			Priority:          100,
 			SupportsResponses: true,
 		},
 	} {
@@ -247,8 +258,109 @@ func TestResponsesHandlerThinModeUsesExplicitFailoverQueueWhenEnabled(t *testing
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"output_text":"queued-first"`) {
-		t.Fatalf("body = %s, want queue-selected output", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"output_text":"priority-first"`) {
+		t.Fatalf("body = %s, want priority-selected output", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerThinModeUsesOnlyActiveAccountWhenAutoFailoverDisabled(t *testing.T) {
+	t.Parallel()
+
+	activeCalls := 0
+	activeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		activeCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"You've hit your usage limit. Upgrade to Pro or try again later."}}`)
+	}))
+	defer activeUpstream.Close()
+
+	otherCalls := 0
+	otherUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		otherCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_other_1","object":"response","status":"completed","output_text":"should-not-switch"}`)
+	}))
+	defer otherUpstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, account := range []accounts.Account{
+		{
+			ProviderType: accounts.ProviderOpenAIOfficial,
+			AccountName:  "selected-active",
+			AuthMode:     accounts.AuthModeLocalImport,
+			BaseURL:      activeUpstream.URL + "/backend-api/codex",
+			CredentialRef: `{
+				"auth_mode":"chatgpt",
+				"tokens":{"access_token":"token-active","account_id":"acct-active"}
+			}`,
+			Status:            accounts.StatusActive,
+			Priority:          10,
+			SupportsResponses: true,
+			IsActive:          true,
+		},
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "fallback-candidate",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           otherUpstream.URL + "/v1",
+			CredentialRef:     "sk-fallback",
+			Status:            accounts.StatusActive,
+			Priority:          100,
+			SupportsResponses: true,
+		},
+	} {
+		if err := accountRepo.Create(account); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for _, snapshot := range []usage.Snapshot{
+		{AccountID: 1, Balance: 5.39, QuotaRemaining: 100000, RPMRemaining: 85, TPMRemaining: 40, HealthScore: 0.9, CheckedAt: time.Now().UTC()},
+		{AccountID: 2, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.8, CheckedAt: time.Now().UTC()},
+	} {
+		if err := usageRepo.Save(snapshot); err != nil {
+			t.Fatalf("Save returned error: %v", err)
+		}
+	}
+
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = false
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithResponsesSettings(settingsRepo),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	if activeCalls != 1 {
+		t.Fatalf("activeCalls = %d, want 1", activeCalls)
+	}
+	if otherCalls != 0 {
+		t.Fatalf("otherCalls = %d, want 0", otherCalls)
+	}
+	if !strings.Contains(rec.Body.String(), "usage limit") {
+		t.Fatalf("body = %s, want original upstream error", rec.Body.String())
 	}
 }
 
@@ -455,7 +567,19 @@ func TestResponsesHandlerThinModeMarksOfficialUsageLimitedFrom429Body(t *testing
 		t.Fatalf("Save returned error: %v", err)
 	}
 
-	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithResponsesSettings(settingsRepo),
+	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -566,7 +690,19 @@ func TestResponsesHandlerThinModeFailsOverAfterOfficialUsageLimit(t *testing.T) 
 		}
 	}
 
-	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithResponsesSettings(settingsRepo),
+	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -595,6 +731,13 @@ func TestResponsesHandlerThinModeFailsOverAfterOfficialUsageLimit(t *testing.T) 
 	}
 	if primaryAccount.CooldownUntil == nil {
 		t.Fatal("CooldownUntil = nil, want cooldown timestamp")
+	}
+	fallbackAccount, err := accountRepo.GetByID(2)
+	if err != nil {
+		t.Fatalf("GetByID fallback returned error: %v", err)
+	}
+	if !fallbackAccount.IsActive {
+		t.Fatal("fallback IsActive = false, want true after failover")
 	}
 
 	events, err := usageRepo.ListRecentEvents(usage.EventFilter{Limit: 10})
@@ -699,7 +842,19 @@ func TestResponsesHandlerThinModeSkipsOfficialBelowRemainingThreshold(t *testing
 		}
 	}
 
-	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithResponsesSettings(settingsRepo),
+	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
 	req.Header.Set("Content-Type", "application/json")
