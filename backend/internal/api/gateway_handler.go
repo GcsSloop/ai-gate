@@ -51,6 +51,7 @@ type GatewayHandler struct {
 	conversations GatewayRuns
 	settings      GatewayRoutingSettings
 	client        *http.Client
+	stateEvents   *StateEventBus
 }
 
 type GatewayHandlerOption func(*GatewayHandler)
@@ -58,6 +59,12 @@ type GatewayHandlerOption func(*GatewayHandler)
 func WithGatewaySettings(repo GatewayRoutingSettings) GatewayHandlerOption {
 	return func(handler *GatewayHandler) {
 		handler.settings = repo
+	}
+}
+
+func WithGatewayStateEvents(bus *StateEventBus) GatewayHandlerOption {
+	return func(handler *GatewayHandler) {
+		handler.stateEvents = bus
 	}
 }
 
@@ -173,7 +180,9 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, string(upstreamResponse))
 			persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", parseChatCompletionsUsage(upstreamResponse, account.ID), startedAt)
-			_ = syncActiveAccount(h.accounts, account)
+			if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
+				h.publishAccountRoutingStateChanged()
+			}
 		}
 		return err
 	})
@@ -303,7 +312,9 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		}
 		logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, "")
 		persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", usage.Snapshot{AccountID: account.ID}, startedAt)
-		_ = syncActiveAccount(h.accounts, account)
+		if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
+			h.publishAccountRoutingStateChanged()
+		}
 		return nil
 	})
 
@@ -322,6 +333,12 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	if flusher != nil {
 		flusher.Flush()
+	}
+}
+
+func (h *GatewayHandler) publishAccountRoutingStateChanged() {
+	if h.stateEvents != nil {
+		h.stateEvents.Publish(AccountRoutingStateChangedTopic)
 	}
 }
 

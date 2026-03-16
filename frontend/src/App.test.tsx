@@ -43,12 +43,32 @@ vi.mock("./lib/desktop-shell", () => ({
   subscribeDesktopBackendStateChanged: vi.fn(),
 }));
 
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+
+  url: string;
+  onmessage: ((event: MessageEvent<string>) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  close = vi.fn();
+
+  constructor(url: string) {
+    this.url = url;
+    MockEventSource.instances.push(this);
+  }
+
+  emit(data: string) {
+    this.onmessage?.(new MessageEvent("message", { data }));
+  }
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    MockEventSource.instances = [];
     mockedUpdateService.check.mockResolvedValue({ supported: true, update: null });
     mockedUpdateService.downloadAndInstall.mockResolvedValue(undefined);
     mockedUpdateService.relaunch.mockResolvedValue(undefined);
+    vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
     vi.mocked(loadDesktopShellContext).mockResolvedValue({
       backend_addr: "127.0.0.1:6789",
       backend_api_base: "http://127.0.0.1:6789/ai-router/api",
@@ -61,6 +81,68 @@ describe("App", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("refreshes accounts immediately when backend account state events arrive", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                show_home_update_indicator: false,
+                status_refresh_interval_seconds: 3600,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: true,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+                audit_limit_message: 200,
+                audit_limit_function_call: 100,
+                audit_limit_function_call_output: 100,
+                audit_limit_reasoning: 40,
+                audit_limit_custom_tool_call: 100,
+                audit_limit_custom_tool_call_output: 100,
+                language: "zh-CN",
+                theme_mode: "system",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    expect(MockEventSource.instances).toHaveLength(1);
+    expect(MockEventSource.instances[0]?.url).toBe("http://127.0.0.1:6789/ai-router/api/dashboard/state-events");
+
+    await act(async () => {
+      MockEventSource.instances[0]?.emit("accounts-routing-changed");
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/accounts-sync:1/)).toBeInTheDocument();
+    });
   });
 
   it("shows a themed home update indicator when a new version is available", async () => {

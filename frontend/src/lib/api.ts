@@ -219,6 +219,22 @@ export async function listAccountUsage(): Promise<AccountUsageRecord[]> {
   return response.json();
 }
 
+export function subscribeAccountRoutingStateChanged(handler: () => void): () => void {
+  if (typeof window === "undefined" || typeof EventSource === "undefined") {
+    return () => {};
+  }
+  const eventSource = new EventSource(apiPath("/dashboard/state-events"));
+  eventSource.onmessage = () => {
+    handler();
+  };
+  eventSource.onerror = () => {
+    eventSource.close();
+  };
+  return () => {
+    eventSource.close();
+  };
+}
+
 export async function createAccount(payload: CreateAccountPayload): Promise<void> {
   const response = await fetch(apiPath("/accounts"), {
     method: "POST",

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"io"
@@ -697,11 +698,17 @@ func TestResponsesHandlerThinModeFailsOverAfterOfficialUsageLimit(t *testing.T) 
 		t.Fatalf("SaveAppSettings returned error: %v", err)
 	}
 
+	stateEvents := api.NewStateEventBus()
+	eventCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+	eventCh := stateEvents.Subscribe(eventCtx)
+
 	handler := api.NewResponsesHandler(
 		accountRepo,
 		usageRepo,
 		conversations.NewSQLiteRepository(store.DB()),
 		api.WithResponsesSettings(settingsRepo),
+		api.WithResponsesStateEvents(stateEvents),
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
@@ -738,6 +745,14 @@ func TestResponsesHandlerThinModeFailsOverAfterOfficialUsageLimit(t *testing.T) 
 	}
 	if !fallbackAccount.IsActive {
 		t.Fatal("fallback IsActive = false, want true after failover")
+	}
+	select {
+	case topic := <-eventCh:
+		if topic != api.AccountRoutingStateChangedTopic {
+			t.Fatalf("event topic = %q, want %q", topic, api.AccountRoutingStateChangedTopic)
+		}
+	default:
+		t.Fatal("expected account routing state event after failover")
 	}
 
 	events, err := usageRepo.ListRecentEvents(usage.EventFilter{Limit: 10})

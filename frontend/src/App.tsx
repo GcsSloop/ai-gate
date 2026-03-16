@@ -8,7 +8,7 @@ import { SettingsPage } from "./features/settings/SettingsPage";
 import { StatsPage } from "./features/stats/StatsPage";
 import { createDesktopUpdateService, type DesktopUpdateInfo } from "./features/updates/updateService";
 import appLogo from "./assets/aigate_1024_1024.png";
-import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus } from "./lib/api";
+import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus, subscribeAccountRoutingStateChanged } from "./lib/api";
 import { loadDesktopShellContext, refreshDesktopTrayState, subscribeDesktopBackendStateChanged } from "./lib/desktop-shell";
 import { createTranslator, getAntdLocale, normalizeLanguage } from "./lib/i18n";
 import { setAPIBase } from "./lib/paths";
@@ -137,13 +137,18 @@ export function App() {
   }, [resolvedThemeMode, themeMode]);
 
   useEffect(() => {
+    if (!shellReady) {
+      return;
+    }
     let disposed = false;
     let unlisten: undefined | (() => void);
-    void subscribeDesktopBackendStateChanged(() => {
+    const handleBackendStateChanged = () => {
       void refreshProxyState();
       void refreshDesktopTrayState();
       setAccountsSyncToken((value) => value + 1);
-    }).then((cleanup) => {
+    };
+    const disposeBackendEvents = subscribeAccountRoutingStateChanged(handleBackendStateChanged);
+    void subscribeDesktopBackendStateChanged(handleBackendStateChanged).then((cleanup) => {
       if (disposed) {
         cleanup();
         return;
@@ -152,9 +157,10 @@ export function App() {
     });
     return () => {
       disposed = true;
+      disposeBackendEvents();
       unlisten?.();
     };
-  }, []);
+  }, [shellReady]);
 
   useEffect(() => {
     if (!appSettings) {
