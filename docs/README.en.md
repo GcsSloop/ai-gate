@@ -38,6 +38,12 @@ Codex users often need a stable local entry point for:
 
 AI Gate solves that by staying thin. It does not synthesize response state, fake retrieval endpoints, or reconstruct multi-turn semantics locally.
 
+## Product Advantages
+
+- **Low-friction multi-account switching**: keep one local entry point instead of repeatedly editing Codex client config.
+- **Automatic failover**: when the active account runs out of quota, errors out, or becomes temporarily unavailable, AI Gate can switch to the next available account with minimal interruption.
+- **Local-first control**: account state, proxy control, audit data, and backups stay on the local machine, which keeps the operating boundary clear.
+
 ## Core Principles
 
 - **Local only**: backend binds to loopback only and the desktop bundle starts the sidecar locally.
@@ -103,6 +109,10 @@ sequenceDiagram
 ### Proxy Settings
 
 ![AI Gate proxy settings](../assets/screenshot-proxy.png)
+
+### Statistics Page
+
+![AI Gate statistics page](../assets/screenshot-statistics.png)
 
 ## What It Does
 
