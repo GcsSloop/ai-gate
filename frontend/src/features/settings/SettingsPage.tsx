@@ -1,7 +1,5 @@
 import {
   ApiOutlined,
-  ArrowDownOutlined,
-  ArrowUpOutlined,
   CheckCircleFilled,
   CloudDownloadOutlined,
   CloudUploadOutlined,
@@ -20,25 +18,21 @@ import {
   SwapOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
-import { Avatar, Button, Card, Input, InputNumber, Modal, Radio, Switch, Tag, Typography, message } from "antd";
+import { Button, Card, Input, InputNumber, Modal, Radio, Switch, Tag, Typography, message } from "antd";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 
 import {
-  type AccountRecord,
   type AppSettings,
   type DatabaseBackupItem,
   createDatabaseBackup,
   deleteDatabaseBackup,
   exportDatabaseSQL,
   getAppSettings,
-  getFailoverQueue,
   importDatabaseSQL,
-  listAccounts,
   listDatabaseBackups,
   restoreDatabaseBackup,
   saveAppSettings,
-  saveFailoverQueue,
 } from "../../lib/api";
 import {
   applyDesktopAppSettings,
@@ -85,28 +79,6 @@ function formatBytes(value: number): string {
     return `${(value / 1024).toFixed(1)} KB`;
   }
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function normalizeQueue(accounts: AccountRecord[], explicitOrder: number[]): number[] {
-  const accountIDs = new Set(accounts.map((account) => account.id));
-  const seen = new Set<number>();
-  const ordered: number[] = [];
-
-  explicitOrder.forEach((accountID) => {
-    if (accountIDs.has(accountID) && !seen.has(accountID)) {
-      seen.add(accountID);
-      ordered.push(accountID);
-    }
-  });
-
-  accounts.forEach((account) => {
-    if (!seen.has(account.id)) {
-      seen.add(account.id);
-      ordered.push(account.id);
-    }
-  });
-
-  return ordered;
 }
 
 function triggerTextDownload(filename: string, content: string) {
@@ -184,8 +156,6 @@ export function SettingsPage({
 }: SettingsPageProps) {
   const [messageApi, contextHolder] = message.useMessage();
   const [draftSettings, setDraftSettings] = useState<AppSettings>(initialSettings);
-  const [accounts, setAccounts] = useState<AccountRecord[]>([]);
-  const [failoverQueue, setFailoverQueue] = useState<number[]>([]);
   const [dbBackups, setDbBackups] = useState<DatabaseBackupItem[]>([]);
   const [metadata, setMetadata] = useState<AppMetadata>({
     name: "AI Gate",
@@ -196,7 +166,6 @@ export function SettingsPage({
   const [recentDesktopLogs, setRecentDesktopLogs] = useState<DesktopRecentLog[]>([]);
   const [savingSettings, setSavingSettings] = useState(false);
   const [autoSavingPreference, setAutoSavingPreference] = useState(false);
-  const [savingQueue, setSavingQueue] = useState(false);
   const [proxySwitchBusy, setProxySwitchBusy] = useState(false);
   const [backupBusy, setBackupBusy] = useState("");
   const [openBackupMenuID, setOpenBackupMenuID] = useState<string | null>(null);
@@ -216,15 +185,8 @@ export function SettingsPage({
   useEffect(() => {
     async function loadSettingsPageData() {
       try {
-        const [accountList, queue, backups, about] = await Promise.all([
-          listAccounts(),
-          getFailoverQueue(),
-          listDatabaseBackups(),
-          getAppMetadata(),
-        ]);
+        const [backups, about] = await Promise.all([listDatabaseBackups(), getAppMetadata()]);
         const logs = await getRecentDesktopLogs(50);
-        setAccounts(accountList);
-        setFailoverQueue(normalizeQueue(accountList, queue));
         setDbBackups(backups);
         setMetadata(about);
         setRecentDesktopLogs(logs);
@@ -257,10 +219,6 @@ export function SettingsPage({
     };
   }, [openBackupMenuID]);
 
-  const orderedAccounts = failoverQueue
-    .map((accountID) => accounts.find((account) => account.id === accountID))
-    .filter((account): account is AccountRecord => Boolean(account));
-
   function updateDraft(patch: Partial<AppSettings>) {
     setDraftSettings((current) => ({
       ...current,
@@ -273,16 +231,6 @@ export function SettingsPage({
       return "--";
     }
     return new Date(value).toLocaleString(language, { hour12: false });
-  }
-
-  function moveQueueItem(index: number, direction: -1 | 1) {
-    const target = index + direction;
-    if (target < 0 || target >= failoverQueue.length) {
-      return;
-    }
-    const next = [...failoverQueue];
-    [next[index], next[target]] = [next[target], next[index]];
-    setFailoverQueue(next);
   }
 
   async function handleSaveSettings() {
@@ -327,18 +275,6 @@ export function SettingsPage({
     }
   }
 
-  async function handleSaveQueue() {
-    setSavingQueue(true);
-    try {
-      await saveFailoverQueue(failoverQueue);
-      void messageApi.success(t("故障转移队列已更新"));
-    } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : t("保存故障转移队列失败"));
-    } finally {
-      setSavingQueue(false);
-    }
-  }
-
   async function handleProxyToggle(checked: boolean) {
     if (!onToggleProxy) {
       return;
@@ -373,13 +309,7 @@ export function SettingsPage({
       const raw = await importFile.text();
       validateExchangePayload(raw);
       await importDatabaseSQL(raw);
-      const [latestAccounts, latestQueue, latestBackups] = await Promise.all([
-        listAccounts(),
-        getFailoverQueue(),
-        listDatabaseBackups(),
-      ]);
-      setAccounts(latestAccounts);
-      setFailoverQueue(normalizeQueue(latestAccounts, latestQueue));
+      const latestBackups = await listDatabaseBackups();
       setDbBackups(latestBackups);
 
       let nextSettings = draftSettings;
@@ -578,6 +508,14 @@ export function SettingsPage({
                 loading={proxySwitchBusy}
                 onChange={(checked) => void handleProxyToggle(checked)}
               />
+              <ToggleRow
+                icon={<SwapOutlined />}
+                title={t("自动故障转移开关")}
+                description={t("开启后按账户页当前排序自动切换；关闭后仅使用当前选中的账户。")}
+                label={t("自动故障转移开关")}
+                checked={draftSettings.auto_failover_enabled}
+                onChange={(checked) => updateDraft({ auto_failover_enabled: checked })}
+              />
             </div>
             <div className="settings-field-grid">
               <label className="settings-field">
@@ -603,61 +541,6 @@ export function SettingsPage({
             </div>
           </Card>
 
-          <Card className="settings-card" variant="borderless">
-            <SectionHeader icon={<SwapOutlined />} title={t("自动故障转移")} description={t("当当前账号失效时，按队列顺序尝试下一个候选账号。")} />
-            <ToggleRow
-              icon={<SwapOutlined />}
-              title={t("自动故障转移开关")}
-              description={t("开启后，网关与 responses 路由会优先使用你指定的显式故障转移队列。")}
-              label={t("自动故障转移开关")}
-              checked={draftSettings.auto_failover_enabled}
-              onChange={(checked) => updateDraft({ auto_failover_enabled: checked })}
-            />
-            <div className="queue-shell">
-              <div className="queue-header">
-                <span>{t("自动故障转移队列")}</span>
-                <Button onClick={() => void handleSaveQueue()} loading={savingQueue}>
-                  {t("保存队列")}
-                </Button>
-              </div>
-              <div className="queue-list">
-                {orderedAccounts.length === 0 ? (
-                  <div className="settings-empty">{t("暂无可用账号")}</div>
-                ) : (
-                  orderedAccounts.map((account, index) => (
-                    <div className="queue-row" key={account.id}>
-                      <div className="queue-row-main">
-                        <Avatar>{index + 1}</Avatar>
-                        <div>
-                          <div className="queue-row-title">{account.account_name}</div>
-                          <div className="queue-row-description">
-                            {account.provider_type.toUpperCase()} · 优先级 {account.priority}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="queue-row-actions">
-                        {account.is_active ? <Tag color="success">{t("当前激活")}</Tag> : <Tag>{t("候选")}</Tag>}
-                        <Button
-                          type="text"
-                          icon={<ArrowUpOutlined />}
-                          aria-label={`${language === "en-US" ? "Move up" : "上移"} ${account.account_name}`}
-                          disabled={index === 0}
-                          onClick={() => moveQueueItem(index, -1)}
-                        />
-                        <Button
-                          type="text"
-                          icon={<ArrowDownOutlined />}
-                          aria-label={`${language === "en-US" ? "Move down" : "下移"} ${account.account_name}`}
-                          disabled={index === orderedAccounts.length - 1}
-                          onClick={() => moveQueueItem(index, 1)}
-                        />
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </Card>
         </div>
       ),
     },

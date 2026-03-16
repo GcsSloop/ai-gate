@@ -128,6 +128,15 @@ function sameAccountOrder(left: AccountRecord[], right: AccountRecord[]): boolea
   return left.length === right.length && left.every((item, index) => item.id === right[index]?.id);
 }
 
+function sortAccountsByPriority(items: AccountRecord[]): AccountRecord[] {
+  return [...items].sort((left, right) => {
+    if (left.priority === right.priority) {
+      return left.id - right.id;
+    }
+    return right.priority - left.priority;
+  });
+}
+
 function formatResetAt(value: string | undefined, language: AppLanguage) {
   if (!value) {
     return "--";
@@ -276,11 +285,12 @@ export function AccountsPage({
     }),
   );
 
-  function setAccountsState(next: AccountRecord[] | ((items: AccountRecord[]) => AccountRecord[])) {
+  function setAccountsState(next: AccountRecord[] | ((items: AccountRecord[]) => AccountRecord[]), options?: { preserveOrder?: boolean }) {
     setAccounts((items) => {
       const resolved = typeof next === "function" ? next(items) : next;
-      accountsRef.current = resolved;
-      return resolved;
+      const ordered = options?.preserveOrder ? resolved : sortAccountsByPriority(resolved);
+      accountsRef.current = ordered;
+      return ordered;
     });
   }
 
@@ -332,7 +342,7 @@ export function AccountsPage({
   }, [detailAccount]);
 
   async function refreshAll() {
-    const accountItems = await listAccounts();
+    const accountItems = sortAccountsByPriority(await listAccounts());
     accountsRef.current = accountItems;
     setAccounts(accountItems);
     void refreshUsage();
@@ -370,7 +380,7 @@ export function AccountsPage({
             ...(ppchatUsage ?? {}),
           };
         }),
-      );
+      { preserveOrder: true });
     } catch {
       // Keep base account list responsive even when usage endpoint is unavailable.
     }
@@ -470,7 +480,7 @@ export function AccountsPage({
       await updateAccount(account.id, { is_active: true });
       void refreshDesktopTrayState();
       void messageApi.success(
-        language === "en-US" ? `Active account switched to ${account.account_name}` : `已切换当前激活账户为 ${account.account_name}`,
+        language === "en-US" ? `Current account switched to ${account.account_name}` : `已切换当前使用中账户为 ${account.account_name}`,
       );
     } catch (error) {
       setAccountsState(previous);
@@ -508,7 +518,7 @@ export function AccountsPage({
         return items;
       }
       return arrayMove(items, activeIndex, overIndex);
-    });
+    }, { preserveOrder: true });
   }
 
   async function finishDragSort() {
@@ -652,7 +662,7 @@ export function AccountsPage({
                   <Tag color={statusColorMap[record.status] ?? "default"}>
                     {t(statusTextMap[record.status] ?? record.status)}
                   </Tag>
-                  {record.is_active ? <Tag color="green">{t("当前激活")}</Tag> : null}
+                  {record.is_active ? <Tag color="green">{t("当前使用中")}</Tag> : null}
                 </div>
                 <Text type="secondary" className="account-base-url">
                   {record.base_url || t("OpenAI 官方")}

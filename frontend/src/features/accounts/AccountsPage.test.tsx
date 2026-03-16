@@ -320,6 +320,100 @@ describe("AccountsPage", () => {
     });
   });
 
+  it("renders cards in descending priority order from the homepage list", async () => {
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "low-priority",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://low.example/v1",
+        status: "active",
+        is_active: false,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+      {
+        id: 2,
+        provider_type: "openai-compatible",
+        account_name: "high-priority",
+        source_icon: "claude_code",
+        auth_mode: "api_key",
+        base_url: "https://high.example/v1",
+        status: "active",
+        is_active: true,
+        priority: 9,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+      {
+        id: 3,
+        provider_type: "openai-compatible",
+        account_name: "mid-priority",
+        source_icon: "ppchat",
+        auth_mode: "api_key",
+        base_url: "https://mid.example/v1",
+        status: "active",
+        is_active: false,
+        priority: 5,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = renderAccountsPage();
+
+    expect(await screen.findByText("high-priority")).toBeInTheDocument();
+
+    const order = Array.from(container.querySelectorAll(".account-cards .account-card-item strong")).map((node) => node.textContent);
+    expect(order).toEqual(["high-priority", "mid-priority", "low-priority"]);
+  });
+
   it("duplicates an account with the copy action", async () => {
     const initialList = [
       {
