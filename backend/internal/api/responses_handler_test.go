@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/api"
@@ -148,6 +149,7 @@ func TestResponsesHandlerThinModeRejectsUnsupportedActiveAccount(t *testing.T) {
 		Status:            accounts.StatusActive,
 		Priority:          100,
 		SupportsResponses: false,
+		IsActive:          true,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
@@ -158,7 +160,7 @@ func TestResponsesHandlerThinModeRejectsUnsupportedActiveAccount(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "supports /responses") {
+	if !strings.Contains(rec.Body.String(), "support /responses") {
 		t.Fatalf("body = %s, want explicit capability error", rec.Body.String())
 	}
 }
@@ -404,4 +406,320 @@ func TestResponsesHandlerThinModePassesThroughPreviousResponseID(t *testing.T) {
 	if got, _ := upstreamBody["previous_response_id"].(string); got != "resp_prev_1" {
 		t.Fatalf("previous_response_id = %q, want resp_prev_1", got)
 	}
+}
+
+func TestResponsesHandlerThinModeMarksOfficialUsageLimitedFrom429Body(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Mar 19th, 2026 8:37 AM."}}`)
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official-usage-limit",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:            accounts.StatusActive,
+		Priority:          100,
+		SupportsResponses: true,
+		IsActive:          true,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        5.39,
+		QuotaRemaining: 100000,
+		RPMRemaining:   85,
+		TPMRemaining:   40,
+		HealthScore:    0.9,
+		CheckedAt:      time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+
+	events, err := usageRepo.ListRecentEvents(usage.EventFilter{Limit: 5})
+	if err != nil {
+		t.Fatalf("ListRecentEvents returned error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(events))
+	}
+	if events[0].Status != "usage_limited" {
+		t.Fatalf("event status = %q, want usage_limited", events[0].Status)
+	}
+}
+
+func TestResponsesHandlerThinModeFailsOverAfterOfficialUsageLimit(t *testing.T) {
+	t.Parallel()
+
+	primaryCalls := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"You've hit your usage limit. Upgrade to Pro or try again later."}}`)
+	}))
+	defer primary.Close()
+
+	secondaryCalls := 0
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondaryCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_fallback_1","object":"response","status":"completed","output_text":"fallback-success"}`)
+	}))
+	defer secondary.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, account := range []accounts.Account{
+		{
+			ProviderType: accounts.ProviderOpenAIOfficial,
+			AccountName:  "official-primary",
+			AuthMode:     accounts.AuthModeLocalImport,
+			BaseURL:      primary.URL + "/backend-api/codex",
+			CredentialRef: `{
+				"auth_mode":"chatgpt",
+				"tokens":{"access_token":"token-primary","account_id":"acct-primary"}
+			}`,
+			Status:            accounts.StatusActive,
+			Priority:          100,
+			SupportsResponses: true,
+			IsActive:          true,
+		},
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "fallback-third-party",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           secondary.URL + "/v1",
+			CredentialRef:     "sk-fallback",
+			Status:            accounts.StatusActive,
+			Priority:          90,
+			SupportsResponses: true,
+		},
+	} {
+		if err := accountRepo.Create(account); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for _, snapshot := range []usage.Snapshot{
+		{
+			AccountID:            1,
+			Balance:              5.39,
+			QuotaRemaining:       100000,
+			RPMRemaining:         85,
+			TPMRemaining:         40,
+			HealthScore:          0.9,
+			PrimaryUsedPercent:   72,
+			SecondaryUsedPercent: 41,
+			PrimaryResetsAt:      timePtr(time.Now().UTC().Add(2 * time.Hour)),
+			SecondaryResetsAt:    timePtr(time.Now().UTC().Add(24 * time.Hour)),
+			CheckedAt:            time.Now().UTC(),
+		},
+		{
+			AccountID:      2,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.8,
+			CheckedAt:      time.Now().UTC(),
+		},
+	} {
+		if err := usageRepo.Save(snapshot); err != nil {
+			t.Fatalf("Save returned error: %v", err)
+		}
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"output_text":"fallback-success"`) {
+		t.Fatalf("body = %s, want fallback output", rec.Body.String())
+	}
+	if primaryCalls != 1 {
+		t.Fatalf("primaryCalls = %d, want 1", primaryCalls)
+	}
+	if secondaryCalls != 1 {
+		t.Fatalf("secondaryCalls = %d, want 1", secondaryCalls)
+	}
+
+	primaryAccount, err := accountRepo.GetByID(1)
+	if err != nil {
+		t.Fatalf("GetByID returned error: %v", err)
+	}
+	if primaryAccount.Status != accounts.StatusCooldown {
+		t.Fatalf("status = %q, want %q", primaryAccount.Status, accounts.StatusCooldown)
+	}
+	if primaryAccount.CooldownUntil == nil {
+		t.Fatal("CooldownUntil = nil, want cooldown timestamp")
+	}
+
+	events, err := usageRepo.ListRecentEvents(usage.EventFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRecentEvents returned error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events len = %d, want 2", len(events))
+	}
+	if events[0].AccountID != 2 || events[0].Status != "completed" {
+		t.Fatalf("latest event = %+v, want fallback completed", events[0])
+	}
+	if events[1].AccountID != 1 || events[1].Status != "usage_limited" {
+		t.Fatalf("previous event = %+v, want primary usage_limited", events[1])
+	}
+}
+
+func TestResponsesHandlerThinModeSkipsOfficialBelowRemainingThreshold(t *testing.T) {
+	t.Parallel()
+
+	primaryCalls := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_should_not_run","object":"response","status":"completed","output_text":"should-not-run"}`)
+	}))
+	defer primary.Close()
+
+	secondaryCalls := 0
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondaryCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_threshold_fallback","object":"response","status":"completed","output_text":"threshold-fallback"}`)
+	}))
+	defer secondary.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, account := range []accounts.Account{
+		{
+			ProviderType: accounts.ProviderOpenAIOfficial,
+			AccountName:  "official-low-remaining",
+			AuthMode:     accounts.AuthModeLocalImport,
+			BaseURL:      primary.URL + "/backend-api/codex",
+			CredentialRef: `{
+				"auth_mode":"chatgpt",
+				"tokens":{"access_token":"token-primary","account_id":"acct-primary"}
+			}`,
+			Status:            accounts.StatusActive,
+			Priority:          100,
+			SupportsResponses: true,
+			IsActive:          true,
+		},
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "fallback-third-party",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           secondary.URL + "/v1",
+			CredentialRef:     "sk-fallback",
+			Status:            accounts.StatusActive,
+			Priority:          90,
+			SupportsResponses: true,
+		},
+	} {
+		if err := accountRepo.Create(account); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for _, snapshot := range []usage.Snapshot{
+		{
+			AccountID:            1,
+			Balance:              5.39,
+			QuotaRemaining:       100000,
+			RPMRemaining:         2,
+			TPMRemaining:         2,
+			HealthScore:          0.02,
+			PrimaryUsedPercent:   98.5,
+			SecondaryUsedPercent: 97.4,
+			PrimaryResetsAt:      timePtr(time.Now().UTC().Add(2 * time.Hour)),
+			SecondaryResetsAt:    timePtr(time.Now().UTC().Add(24 * time.Hour)),
+			CheckedAt:            time.Now().UTC(),
+		},
+		{
+			AccountID:      2,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.8,
+			CheckedAt:      time.Now().UTC(),
+		},
+	} {
+		if err := usageRepo.Save(snapshot); err != nil {
+			t.Fatalf("Save returned error: %v", err)
+		}
+	}
+
+	handler := api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"output_text":"threshold-fallback"`) {
+		t.Fatalf("body = %s, want threshold fallback output", rec.Body.String())
+	}
+	if primaryCalls != 0 {
+		t.Fatalf("primaryCalls = %d, want 0", primaryCalls)
+	}
+	if secondaryCalls != 1 {
+		t.Fatalf("secondaryCalls = %d, want 1", secondaryCalls)
+	}
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
 }

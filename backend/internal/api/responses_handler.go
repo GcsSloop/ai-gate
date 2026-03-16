@@ -29,9 +29,13 @@ import (
 
 const officialCodexBaseURL = "https://chatgpt.com/backend-api/codex"
 const defaultCodexInstructions = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals. Be pragmatic, concise, and focus on completing the user's task."
+const thinResponsesOfficialLowRemainingThreshold = 3.0
+const thinResponsesCapacityCooldownWindow = 30 * time.Minute
+const thinResponsesRateLimitCooldownWindow = 15 * time.Minute
 
 var errThinGatewayRequiresResponsesAccount = errors.New("thin gateway mode requires an account that supports /responses")
 var errThinGatewayActiveAccountUnsupported = errors.New("active account does not support /responses in thin gateway mode")
+var errThinGatewayNoHealthyCandidate = errors.New("no healthy responses account available")
 
 type ResponsesAccounts interface {
 	List() ([]accounts.Account, error)
@@ -117,7 +121,7 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Request, req gatewayopenai.ResponsesRequest, rawBody []byte) {
-	account, err := h.selectThinGatewayAccount()
+	candidates, err := h.orderedThinGatewayCandidates()
 	if err != nil {
 		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
 			writeThinGatewayUnsupported(w, err.Error())
@@ -127,65 +131,169 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		return
 	}
 	conversationID := int64(0)
-	if err := ensureOfficialAccountSession(r.Context(), h.client, h.accounts, &account); err != nil {
-		persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, time.Now().UTC())
-		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
-		return
-	}
-	credential, err := resolveCredential(account)
-	if err != nil {
-		persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, time.Now().UTC())
-		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
-		return
-	}
-	startedAt := time.Now()
-	logUpstreamSummary("responses", conversationID, account, "/responses", req.Model)
-	resp, err := h.executeThinResponsesUpstreamRequest(r.Context(), account, credential, rawBody, req.Stream, conversationID, req.Model, startedAt)
-	if err != nil {
-		persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
-		logFailureSummary("responses", conversationID, account.ID, "upstream_request", startedAt, err)
-		writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
-		return
-	}
-	defer resp.Body.Close()
+	var lastErr error
+	var fallbackStatusCode int
+	var fallbackHeaders http.Header
+	var fallbackBody []byte
 
-	runStatus := "completed"
-	if resp.StatusCode >= 400 {
-		runStatus = runStatusForErrorClass(classifyRunError(providers.HTTPError{StatusCode: resp.StatusCode}))
-	}
-	copyResponseHeaders(w.Header(), resp.Header)
-	if isEventStreamResponse(resp.Header) {
-		w.Header().Set("OpenAI-Model", req.Model)
-		w.WriteHeader(resp.StatusCode)
-		if err := copyResponseStream(w, resp.Body); err != nil {
-			runStatus = runStatusForErrorClass(classifyRunError(err))
-			logFailureSummary("responses", conversationID, account.ID, "read_stream", startedAt, err)
-			writeThinGatewayFailure(w, true, http.StatusBadGateway, err)
-		} else {
-			logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, "")
+	for index, candidate := range candidates {
+		account := candidate.Account
+		if !account.NativeResponsesCapable() {
+			logThinGatewayCandidate(account, "skip", "supports_responses=false")
+			continue
 		}
-		persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
-		return
-	}
+		if reason, ok := h.skipReasonForThinCandidate(candidate); ok {
+			logThinGatewayCandidate(account, "skip", reason)
+			cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, reason)
+			if shouldCooldownThinCandidate(candidate, reason) {
+				if err := h.markThinCandidateCooldown(account, candidate.Snapshot, reason); err != nil {
+					lastErr = err
+					break
+				}
+			}
+			if next, ok := h.nextThinFailoverTarget(candidates, index); ok {
+				logResponsesFailover(conversationID, account, next.Account, reason, "preemptive", req.Model, cooldownUntil)
+			}
+			lastErr = errThinGatewayNoHealthyCandidate
+			continue
+		}
 
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
-		logFailureSummary("responses", conversationID, account.ID, "read_response", startedAt, err)
-		writeThinGatewayFailure(w, false, http.StatusBadGateway, err)
-		return
-	}
-	if resp.StatusCode < 400 {
+		if err := ensureOfficialAccountSession(r.Context(), h.client, h.accounts, &account); err != nil {
+			startedAt := time.Now().UTC()
+			persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			logFailureSummary("responses", conversationID, account.ID, account.AccountName, "ensure_session", startedAt, err)
+			lastErr = err
+			if shouldFailoverOnThinError(err) {
+				continue
+			}
+			writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
+			return
+		}
+
+		credential, err := resolveCredential(account)
+		if err != nil {
+			startedAt := time.Now().UTC()
+			persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			logFailureSummary("responses", conversationID, account.ID, account.AccountName, "resolve_credential", startedAt, err)
+			lastErr = err
+			if shouldFailoverOnThinError(err) {
+				continue
+			}
+			writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
+			return
+		}
+
+		startedAt := time.Now().UTC()
+		logUpstreamSummary("responses", conversationID, account, "/responses", req.Model)
+		resp, err := h.executeThinResponsesUpstreamRequest(r.Context(), account, credential, rawBody, req.Stream, conversationID, req.Model, startedAt)
+		if err != nil {
+			persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			logFailureSummary("responses", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
+			lastErr = err
+			if shouldFailoverOnThinError(err) {
+				continue
+			}
+			writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
+			return
+		}
+
+		if resp.StatusCode >= 400 {
+			responseBody, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(readErr)), usage.Snapshot{AccountID: account.ID}, startedAt)
+				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_response", startedAt, readErr)
+				lastErr = readErr
+				if shouldFailoverOnThinError(readErr) {
+					continue
+				}
+				writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, readErr)
+				return
+			}
+
+			runStatus := classifyThinResponseStatus(account, resp, responseBody)
+			upstreamErr := buildUpstreamStatusError(resp.StatusCode, responseBody)
+			logFailureSummary("responses", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, upstreamErr)
+			persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
+
+			if shouldFailoverOnThinStatus(runStatus) {
+				cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, runStatus)
+				if err := h.markThinCandidateCooldown(account, candidate.Snapshot, runStatus); err != nil {
+					lastErr = err
+					break
+				}
+				if next, ok := h.nextThinFailoverTarget(candidates, index); ok {
+					logResponsesFailover(conversationID, account, next.Account, runStatus, strconv.Itoa(resp.StatusCode), req.Model, cooldownUntil)
+				}
+				fallbackStatusCode = resp.StatusCode
+				fallbackHeaders = resp.Header.Clone()
+				fallbackBody = append(fallbackBody[:0], responseBody...)
+				lastErr = upstreamErr
+				continue
+			}
+
+			copyResponseHeaders(w.Header(), resp.Header)
+			w.Header().Set("OpenAI-Model", req.Model)
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(responseBody)
+			return
+		}
+
+		runStatus := "completed"
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.Header().Set("OpenAI-Model", req.Model)
+		if isEventStreamResponse(resp.Header) {
+			w.WriteHeader(resp.StatusCode)
+			if err := copyResponseStream(w, resp.Body); err != nil {
+				runStatus = runStatusForErrorClass(classifyRunError(err))
+				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_stream", startedAt, err)
+				persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
+				_ = resp.Body.Close()
+				writeThinGatewayFailure(w, true, http.StatusBadGateway, err)
+				return
+			}
+			_ = resp.Body.Close()
+			logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, "")
+			persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
+			return
+		}
+
+		responseBody, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_response", startedAt, err)
+			lastErr = err
+			if shouldFailoverOnThinError(err) {
+				continue
+			}
+			writeThinGatewayFailure(w, false, http.StatusBadGateway, err)
+			return
+		}
+
 		result := parseResponsesJSONResponse(responseBody, account.ID)
 		logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, result.Text)
 		persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, result.Snapshot, startedAt)
-	} else {
-		logFailureSummary("responses", conversationID, account.ID, "upstream_status", startedAt, providers.HTTPError{StatusCode: resp.StatusCode})
-		persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(responseBody)
+		return
 	}
-	w.Header().Set("OpenAI-Model", req.Model)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(responseBody)
+
+	if lastErr == nil {
+		lastErr = errThinGatewayNoHealthyCandidate
+	}
+	if fallbackStatusCode > 0 {
+		copyResponseHeaders(w.Header(), fallbackHeaders)
+		w.Header().Set("OpenAI-Model", req.Model)
+		w.WriteHeader(fallbackStatusCode)
+		_, _ = w.Write(fallbackBody)
+		return
+	}
+	if errors.Is(lastErr, errThinGatewayNoHealthyCandidate) || errors.Is(lastErr, errThinGatewayRequiresResponsesAccount) {
+		writeThinGatewayUnsupported(w, lastErr.Error())
+		return
+	}
+	writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, lastErr)
 }
 
 func (h *ResponsesHandler) executeThinResponsesUpstreamRequest(ctx context.Context, account accounts.Account, credential string, rawBody []byte, stream bool, conversationID int64, model string, startedAt time.Time) (*http.Response, error) {
@@ -292,6 +400,53 @@ func (h *ResponsesHandler) autoFailoverEnabled() bool {
 		return false
 	}
 	return len(queue) > 0
+}
+
+func (h *ResponsesHandler) orderedThinGatewayCandidates() ([]routing.Candidate, error) {
+	accountList, err := h.accounts.List()
+	if err != nil {
+		return nil, err
+	}
+	candidates := h.buildCandidates(accountList)
+	if h.autoFailoverEnabled() {
+		return settings.OrderCandidates(h.settings, candidates)
+	}
+
+	scored := routing.ScoreCandidates(candidates)
+	for _, candidate := range candidates {
+		if !candidate.Account.IsActive {
+			continue
+		}
+		if !candidate.Account.NativeResponsesCapable() {
+			logThinGatewayCandidate(candidate.Account, "reject", "active_account_missing_responses_capability")
+			return nil, errThinGatewayActiveAccountUnsupported
+		}
+		logThinGatewayCandidate(candidate.Account, "select", "active_account")
+		ordered := []routing.Candidate{candidate}
+		for _, fallback := range scored {
+			if fallback.Account.ID == candidate.Account.ID {
+				continue
+			}
+			ordered = append(ordered, fallback)
+		}
+		return ordered, nil
+	}
+
+	return scored, nil
+}
+
+func (h *ResponsesHandler) nextThinFailoverTarget(candidates []routing.Candidate, currentIndex int) (routing.Candidate, bool) {
+	for i := currentIndex + 1; i < len(candidates); i++ {
+		candidate := candidates[i]
+		if !candidate.Account.NativeResponsesCapable() {
+			continue
+		}
+		if _, skip := h.skipReasonForThinCandidate(candidate); skip {
+			continue
+		}
+		return candidate, true
+	}
+	return routing.Candidate{}, false
 }
 
 func copyResponseHeaders(dst, src http.Header) {
@@ -477,6 +632,118 @@ func (h *ResponsesHandler) buildCandidates(accountList []accounts.Account) []rou
 		candidates = append(candidates, routing.Candidate{Account: account, Snapshot: snapshot})
 	}
 	return candidates
+}
+
+func (h *ResponsesHandler) skipReasonForThinCandidate(candidate routing.Candidate) (string, bool) {
+	switch candidate.Account.Status {
+	case accounts.StatusDisabled:
+		return "status=disabled", true
+	case accounts.StatusInvalid:
+		return "status=invalid", true
+	case accounts.StatusCooldown:
+		return "status=cooldown", true
+	}
+	if officialRemainingBelowThreshold(candidate) {
+		return "official_remaining_below_3pct", true
+	}
+	return "", false
+}
+
+func officialRemainingBelowThreshold(candidate routing.Candidate) bool {
+	if !usesOfficialCodexAdapter(candidate.Account) {
+		return false
+	}
+	primaryRemaining := 100 - candidate.Snapshot.PrimaryUsedPercent
+	secondaryRemaining := 100 - candidate.Snapshot.SecondaryUsedPercent
+	if candidate.Snapshot.PrimaryResetsAt != nil && primaryRemaining < thinResponsesOfficialLowRemainingThreshold {
+		return true
+	}
+	if candidate.Snapshot.SecondaryResetsAt != nil && secondaryRemaining < thinResponsesOfficialLowRemainingThreshold {
+		return true
+	}
+	return false
+}
+
+func shouldCooldownThinCandidate(candidate routing.Candidate, reason string) bool {
+	return reason == "official_remaining_below_3pct" || reason == "status=cooldown"
+}
+
+func shouldFailoverOnThinError(err error) bool {
+	class := classifyRunError(err)
+	return class == providers.ErrorClassCapacity || class == providers.ErrorClassRateLimit || class == providers.ErrorClassSoft
+}
+
+func shouldFailoverOnThinStatus(status string) bool {
+	switch status {
+	case "usage_limited", "capacity_failed", "rate_limited":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *ResponsesHandler) markThinCandidateCooldown(account accounts.Account, snapshot usage.Snapshot, reason string) error {
+	until := computeThinCandidateCooldownUntil(snapshot, reason)
+	if account.Status == accounts.StatusCooldown && account.CooldownUntil != nil && until != nil && account.CooldownUntil.Equal(*until) {
+		return nil
+	}
+	account.Status = accounts.StatusCooldown
+	account.CooldownUntil = until
+	return h.accounts.Update(account)
+}
+
+func computeThinCandidateCooldownUntil(snapshot usage.Snapshot, reason string) *time.Time {
+	now := time.Now().UTC()
+	switch reason {
+	case "official_remaining_below_3pct", "usage_limited", "capacity_failed":
+		resetAt := relevantOfficialResetAt(snapshot)
+		until := routing.ComputeCooldownUntil(now, routing.CooldownReasonCapacity, resetAt, thinResponsesCapacityCooldownWindow)
+		return &until
+	case "rate_limited":
+		until := routing.ComputeCooldownUntil(now, routing.CooldownReasonRateLimit, nil, thinResponsesRateLimitCooldownWindow)
+		return &until
+	case "status=cooldown":
+		resetAt := latestRelevantResetAt(snapshot)
+		if resetAt == nil {
+			return nil
+		}
+		until := resetAt.UTC()
+		return &until
+	default:
+		return nil
+	}
+}
+
+func latestRelevantResetAt(snapshot usage.Snapshot) *time.Time {
+	return latestResetAtFor(snapshot.PrimaryResetsAt, snapshot.SecondaryResetsAt)
+}
+
+func relevantOfficialResetAt(snapshot usage.Snapshot) *time.Time {
+	var candidates []*time.Time
+	if snapshot.PrimaryResetsAt != nil && 100-snapshot.PrimaryUsedPercent < thinResponsesOfficialLowRemainingThreshold {
+		candidates = append(candidates, snapshot.PrimaryResetsAt)
+	}
+	if snapshot.SecondaryResetsAt != nil && 100-snapshot.SecondaryUsedPercent < thinResponsesOfficialLowRemainingThreshold {
+		candidates = append(candidates, snapshot.SecondaryResetsAt)
+	}
+	if len(candidates) == 0 {
+		return latestRelevantResetAt(snapshot)
+	}
+	return latestResetAtFor(candidates...)
+}
+
+func latestResetAtFor(candidates ...*time.Time) *time.Time {
+	var latest *time.Time
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		if latest == nil || candidate.After(*latest) {
+			value := candidate.UTC()
+			latest = &value
+		}
+	}
+	return latest
 }
 
 type requestedToolSummary struct {

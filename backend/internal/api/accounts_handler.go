@@ -872,6 +872,47 @@ func buildUpstreamErrorDetails(status string, raw []byte) string {
 	return "上游返回错误：" + status + "\n" + body
 }
 
+func buildUpstreamStatusError(statusCode int, raw []byte) error {
+	body := compactErrorText(strings.TrimSpace(string(raw)), 512)
+	if body == "" {
+		return providers.HTTPError{StatusCode: statusCode}
+	}
+	return fmt.Errorf("http status %d: %s: %w", statusCode, body, providers.HTTPError{StatusCode: statusCode})
+}
+
+func classifyThinResponseStatus(account accounts.Account, resp *http.Response, raw []byte) string {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if looksLikeOfficialUsageLimit(account, raw) {
+			return "usage_limited"
+		}
+		return "rate_limited"
+	}
+	return runStatusForErrorClass(classifyRunError(providers.HTTPError{StatusCode: resp.StatusCode}))
+}
+
+func looksLikeOfficialUsageLimit(account accounts.Account, raw []byte) bool {
+	if !usesOfficialCodexAdapter(account) {
+		return false
+	}
+	body := strings.ToLower(strings.Join(strings.Fields(string(raw)), " "))
+	if body == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"usage limit",
+		"purchase more credits",
+		"upgrade to pro",
+		"upgrade to plus",
+		"continue using codex",
+		"send a request to your admin",
+	} {
+		if strings.Contains(body, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func parseOfficialUsageSnapshot(raw []byte) (usage.Snapshot, bool) {
 	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {

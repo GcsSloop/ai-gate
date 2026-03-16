@@ -278,6 +278,126 @@ func TestResponsesHandlerLogsThinGatewayCandidateSkipReason(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerLogsFailoverReasonAndTarget(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"You've hit your usage limit. Upgrade to Pro or try again later."}}`)
+	}))
+	defer primary.Close()
+
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_fallback_1","object":"response","status":"completed","output_text":"fallback-success"}`)
+	}))
+	defer secondary.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, account := range []accounts.Account{
+		{
+			ProviderType: accounts.ProviderOpenAIOfficial,
+			AccountName:  "official-primary",
+			AuthMode:     accounts.AuthModeLocalImport,
+			BaseURL:      primary.URL + "/backend-api/codex",
+			CredentialRef: `{
+				"auth_mode":"chatgpt",
+				"tokens":{"access_token":"token-primary","account_id":"acct-primary"}
+			}`,
+			Status:            accounts.StatusActive,
+			Priority:          100,
+			SupportsResponses: true,
+			IsActive:          true,
+		},
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "fallback-third-party",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           secondary.URL + "/v1",
+			CredentialRef:     "sk-fallback",
+			Status:            accounts.StatusActive,
+			Priority:          90,
+			SupportsResponses: true,
+		},
+	} {
+		if err := accountRepo.Create(account); err != nil {
+			t.Fatalf("Create(account) returned error: %v", err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for _, snapshot := range []usage.Snapshot{
+		{
+			AccountID:            1,
+			Balance:              5.39,
+			QuotaRemaining:       100000,
+			RPMRemaining:         85,
+			TPMRemaining:         40,
+			HealthScore:          0.9,
+			PrimaryUsedPercent:   72,
+			SecondaryUsedPercent: 41,
+			PrimaryResetsAt:      timePtr(time.Now().UTC().Add(2 * time.Hour)),
+			SecondaryResetsAt:    timePtr(time.Now().UTC().Add(24 * time.Hour)),
+			CheckedAt:            time.Now().UTC(),
+		},
+		{
+			AccountID:      2,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.8,
+			CheckedAt:      time.Now().UTC(),
+		},
+	} {
+		if err := usageRepo.Save(snapshot); err != nil {
+			t.Fatalf("Save(snapshot) returned error: %v", err)
+		}
+	}
+
+	handler := NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	output := logs.String()
+	for _, want := range []string{
+		`responses failover`,
+		`from_account_id=1`,
+		`from_account=official-primary`,
+		`to_account_id=2`,
+		`to_account=fallback-third-party`,
+		`reason=usage_limited`,
+		`trigger_status=429`,
+		`model=gpt-5.4`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("logs = %s, want substring %q", output, want)
+		}
+	}
+}
+
 func TestLogFailureSummaryIncludesTransportDiagnostics(t *testing.T) {
 	var logs bytes.Buffer
 	previousWriter := log.Writer()
@@ -293,6 +413,7 @@ func TestLogFailureSummaryIncludesTransportDiagnostics(t *testing.T) {
 		"responses",
 		99,
 		14,
+		"official-main",
 		"upstream_request",
 		time.Now(),
 		&url.Error{Op: "Post", URL: "https://chatgpt.com/backend-api/codex/responses", Err: io.EOF},
@@ -300,6 +421,7 @@ func TestLogFailureSummaryIncludesTransportDiagnostics(t *testing.T) {
 
 	output := logs.String()
 	for _, want := range []string{
+		`account=official-main`,
 		`stage=upstream_request`,
 		`err_kind=url_error`,
 		`url_op=Post`,
@@ -317,4 +439,8 @@ func TestLogFailureSummaryIncludesTransportDiagnostics(t *testing.T) {
 	if errors.Is(io.EOF, io.EOF) == false {
 		t.Fatal("sanity check failed")
 	}
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
 }
