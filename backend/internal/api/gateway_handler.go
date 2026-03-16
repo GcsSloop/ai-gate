@@ -133,12 +133,12 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		startedAt := time.Now()
 		logUpstreamSummary("gateway", conversationID, account, "/chat/completions", req.Model)
 		if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
-			logFailureSummary("gateway", conversationID, account.ID, "ensure_session", startedAt, err)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "ensure_session", startedAt, err)
 			return err
 		}
 		credential, err := resolveCredential(account)
 		if err != nil {
-			logFailureSummary("gateway", conversationID, account.ID, "resolve_credential", startedAt, err)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "resolve_credential", startedAt, err)
 			return err
 		}
 
@@ -150,25 +150,25 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Body:   body,
 		})
 		if err != nil {
-			logFailureSummary("gateway", conversationID, account.ID, "build_request", startedAt, err)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "build_request", startedAt, err)
 			return err
 		}
 
 		resp, err := h.client.Do(upstreamReq)
 		if err != nil {
-			logFailureSummary("gateway", conversationID, account.ID, "upstream_request", startedAt, err)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
 			return err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
-			logFailureSummary("gateway", conversationID, account.ID, "upstream_status", startedAt, providers.HTTPError{StatusCode: resp.StatusCode})
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, providers.HTTPError{StatusCode: resp.StatusCode})
 			return providers.HTTPError{StatusCode: resp.StatusCode}
 		}
 
 		upstreamResponse, err = io.ReadAll(resp.Body)
 		if err != nil {
-			logFailureSummary("gateway", conversationID, account.ID, "read_response", startedAt, err)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "read_response", startedAt, err)
 		} else {
 			logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, string(upstreamResponse))
 			persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", parseChatCompletionsUsage(upstreamResponse, account.ID), startedAt)
@@ -230,12 +230,12 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		startedAt := time.Now()
 		logUpstreamSummary("gateway", conversationID, account, "/chat/completions", req.Model)
 		if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
-			logFailureSummary("gateway", conversationID, account.ID, "ensure_session", startedAt, err)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "ensure_session", startedAt, err)
 			return err
 		}
 		credential, err := resolveCredential(account)
 		if err != nil {
-			logFailureSummary("gateway", conversationID, account.ID, "resolve_credential", startedAt, err)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "resolve_credential", startedAt, err)
 			return err
 		}
 
@@ -247,19 +247,19 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 			Body:   body,
 		})
 		if err != nil {
-			logFailureSummary("gateway", conversationID, account.ID, "build_request", startedAt, err)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "build_request", startedAt, err)
 			return err
 		}
 
 		resp, err := h.client.Do(upstreamReq)
 		if err != nil {
-			logFailureSummary("gateway", conversationID, account.ID, "upstream_request", startedAt, err)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
 			return err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
-			logFailureSummary("gateway", conversationID, account.ID, "upstream_status", startedAt, providers.HTTPError{StatusCode: resp.StatusCode})
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, providers.HTTPError{StatusCode: resp.StatusCode})
 			return providers.HTTPError{StatusCode: resp.StatusCode}
 		}
 
@@ -295,7 +295,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			logFailureSummary("gateway", conversationID, account.ID, "read_stream", startedAt, err)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "read_stream", startedAt, err)
 			persistUsageEvent(h.usage, account, "chat_completions", req.Model, "failed", usage.Snapshot{AccountID: account.ID}, startedAt)
 			return err
 		}

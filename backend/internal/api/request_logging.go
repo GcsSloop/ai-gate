@@ -106,13 +106,14 @@ func logResultSummary(kind string, conversationID int64, accountID int64, status
 	)
 }
 
-func logFailureSummary(kind string, conversationID int64, accountID int64, stage string, startedAt time.Time, err error) {
+func logFailureSummary(kind string, conversationID int64, accountID int64, accountName string, stage string, startedAt time.Time, err error) {
 	details := summarizeTransportError(err)
 	log.Printf(
-		"%s failure conversation_id=%d account_id=%d stage=%s duration_ms=%d err=%q%s",
+		"%s failure conversation_id=%d account_id=%d account=%s stage=%s duration_ms=%d err=%q%s",
 		kind,
 		conversationID,
 		accountID,
+		accountName,
 		stage,
 		time.Since(startedAt).Milliseconds(),
 		err,
@@ -130,6 +131,25 @@ func logThinGatewayCandidate(account accounts.Account, action string, reason str
 		string(account.ProviderType),
 		action,
 		reason,
+	)
+}
+
+func logResponsesFailover(conversationID int64, from accounts.Account, to accounts.Account, reason string, triggerStatus string, model string, cooldownUntil *time.Time) {
+	cooldown := ""
+	if cooldownUntil != nil {
+		cooldown = cooldownUntil.UTC().Format(time.RFC3339)
+	}
+	log.Printf(
+		"responses failover conversation_id=%d from_account_id=%d from_account=%s to_account_id=%d to_account=%s reason=%s trigger_status=%s model=%s cooldown_until=%s",
+		conversationID,
+		from.ID,
+		from.AccountName,
+		to.ID,
+		to.AccountName,
+		reason,
+		triggerStatus,
+		model,
+		cooldown,
 	)
 }
 
