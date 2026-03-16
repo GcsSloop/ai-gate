@@ -115,6 +115,101 @@ func TestGatewayHandlerProxiesToConfiguredAccount(t *testing.T) {
 	}
 }
 
+func TestGatewayHandlerTransparentlyProxiesArrayMessageContent(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+
+		messages, ok := payload["messages"].([]any)
+		if !ok || len(messages) != 1 {
+			t.Fatalf("messages = %#v, want one message", payload["messages"])
+		}
+		message, ok := messages[0].(map[string]any)
+		if !ok {
+			t.Fatalf("message = %#v, want object", messages[0])
+		}
+		content, ok := message["content"].([]any)
+		if !ok || len(content) != 2 {
+			t.Fatalf("content = %#v, want two-item array", message["content"])
+		}
+
+		first, _ := content[0].(map[string]any)
+		second, _ := content[1].(map[string]any)
+		if first["text"] != "ping" || second["text"] != "pong" {
+			t.Fatalf("content text = %#v, want ping/pong", content)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "chat.completion",
+			"model":  "gpt-5.2-codex",
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "ok"}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat-main",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-test",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create(account) returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save(snapshot) returned error: %v", err)
+	}
+
+	handler := api.NewGatewayHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-5.2-codex",
+		"stream":false,
+		"messages":[
+			{
+				"role":"user",
+				"content":[
+					{"type":"text","text":"ping"},
+					{"type":"text","text":"pong"}
+				]
+			}
+		]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gateway status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
 func TestGatewayHandlerRecordsUsageEventWithoutAuditRows(t *testing.T) {
 	t.Parallel()
 
