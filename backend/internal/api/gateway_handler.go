@@ -1,14 +1,11 @@
 package api
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
@@ -19,7 +16,6 @@ import (
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/routing"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
-	streamproxy "github.com/gcssloop/codex-router/backend/internal/streaming"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
 
@@ -213,41 +209,41 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.WriteHeader(http.StatusOK)
+	var lastErr error
 
-	flusher, _ := w.(http.Flusher)
-	writeChunk := func(delta string) error {
-		payload := map[string]any{
-			"choices": []map[string]any{
-				{"delta": map[string]string{"content": delta}},
-			},
+	for _, candidate := range orderedCandidates {
+		if !routing.IsFeasible(routing.TokenBudget{
+			ProjectedInputTokens:  float64(len(req.Messages) * 500),
+			ProjectedOutputTokens: 1500,
+			SafetyFactor:          1.3,
+			EstimatedCost:         0.01,
+		}, candidate.Snapshot) && !candidate.Account.IsActive {
+			continue
 		}
-		data, err := json.Marshal(payload)
-		if err != nil {
-			return err
-		}
-		if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
-			return err
-		}
-		if flusher != nil {
-			flusher.Flush()
-		}
-		return nil
-	}
 
-	proxy := streamproxy.NewProxy(noopRunRecorder{}, func(ctx context.Context, attempt streamproxy.Attempt) error {
-		account := attempt.Candidate.Account
+		account := candidate.Account
 		startedAt := time.Now()
 		logUpstreamSummary("gateway", conversationID, account, "/chat/completions", req.Model)
 		if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "ensure_session", startedAt, err)
-			return err
+			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			lastErr = err
+			if shouldFailoverOnGatewayStreamError(err) {
+				continue
+			}
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
 		}
 		credential, err := resolveCredential(account)
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "resolve_credential", startedAt, err)
-			return err
+			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			lastErr = err
+			if shouldFailoverOnGatewayStreamError(err) {
+				continue
+			}
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
 		}
 
 		adapter := provideropenai.NewAdapter(resolveAccountBaseURL(account))
@@ -259,81 +255,66 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		})
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "build_request", startedAt, err)
-			return err
+			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			lastErr = err
+			if shouldFailoverOnGatewayStreamError(err) {
+				continue
+			}
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
 		}
 
 		resp, err := h.client.Do(upstreamReq)
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
-			return err
+			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			lastErr = err
+			if shouldFailoverOnGatewayStreamError(err) {
+				continue
+			}
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
+			_ = resp.Body.Close()
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, providers.HTTPError{StatusCode: resp.StatusCode})
-			return providers.HTTPError{StatusCode: resp.StatusCode}
-		}
-
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
+			err = providers.HTTPError{StatusCode: resp.StatusCode}
+			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			lastErr = err
+			if shouldFailoverOnGatewayStreamError(err) {
 				continue
 			}
-			if !strings.HasPrefix(line, "data: ") {
-				return errors.New("invalid stream frame")
-			}
-			payload := strings.TrimPrefix(line, "data: ")
-			if payload == "[DONE]" {
-				return nil
-			}
-
-			var frame struct {
-				Choices []struct {
-					Delta struct {
-						Content string `json:"content"`
-					} `json:"delta"`
-				} `json:"choices"`
-			}
-			if err := json.Unmarshal([]byte(payload), &frame); err != nil {
-				return err
-			}
-			if len(frame.Choices) == 0 {
-				continue
-			}
-			if err := attempt.Emit(frame.Choices[0].Delta.Content); err != nil {
-				return err
-			}
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
 		}
-		if err := scanner.Err(); err != nil {
+
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		err = copyResponseStream(w, resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "read_stream", startedAt, err)
-			persistUsageEvent(h.usage, account, "chat_completions", req.Model, "failed", usage.Snapshot{AccountID: account.ID}, startedAt)
-			return err
+			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			return
 		}
 		logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, "")
 		persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", usage.Snapshot{AccountID: account.ID}, startedAt)
 		if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
 			h.publishAccountRoutingStateChanged()
 		}
-		return nil
-	})
-
-	output, err := proxy.Execute(ctx, conversationID, req.Model, orderedCandidates, routing.TokenBudget{
-		ProjectedInputTokens:  float64(len(req.Messages) * 500),
-		ProjectedOutputTokens: 1500,
-		SafetyFactor:          1.3,
-		EstimatedCost:         0.01,
-	})
-	if err != nil {
-		_ = writeChunk("[stream failed over and exhausted candidates]")
 		return
 	}
-	_ = writeChunk(output)
 
-	_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	if flusher != nil {
-		flusher.Flush()
+	if lastErr == nil {
+		lastErr = errors.New("no candidate succeeded")
 	}
+	http.Error(w, lastErr.Error(), http.StatusBadGateway)
+}
+
+func shouldFailoverOnGatewayStreamError(err error) bool {
+	class := classifyRunError(err)
+	return class == providers.ErrorClassCapacity || class == providers.ErrorClassRateLimit || class == providers.ErrorClassSoft
 }
 
 func (h *GatewayHandler) publishAccountRoutingStateChanged() {

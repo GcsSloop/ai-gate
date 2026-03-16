@@ -578,22 +578,19 @@ func TestGatewayHandlerSyncsActiveAccountAfterFailover(t *testing.T) {
 	}
 }
 
-func TestGatewayHandlerStreamsWithFailover(t *testing.T) {
+func TestGatewayHandlerStreamsRawFramesWithoutRewriting(t *testing.T) {
 	t.Parallel()
 
-	firstHit := true
+	const upstreamStream = "" +
+		"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3,\"total_tokens\":15}}\n\n" +
+		"data: [DONE]\n\n"
+
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-
-		if firstHit {
-			firstHit = false
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"))
-			_, _ = w.Write([]byte("data: {broken\n\n"))
-			return
-		}
-
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello world\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		_, _ = w.Write([]byte(upstreamStream))
 	}))
 	defer upstream.Close()
 
@@ -604,17 +601,102 @@ func TestGatewayHandlerStreamsWithFailover(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
-	for i, name := range []string{"ppchat-a", "ppchat-b"} {
-		if err := accountRepo.Create(accounts.Account{
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat-main",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-test",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create(account) returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save(snapshot) returned error: %v", err)
+	}
+
+	handler := api.NewGatewayHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-5.2-codex",
+		"stream":true,
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gateway status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("content type = %q, want %q", got, "text/event-stream")
+	}
+	if rec.Body.String() != upstreamStream {
+		t.Fatalf("stream body = %s, want exact passthrough %s", rec.Body.String(), upstreamStream)
+	}
+}
+
+func TestGatewayHandlerStreamsFailoverBeforeFirstByte(t *testing.T) {
+	t.Parallel()
+
+	primaryCalls := 0
+	primaryUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls++
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer primaryUpstream.Close()
+
+	const fallbackStream = "" +
+		"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Hello world\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+	fallbackUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(fallbackStream))
+	}))
+	defer fallbackUpstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, item := range []accounts.Account{
+		{
 			ProviderType:  accounts.ProviderOpenAICompatible,
-			AccountName:   name,
+			AccountName:   "ppchat-primary",
 			AuthMode:      accounts.AuthModeAPIKey,
-			BaseURL:       upstream.URL + "/v1",
-			CredentialRef: "sk-test",
+			BaseURL:       primaryUpstream.URL + "/v1",
+			CredentialRef: "sk-primary",
 			Status:        accounts.StatusActive,
-			Priority:      100 - i,
-		}); err != nil {
-			t.Fatalf("Create(account %d) returned error: %v", i, err)
+			Priority:      100,
+		},
+		{
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "ppchat-fallback",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       fallbackUpstream.URL + "/v1",
+			CredentialRef: "sk-fallback",
+			Status:        accounts.StatusActive,
+			Priority:      90,
+		},
+	} {
+		if err := accountRepo.Create(item); err != nil {
+			t.Fatalf("Create(account) returned error: %v", err)
 		}
 	}
 
@@ -632,8 +714,7 @@ func TestGatewayHandlerStreamsWithFailover(t *testing.T) {
 		}
 	}
 
-	conversationRepo := conversations.NewSQLiteRepository(store.DB())
-	handler := api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo)
+	handler := api.NewGatewayHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
 		"model":"gpt-5.2-codex",
@@ -646,17 +727,13 @@ func TestGatewayHandlerStreamsWithFailover(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("gateway status = %d, want %d", rec.Code, http.StatusOK)
+		t.Fatalf("gateway status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
-		t.Fatalf("content type = %q, want %q", got, "text/event-stream")
+	if primaryCalls != 1 {
+		t.Fatalf("primaryCalls = %d, want 1", primaryCalls)
 	}
-	body := rec.Body.String()
-	if !bytes.Contains(rec.Body.Bytes(), []byte(`"content":"Hello world"`)) {
-		t.Fatalf("stream body missing failover output: %s", body)
-	}
-	if !bytes.Contains(rec.Body.Bytes(), []byte(`[DONE]`)) {
-		t.Fatalf("stream body missing done marker: %s", body)
+	if rec.Body.String() != fallbackStream {
+		t.Fatalf("stream body = %s, want exact failover passthrough %s", rec.Body.String(), fallbackStream)
 	}
 }
 
