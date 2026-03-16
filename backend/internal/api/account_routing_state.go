@@ -44,9 +44,12 @@ func activeCandidate(candidates []routing.Candidate) (routing.Candidate, bool) {
 	return routing.Candidate{}, false
 }
 
-func syncActiveAccount(repo activeAccountWriter, account accounts.Account) error {
+func syncActiveAccount(repo activeAccountWriter, account accounts.Account) (bool, error) {
 	if repo == nil || account.IsActive {
-		return nil
+		return false, nil
 	}
-	return repo.SetActive(account.ID)
+	if err := repo.SetActive(account.ID); err != nil {
+		return false, err
+	}
+	return true, nil
 }

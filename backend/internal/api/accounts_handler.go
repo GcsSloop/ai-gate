@@ -32,6 +32,15 @@ type AccountsHandler struct {
 	connector  *auth.OAuthConnector
 	stateStore *auth.StateStore
 	client     *http.Client
+	stateEvents *StateEventBus
+}
+
+type AccountsHandlerOption func(*AccountsHandler)
+
+func WithAccountsStateEvents(bus *StateEventBus) AccountsHandlerOption {
+	return func(handler *AccountsHandler) {
+		handler.stateEvents = bus
+	}
 }
 
 type AccountsUsage interface {
@@ -39,8 +48,14 @@ type AccountsUsage interface {
 	Save(snapshot usage.Snapshot) error
 }
 
-func NewAccountsHandler(repo accounts.Repository, usage AccountsUsage, connector *auth.OAuthConnector, stateStore *auth.StateStore) *AccountsHandler {
-	return &AccountsHandler{repo: repo, usage: usage, connector: connector, stateStore: stateStore, client: http.DefaultClient}
+func NewAccountsHandler(repo accounts.Repository, usage AccountsUsage, connector *auth.OAuthConnector, stateStore *auth.StateStore, opts ...AccountsHandlerOption) *AccountsHandler {
+	handler := &AccountsHandler{repo: repo, usage: usage, connector: connector, stateStore: stateStore, client: http.DefaultClient}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(handler)
+		}
+	}
+	return handler
 }
 
 func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -463,6 +478,7 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			log.Printf("accounts: active account updated account_id=%d account_name=%q", current.ID, current.AccountName)
+			h.publishAccountRoutingStateChanged()
 		}
 	}
 	if req.SupportsResponses != nil {
@@ -475,6 +491,12 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *AccountsHandler) publishAccountRoutingStateChanged() {
+	if h.stateEvents != nil {
+		h.stateEvents.Publish(AccountRoutingStateChangedTopic)
+	}
 }
 
 func (h *AccountsHandler) testAccount(w http.ResponseWriter, r *http.Request) {

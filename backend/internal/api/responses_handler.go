@@ -62,6 +62,7 @@ type ResponsesHandler struct {
 	conversations ResponsesRuns
 	settings      settings.ReadRepository
 	client        *http.Client
+	stateEvents   *StateEventBus
 }
 
 type ResponsesHandlerOption func(*ResponsesHandler)
@@ -69,6 +70,12 @@ type ResponsesHandlerOption func(*ResponsesHandler)
 func WithResponsesSettings(repo settings.ReadRepository) ResponsesHandlerOption {
 	return func(handler *ResponsesHandler) {
 		handler.settings = repo
+	}
+}
+
+func WithResponsesStateEvents(bus *StateEventBus) ResponsesHandlerOption {
+	return func(handler *ResponsesHandler) {
+		handler.stateEvents = bus
 	}
 }
 
@@ -147,9 +154,13 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 			logThinGatewayCandidate(account, "skip", reason)
 			cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, reason)
 			if shouldCooldownThinCandidate(candidate, reason) {
-				if err := h.markThinCandidateCooldown(account, candidate.Snapshot, reason); err != nil {
+				changed, err := h.markThinCandidateCooldown(account, candidate.Snapshot, reason)
+				if err != nil {
 					lastErr = err
 					break
+				}
+				if changed {
+					h.publishAccountRoutingStateChanged()
 				}
 			}
 			if next, ok := h.nextThinFailoverTarget(candidates, index); ok {
@@ -219,9 +230,13 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 
 			if shouldFailoverOnThinStatus(runStatus) {
 				cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, runStatus)
-				if err := h.markThinCandidateCooldown(account, candidate.Snapshot, runStatus); err != nil {
+				changed, err := h.markThinCandidateCooldown(account, candidate.Snapshot, runStatus)
+				if err != nil {
 					lastErr = err
 					break
+				}
+				if changed {
+					h.publishAccountRoutingStateChanged()
 				}
 				if next, ok := h.nextThinFailoverTarget(candidates, index); ok {
 					logResponsesFailover(conversationID, account, next.Account, runStatus, strconv.Itoa(resp.StatusCode), req.Model, cooldownUntil)
@@ -256,7 +271,9 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 			_ = resp.Body.Close()
 			logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, "")
 			persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
-			_ = syncActiveAccount(h.accounts, account)
+			if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
+				h.publishAccountRoutingStateChanged()
+			}
 			return
 		}
 
@@ -276,7 +293,9 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		result := parseResponsesJSONResponse(responseBody, account.ID)
 		logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, result.Text)
 		persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, result.Snapshot, startedAt)
-		_ = syncActiveAccount(h.accounts, account)
+		if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
+			h.publishAccountRoutingStateChanged()
+		}
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(responseBody)
 		return
@@ -675,14 +694,23 @@ func shouldFailoverOnThinStatus(status string) bool {
 	}
 }
 
-func (h *ResponsesHandler) markThinCandidateCooldown(account accounts.Account, snapshot usage.Snapshot, reason string) error {
+func (h *ResponsesHandler) markThinCandidateCooldown(account accounts.Account, snapshot usage.Snapshot, reason string) (bool, error) {
 	until := computeThinCandidateCooldownUntil(snapshot, reason)
 	if account.Status == accounts.StatusCooldown && account.CooldownUntil != nil && until != nil && account.CooldownUntil.Equal(*until) {
-		return nil
+		return false, nil
 	}
 	account.Status = accounts.StatusCooldown
 	account.CooldownUntil = until
-	return h.accounts.Update(account)
+	if err := h.accounts.Update(account); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (h *ResponsesHandler) publishAccountRoutingStateChanged() {
+	if h.stateEvents != nil {
+		h.stateEvents.Publish(AccountRoutingStateChangedTopic)
+	}
 }
 
 func computeThinCandidateCooldownUntil(snapshot usage.Snapshot, reason string) *time.Time {
