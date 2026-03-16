@@ -20,7 +20,7 @@ const baseSettings = {
   status_refresh_interval_seconds: 60,
   proxy_host: "127.0.0.1",
   proxy_port: 6789,
-  auto_failover_enabled: false,
+  auto_failover_enabled: true,
   auto_backup_interval_hours: 24,
   backup_retention_count: 10,
   audit_limit_message: 200,
@@ -67,14 +67,6 @@ describe("SettingsPage", () => {
           ),
         );
       }
-      if (url === "/ai-router/api/settings/failover-queue") {
-        return Promise.resolve(
-          new Response(JSON.stringify([2, 1]), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
-      }
       if (url === "/ai-router/api/settings/database/backups") {
         return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
       }
@@ -110,6 +102,10 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("tab", { name: "代理" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "数据" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "关于" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "代理" }));
+    expect(await screen.findByRole("switch", { name: "自动故障转移开关" })).toBeInTheDocument();
+    expect(screen.queryByText("自动故障转移队列")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "通用" }));
 
     fireEvent.click(screen.getByRole("switch", { name: "开机自启" }));
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
@@ -138,9 +134,6 @@ describe("SettingsPage", () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/ai-router/api/accounts") {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url === "/ai-router/api/settings/failover-queue") {
         return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
       }
       if (url === "/ai-router/api/settings/database/backups" && (!init?.method || init.method === "GET")) {
