@@ -1,11 +1,12 @@
 import { CloudDownloadOutlined, PlusOutlined } from "@ant-design/icons";
 import { App as AntApp, Button, ConfigProvider, Dropdown, Modal, Spin, Switch, message, theme as antdTheme } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { AccountsPage } from "./features/accounts/AccountsPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import { StatsPage } from "./features/stats/StatsPage";
+import { UpdateCard } from "./features/updates/UpdateCard";
 import { createDesktopUpdateService, type DesktopUpdateInfo } from "./features/updates/updateService";
 import appLogo from "./assets/aigate_1024_1024.png";
 import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus, subscribeAccountRoutingStateChanged } from "./lib/api";
@@ -15,7 +16,7 @@ import { setAPIBase } from "./lib/paths";
 import "./styles.css";
 
 const appSettingsBootstrapRetryDelays = [0, 150, 300, 600, 1_000];
-const homeUpdateCheckIntervalMs = 6 * 60 * 60 * 1_000;
+const homeUpdateCheckIntervalMs = 60 * 60 * 1_000;
 const defaultStatusRefreshIntervalSeconds = 60;
 
 type AppView = "accounts" | "stats" | "settings";
@@ -38,7 +39,9 @@ export function App() {
   const [shellReady, setShellReady] = useState(false);
   const [systemPrefersDark, setSystemPrefersDark] = useState(false);
   const [homeUpdate, setHomeUpdate] = useState<DesktopUpdateInfo | null>(null);
+  const [homeUpdateModalOpen, setHomeUpdateModalOpen] = useState(false);
   const updateService = useMemo(() => createDesktopUpdateService(), []);
+  const previousViewRef = useRef<AppView>("accounts");
   const language = normalizeLanguage(appSettings?.language);
   const t = createTranslator(language);
   const themeMode = appSettings?.theme_mode ?? "system";
@@ -73,6 +76,15 @@ export function App() {
     }
     throw lastError instanceof Error ? lastError : new Error("failed to fetch app settings");
   }
+
+  const checkForHomeUpdate = useCallback(async () => {
+    try {
+      const result = await updateService.check();
+      setHomeUpdate(result.update);
+    } catch {
+      setHomeUpdate(null);
+    }
+  }, [updateService]);
 
   useEffect(() => {
     let disposed = false;
@@ -186,31 +198,26 @@ export function App() {
       return;
     }
 
-    let disposed = false;
-
-    async function checkForHomeUpdate() {
-      try {
-        const result = await updateService.check();
-        if (!disposed) {
-          setHomeUpdate(result.update);
-        }
-      } catch {
-        if (!disposed) {
-          setHomeUpdate(null);
-        }
-      }
-    }
-
     void checkForHomeUpdate();
     const timer = window.setInterval(() => {
       void checkForHomeUpdate();
     }, homeUpdateCheckIntervalMs);
 
     return () => {
-      disposed = true;
       window.clearInterval(timer);
     };
-  }, [appSettings?.show_home_update_indicator, updateService]);
+  }, [appSettings?.show_home_update_indicator, checkForHomeUpdate]);
+
+  useEffect(() => {
+    const previousView = previousViewRef.current;
+    previousViewRef.current = view;
+    if (!appSettings?.show_home_update_indicator) {
+      return;
+    }
+    if (view === "accounts" && previousView !== "accounts") {
+      void checkForHomeUpdate();
+    }
+  }, [appSettings?.show_home_update_indicator, checkForHomeUpdate, view]);
 
   useEffect(() => {
     const translate = createTranslator(language);
@@ -368,13 +375,15 @@ export function App() {
                   {showHomeUpdateIndicator ? (
                     <Button
                       type="text"
-                      icon={<CloudDownloadOutlined />}
+                      icon={
+                        <span className="top-home-update-icon" aria-hidden="true">
+                          <CloudDownloadOutlined />
+                          <span className="top-home-update-dot" />
+                        </span>
+                      }
                       aria-label={t("打开更新")}
                       className="top-home-update-button"
-                      onClick={() => {
-                        setSettingsInitialTab("about");
-                        setView("settings");
-                      }}
+                      onClick={() => setHomeUpdateModalOpen(true)}
                     />
                   ) : null}
                   {showProxySwitch ? (
@@ -422,6 +431,21 @@ export function App() {
                   />
                 )}
               </div>
+              <Modal
+                open={homeUpdateModalOpen}
+                title={t("应用更新")}
+                footer={null}
+                onCancel={() => setHomeUpdateModalOpen(false)}
+                destroyOnHidden
+                width={720}
+              >
+                <UpdateCard
+                  currentVersion={homeUpdate?.currentVersion ?? ""}
+                  language={language}
+                  t={t}
+                  service={updateService}
+                />
+              </Modal>
             </div>
           )}
         </div>

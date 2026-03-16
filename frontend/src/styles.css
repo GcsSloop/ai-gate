@@ -222,22 +222,55 @@ body {
 .top-home-update-button {
   width: 32px;
   height: 32px;
-  border-radius: 10px;
+  min-width: 32px;
+  border-radius: 999px;
   color: #3e5be8;
-  background: rgba(62, 91, 232, 0.08);
-  border: none;
+  background: rgba(62, 91, 232, 0.02);
+  border: 1px solid rgba(62, 91, 232, 0.14);
   box-shadow: none;
   padding: 0;
 }
 
-.top-home-update-button .anticon {
-  font-size: 1.2em;
+.top-home-update-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.top-home-update-icon > .anticon {
+  font-size: 1.05em;
+}
+
+.top-home-update-dot {
+  position: absolute;
+  top: -1px;
+  right: -3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #3e5be8;
+  box-shadow: 0 0 0 2px var(--app-bg);
 }
 
 .top-home-update-button:hover,
 .top-home-update-button:focus {
   color: #2f49c8 !important;
-  background: var(--interactive-soft) !important;
+  background: rgba(62, 91, 232, 0.06) !important;
+  border-color: rgba(62, 91, 232, 0.24) !important;
+}
+
+.app-theme-shell[data-theme-mode="dark"] .top-home-update-button,
+body[data-theme-mode="dark"] .top-home-update-button,
+html[data-theme-mode="dark"] .top-home-update-button {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+.app-theme-shell[data-theme-mode="dark"] .top-home-update-dot,
+body[data-theme-mode="dark"] .top-home-update-dot,
+html[data-theme-mode="dark"] .top-home-update-dot {
+  box-shadow: 0 0 0 2px #0b1324;
 }
 
 .top-menu-right {

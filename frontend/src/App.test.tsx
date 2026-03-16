@@ -203,7 +203,73 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
-    expect(await screen.findByLabelText("打开更新")).toBeInTheDocument();
+    const updateButton = await screen.findByLabelText("打开更新");
+    expect(updateButton).toBeInTheDocument();
+    expect(updateButton.querySelector(".top-home-update-dot")).not.toBeNull();
+  });
+
+  it("checks for home updates every hour when the indicator is enabled", async () => {
+    vi.useFakeTimers();
+    mockedUpdateService.check.mockResolvedValue({ supported: true, update: null });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+                audit_limit_message: 200,
+                audit_limit_function_call: 100,
+                audit_limit_function_call_output: 100,
+                audit_limit_reasoning: 40,
+                audit_limit_custom_tool_call: 100,
+                audit_limit_custom_tool_call_output: 100,
+                language: "zh-CN",
+                theme_mode: "system",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/accounts-sync:0/)).toBeInTheDocument();
+    expect(mockedUpdateService.check).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(60 * 60 * 1_000);
+      await Promise.resolve();
+    });
+
+    expect(mockedUpdateService.check).toHaveBeenCalledTimes(2);
   });
 
   it("switches to the stats page from the top navigation", async () => {
@@ -424,7 +490,7 @@ describe("App", () => {
     expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:6789/ai-router/api/settings/proxy/status");
   });
 
-  it("opens the about tab when the home update indicator is clicked", async () => {
+  it("opens an update modal when the home update indicator is clicked", async () => {
     mockedUpdateService.check.mockResolvedValue({
       supported: true,
       update: {
@@ -483,7 +549,71 @@ describe("App", () => {
 
     fireEvent.click(await screen.findByLabelText("打开更新"));
 
-    expect(await screen.findByText("settings-page:about")).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "应用更新" })).toBeInTheDocument();
+    expect(screen.queryByText("settings-page:about")).not.toBeInTheDocument();
+  });
+
+  it("checks once more when the user switches back to the accounts page", async () => {
+    mockedUpdateService.check.mockResolvedValue({ supported: true, update: null });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                show_home_update_indicator: true,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+                audit_limit_message: 200,
+                audit_limit_function_call: 100,
+                audit_limit_function_call_output: 100,
+                audit_limit_reasoning: 40,
+                audit_limit_custom_tool_call: 100,
+                audit_limit_custom_tool_call_output: 100,
+                language: "zh-CN",
+                theme_mode: "system",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    expect(mockedUpdateService.check).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("tab", { name: "设置" }));
+    expect(await screen.findByText("settings-page:general")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "账户" }));
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(mockedUpdateService.check).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("hides the home proxy switch when app settings disable it", async () => {
