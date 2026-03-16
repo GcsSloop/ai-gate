@@ -222,6 +222,7 @@ describe("App", () => {
     expect(await screen.findByRole("tab", { name: "账户" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "统计" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "设置" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "演示" })).not.toBeInTheDocument();
     expect(screen.getByRole("tablist", { name: "主导航" })).toBeInTheDocument();
     expect(document.querySelector(".top-menu-title")).toBeNull();
 
