@@ -16,6 +16,7 @@ import (
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
@@ -77,7 +78,19 @@ func TestResponsesHandlerLogsReadableRequestAndUpstreamSummary(t *testing.T) {
 		t.Fatalf("Save(snapshot) returned error: %v", err)
 	}
 
-	handler := NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		WithResponsesSettings(settingsRepo),
+	)
 
 	var logs bytes.Buffer
 	previousWriter := log.Writer()
@@ -247,7 +260,19 @@ func TestResponsesHandlerLogsThinGatewayCandidateSkipReason(t *testing.T) {
 		t.Fatalf("Save(snapshot) returned error: %v", err)
 	}
 
-	handler := NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		WithResponsesSettings(settingsRepo),
+	)
 
 	var logs bytes.Buffer
 	previousWriter := log.Writer()
@@ -360,7 +385,19 @@ func TestResponsesHandlerLogsFailoverReasonAndTarget(t *testing.T) {
 		}
 	}
 
-	handler := NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		WithResponsesSettings(settingsRepo),
+	)
 
 	var logs bytes.Buffer
 	previousWriter := log.Writer()
