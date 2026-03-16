@@ -20,6 +20,7 @@ function formatRunStatus(status: string) {
     completed: "已完成",
     capacity_failed: "额度不足",
     rate_limited: "被限流",
+    usage_limited: "用量受限",
     hard_failed: "硬失败",
     soft_failed: "软失败",
   };

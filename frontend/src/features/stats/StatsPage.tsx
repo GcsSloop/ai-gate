@@ -44,7 +44,7 @@ function eventStatusColor(status: string): string {
   if (status === "completed") {
     return "success";
   }
-  if (status.includes("rate")) {
+  if (status.includes("rate") || status.includes("usage")) {
     return "warning";
   }
   return "default";
@@ -110,6 +110,10 @@ export function StatsPage({ language, t }: StatsPageProps) {
     });
     return Array.from(counts.entries());
   }, [events]);
+
+  const accountNameByID = useMemo(() => {
+    return new Map(accounts.map((account) => [account.id, account.account_name]));
+  }, [accounts]);
 
   const summaryCards = [
     {
@@ -251,7 +255,7 @@ export function StatsPage({ language, t }: StatsPageProps) {
                         <Tag color={eventStatusColor(event.status)}>{event.status}</Tag>
                       </div>
                       <div className="stats-event-meta">
-                        <span>#{event.account_id}</span>
+                        <span>{`${accountNameByID.get(event.account_id) ?? "账户"} · #${event.account_id}`}</span>
                         <span>{new Date(event.created_at).toLocaleString(language, { hour12: false })}</span>
                         <span>{Math.round(event.latency_ms)} ms</span>
                       </div>

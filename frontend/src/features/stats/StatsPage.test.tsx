@@ -16,7 +16,10 @@ describe("StatsPage", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(listAccounts).mockResolvedValue([{ id: 1, account_name: "Alpha" }] as never);
+    vi.mocked(listAccounts).mockResolvedValue([
+      { id: 1, account_name: "Alpha" },
+      { id: 2, account_name: "Beta" },
+    ] as never);
     vi.mocked(getDashboardSummary).mockResolvedValue({
       request_count: 12,
       success_count: 10,
@@ -67,6 +70,7 @@ describe("StatsPage", () => {
     expect(screen.getByText("状态分布")).toBeInTheDocument();
     expect(screen.getByText("最近记录")).toBeInTheDocument();
     expect(screen.getByText("gpt-5.2")).toBeInTheDocument();
+    expect(screen.getByText("Alpha · #1")).toBeInTheDocument();
 
     await waitFor(() => {
       expect(getDashboardSummary).toHaveBeenCalledWith(24, undefined, "");

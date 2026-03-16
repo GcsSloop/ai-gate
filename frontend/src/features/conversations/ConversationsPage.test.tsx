@@ -16,6 +16,7 @@ describe("ConversationsPage", () => {
         new Response(
           JSON.stringify([
             { id: 10, account_id: 1, status: "capacity_failed", stream_offset: 100 },
+            { id: 12, account_id: 1, status: "usage_limited", stream_offset: 100 },
             { id: 11, account_id: 2, status: "completed", stream_offset: 100 },
           ]),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -28,6 +29,7 @@ describe("ConversationsPage", () => {
 
     expect(await screen.findByText("client-2")).toBeInTheDocument();
     expect(await screen.findByText("额度不足")).toBeInTheDocument();
+    expect(await screen.findByText("用量受限")).toBeInTheDocument();
     expect(screen.getByText("已完成")).toBeInTheDocument();
   });
 });
