@@ -30,12 +30,19 @@ func TestLuaDriverRejectsMalformedUsageConfig(t *testing.T) {
 	t.Parallel()
 
 	driver := luadrv.NewDriver(nil, moduleRoot(t))
-	_, err := driver.Fetch(context.Background(), accounts.Account{
-		UsageDriver:     "lua",
-		UsageConfigJSON: "{invalid",
-	}, accountdrv.ResolvedCredential{})
-	if err == nil {
-		t.Fatal("Fetch returned nil error, want malformed config error")
+	tests := []string{
+		"{invalid",
+		`{"script":"internal/usagedrv/lua/testdata/vendor_x.lua","timeout_ms":{}}`,
+		`{"script":"internal/usagedrv/lua/testdata/vendor_x.lua","timeout_ms":"abc"}`,
+	}
+	for _, raw := range tests {
+		_, err := driver.Fetch(context.Background(), accounts.Account{
+			UsageDriver:     "lua",
+			UsageConfigJSON: raw,
+		}, accountdrv.ResolvedCredential{})
+		if err == nil {
+			t.Fatalf("Fetch returned nil error for config %s, want malformed config error", raw)
+		}
 	}
 }
 

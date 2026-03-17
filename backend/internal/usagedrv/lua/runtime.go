@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -327,21 +326,4 @@ func ioReadAll(body io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	return data, nil
-}
-
-func parseTimeoutMS(value any, fallback int) int {
-	switch typed := value.(type) {
-	case float64:
-		return int(typed)
-	case int:
-		return typed
-	case int64:
-		return int(typed)
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
-		if err == nil {
-			return parsed
-		}
-	}
-	return fallback
 }
