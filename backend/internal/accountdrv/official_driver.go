@@ -130,7 +130,10 @@ func (d *OfficialDriver) Resolve(ctx context.Context, account accounts.Account) 
 
 	accessToken := file.Tokens.AccessToken
 	if accessToken == "" {
-		return ResolvedCredential{}, authResolveError("resolve_access_token", fmt.Errorf("missing access_token"))
+		accessToken = file.Tokens.IDToken
+	}
+	if accessToken == "" {
+		return ResolvedCredential{}, authResolveError("resolve_access_token", fmt.Errorf("missing access_token and id_token"))
 	}
 
 	metadata := map[string]any{
