@@ -290,8 +290,9 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		}
 
 		copyResponseHeaders(w.Header(), resp.Header)
+		collector := newChatCompletionsUsageCollector(account.ID)
 		w.WriteHeader(resp.StatusCode)
-		err = copyResponseStream(w, resp.Body)
+		err = copyResponseStreamWithObserver(w, resp.Body, collector.Observe)
 		_ = resp.Body.Close()
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "read_stream", startedAt, err)
@@ -299,7 +300,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 			return
 		}
 		logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, "")
-		persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", usage.Snapshot{AccountID: account.ID}, startedAt)
+		persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", collector.snapshotOrDefault(), startedAt)
 		if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
 			h.publishAccountRoutingStateChanged()
 		}

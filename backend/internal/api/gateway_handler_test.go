@@ -646,6 +646,17 @@ func TestGatewayHandlerStreamsRawFramesWithoutRewriting(t *testing.T) {
 	if rec.Body.String() != upstreamStream {
 		t.Fatalf("stream body = %s, want exact passthrough %s", rec.Body.String(), upstreamStream)
 	}
+
+	events, err := usageRepo.ListRecentEvents(usage.EventFilter{Limit: 5})
+	if err != nil {
+		t.Fatalf("ListRecentEvents returned error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(events))
+	}
+	if events[0].InputTokens != 12 || events[0].OutputTokens != 3 || events[0].TotalTokens != 15 {
+		t.Fatalf("event tokens = in:%d out:%d total:%d, want in:12 out:3 total:15", events[0].InputTokens, events[0].OutputTokens, events[0].TotalTokens)
+	}
 }
 
 func TestGatewayHandlerStreamsFailoverBeforeFirstByte(t *testing.T) {

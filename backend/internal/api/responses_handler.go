@@ -259,8 +259,9 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.Header().Set("OpenAI-Model", req.Model)
 		if isEventStreamResponse(resp.Header) {
+			collector := newResponsesUsageCollector(account.ID)
 			w.WriteHeader(resp.StatusCode)
-			if err := copyResponseStream(w, resp.Body); err != nil {
+			if err := copyResponseStreamWithObserver(w, resp.Body, collector.Observe); err != nil {
 				runStatus = runStatusForErrorClass(classifyRunError(err))
 				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_stream", startedAt, err)
 				persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
@@ -270,7 +271,8 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 			}
 			_ = resp.Body.Close()
 			logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, "")
-			persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
+			collector.Save(h.usage)
+			persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, collector.snapshotOrDefault(), startedAt)
 			if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
 				h.publishAccountRoutingStateChanged()
 			}
@@ -483,6 +485,69 @@ func copyResponseStream(w http.ResponseWriter, body io.Reader) error {
 				return nil
 			}
 			return err
+		}
+	}
+}
+
+func copyResponseStreamWithObserver(w http.ResponseWriter, body io.Reader, observe func(map[string]any)) error {
+	flusher, _ := w.(http.Flusher)
+	reader := bufio.NewReader(body)
+	var dataLines []string
+
+	flush := func() error {
+		if len(dataLines) == 0 {
+			return nil
+		}
+		payload := strings.Join(dataLines, "\n")
+		dataLines = dataLines[:0]
+
+		if payload != "" && payload != "[DONE]" && observe != nil {
+			var frame map[string]any
+			if err := json.Unmarshal([]byte(payload), &frame); err == nil {
+				observe(frame)
+			}
+		}
+
+		if _, err := io.WriteString(w, "data: "+payload+"\n\n"); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
+	}
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		line = strings.TrimRight(line, "\r\n")
+
+		if line == "" {
+			if flushErr := flush(); flushErr != nil {
+				return flushErr
+			}
+		} else if strings.HasPrefix(line, "data:") {
+			payload := strings.TrimPrefix(line, "data:")
+			if strings.HasPrefix(payload, " ") {
+				payload = payload[1:]
+			}
+			dataLines = append(dataLines, payload)
+		} else {
+			if _, writeErr := io.WriteString(w, line+"\n"); writeErr != nil {
+				return writeErr
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+
+		if errors.Is(err, io.EOF) {
+			if flushErr := flush(); flushErr != nil {
+				return flushErr
+			}
+			return nil
 		}
 	}
 }
