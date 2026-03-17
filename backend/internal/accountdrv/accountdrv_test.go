@@ -30,11 +30,49 @@ func TestAPIKeyDriverResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
 	}
-	if resolved.Kind != "api_key" {
-		t.Fatalf("Kind = %q, want %q", resolved.Kind, "api_key")
+	if resolved.Kind != "bearer" {
+		t.Fatalf("Kind = %q, want %q", resolved.Kind, "bearer")
+	}
+	if resolved.AccessToken != "sk-test" {
+		t.Fatalf("AccessToken = %q, want %q", resolved.AccessToken, "sk-test")
 	}
 	if resolved.APIKey != "sk-test" {
 		t.Fatalf("APIKey = %q, want %q", resolved.APIKey, "sk-test")
+	}
+}
+
+func TestOfficialDriverResolveReturnsAuthErrorForExpiredTokenWithoutRefreshToken(t *testing.T) {
+	t.Parallel()
+
+	rawCredential, err := json.Marshal(map[string]any{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]any{
+			"access_token": testJWT(t, map[string]any{
+				"exp":       time.Now().UTC().Add(-1 * time.Minute).Unix(),
+				"client_id": "app-test-client",
+			}),
+			"account_id": "acct-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	driver := accountdrv.NewOfficialDriver(http.DefaultClient, nil)
+	_, err = driver.Resolve(context.Background(), accounts.Account{
+		ProviderType:  accounts.ProviderOpenAIOfficial,
+		AuthMode:      accounts.AuthModeLocalImport,
+		CredentialRef: string(rawCredential),
+	})
+	if err == nil {
+		t.Fatal("Resolve returned nil error, want error")
+	}
+	var resolveErr *accountdrv.ResolveError
+	if !errors.As(err, &resolveErr) {
+		t.Fatalf("error type = %T, want *accountdrv.ResolveError", err)
+	}
+	if resolveErr.Kind != accountdrv.ResolveErrorKindAuth {
+		t.Fatalf("error kind = %q, want %q", resolveErr.Kind, accountdrv.ResolveErrorKindAuth)
 	}
 }
 

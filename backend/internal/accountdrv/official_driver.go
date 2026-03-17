@@ -83,6 +83,9 @@ func (d *OfficialDriver) Resolve(ctx context.Context, account accounts.Account) 
 	}
 
 	now := d.now()
+	if expiresAt, ok := file.AccessTokenExpiresAt(); ok && !expiresAt.After(now.Add(d.refreshWindow)) && file.Tokens.RefreshToken == "" {
+		return ResolvedCredential{}, authResolveError("refresh_local_auth", fmt.Errorf("missing refresh token for expired access_token"))
+	}
 	if auth.NeedsLocalRefresh(file, now, d.refreshWindow) {
 		if file.Tokens.RefreshToken == "" {
 			return ResolvedCredential{}, authResolveError("refresh_local_auth", fmt.Errorf("missing refresh token"))
