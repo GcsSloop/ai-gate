@@ -34,6 +34,9 @@ type Account struct {
 	SourceIcon        string
 	AuthMode          AuthMode
 	CredentialRef     string
+	UsageDriver       string
+	UsageConfigJSON   string
+	AccountDriver     string
 	BaseURL           string
 	Status            Status
 	Priority          int
