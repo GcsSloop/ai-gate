@@ -92,4 +92,17 @@ describe("StatsPage", () => {
       expect(getDashboardRecentEvents).toHaveBeenCalledWith("24h", undefined, "", 20);
     });
   });
+
+  it("falls back to empty states when list endpoints return null", async () => {
+    vi.mocked(getDashboardTrends).mockResolvedValue(null as never);
+    vi.mocked(getDashboardModelDistribution).mockResolvedValue(null as never);
+    vi.mocked(getDashboardRecentEvents).mockResolvedValue(null as never);
+
+    render(<StatsPage language="zh-CN" t={t} />);
+
+    expect(await screen.findByText("Token 与费用统计")).toBeInTheDocument();
+    expect(screen.getByText("暂无趋势数据")).toBeInTheDocument();
+    expect(screen.getByText("暂无模型数据")).toBeInTheDocument();
+    expect(screen.getByText("暂无最近记录")).toBeInTheDocument();
+  });
 });

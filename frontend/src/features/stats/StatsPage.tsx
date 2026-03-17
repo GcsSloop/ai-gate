@@ -96,11 +96,11 @@ export function StatsPage({ language, t }: StatsPageProps) {
         if (disposed) {
           return;
         }
-        setAccounts(accountList);
+        setAccounts(Array.isArray(accountList) ? accountList : []);
         setSummary(nextSummary);
-        setTrends(nextTrends);
-        setModelDistribution(nextModelDistribution);
-        setEvents(nextEvents);
+        setTrends(Array.isArray(nextTrends) ? nextTrends : []);
+        setModelDistribution(Array.isArray(nextModelDistribution) ? nextModelDistribution : []);
+        setEvents(Array.isArray(nextEvents) ? nextEvents : []);
         hasLoadedRef.current = true;
       } catch (loadError) {
         if (!disposed) {
