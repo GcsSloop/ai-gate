@@ -137,6 +137,29 @@ function sortAccountsByPriority(items: AccountRecord[]): AccountRecord[] {
   });
 }
 
+function mergeDisplayUsage(previous: AccountRecord, next: AccountRecord): AccountRecord {
+  return {
+    ...next,
+    balance: previous.balance,
+    quota_remaining: previous.quota_remaining,
+    rpm_remaining: previous.rpm_remaining,
+    tpm_remaining: previous.tpm_remaining,
+    health_score: previous.health_score,
+    recent_error_rate: previous.recent_error_rate,
+    last_total_tokens: previous.last_total_tokens,
+    last_input_tokens: previous.last_input_tokens,
+    last_output_tokens: previous.last_output_tokens,
+    model_context_window: previous.model_context_window,
+    primary_used_percent: previous.primary_used_percent,
+    secondary_used_percent: previous.secondary_used_percent,
+    primary_resets_at: previous.primary_resets_at,
+    secondary_resets_at: previous.secondary_resets_at,
+    ppchat_today_used_quota: previous.ppchat_today_used_quota,
+    ppchat_today_added_quota: previous.ppchat_today_added_quota,
+    ppchat_today_remaining_quota: previous.ppchat_today_remaining_quota,
+  };
+}
+
 function formatResetAt(value: string | undefined, language: AppLanguage) {
   if (!value) {
     return "--";
@@ -354,7 +377,13 @@ export function AccountsPage({
   }, [detailAccount]);
 
   async function refreshAll() {
-    const accountItems = sortAccountsByPriority(await listAccounts());
+    const previousByID = new Map(accountsRef.current.map((item) => [item.id, item]));
+    const accountItems = sortAccountsByPriority(
+      (await listAccounts()).map((item) => {
+        const previous = previousByID.get(item.id);
+        return previous ? mergeDisplayUsage(previous, item) : item;
+      }),
+    );
     accountsRef.current = accountItems;
     setAccounts(accountItems);
     void refreshUsage();
