@@ -14,6 +14,7 @@ type DashboardUsageSummary interface {
 	SummarizeEvents(filter usage.EventFilter) (usage.EventSummary, error)
 	TrendEventsByHour(filter usage.EventFilter) ([]usage.TrendPoint, error)
 	ListRecentEvents(filter usage.EventFilter) ([]usage.Event, error)
+	ModelDistribution(filter usage.EventFilter) ([]usage.ModelDistributionPoint, error)
 }
 
 type DashboardHandler struct {
@@ -65,6 +66,13 @@ func (h *DashboardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, events)
+	case r.Method == http.MethodGet && r.URL.Path == "/dashboard/model-distribution":
+		distribution, err := h.usage.ModelDistribution(filter)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, distribution)
 	default:
 		http.NotFound(w, r)
 	}

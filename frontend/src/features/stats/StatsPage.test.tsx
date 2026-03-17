@@ -6,10 +6,11 @@ vi.mock("../../lib/api", () => ({
   listAccounts: vi.fn(),
   getDashboardSummary: vi.fn(),
   getDashboardTrends: vi.fn(),
+  getDashboardModelDistribution: vi.fn(),
   getDashboardRecentEvents: vi.fn(),
 }));
 
-import { getDashboardRecentEvents, getDashboardSummary, getDashboardTrends, listAccounts } from "../../lib/api";
+import { getDashboardModelDistribution, getDashboardRecentEvents, getDashboardSummary, getDashboardTrends, listAccounts } from "../../lib/api";
 
 describe("StatsPage", () => {
   const t = (value: string) => value;
@@ -59,22 +60,34 @@ describe("StatsPage", () => {
         created_at: "2026-03-15T10:05:00Z",
       },
     ] as never);
+    vi.mocked(getDashboardModelDistribution).mockResolvedValue([
+      { model: "gpt-5.2", request_count: 9 },
+      { model: "gpt-5.4", request_count: 3 },
+    ] as never);
   });
 
-  it("renders summary, trends, and recent event rows", async () => {
+  it("renders refreshed summary cards, charts, and recent event rows", async () => {
     render(<StatsPage language="zh-CN" t={t} />);
 
     expect(await screen.findByText("Token 与费用统计")).toBeInTheDocument();
     expect(screen.getByText("请求数")).toBeInTheDocument();
+    expect(screen.getByText("输入 Token")).toBeInTheDocument();
+    expect(screen.getByText("输出 Token")).toBeInTheDocument();
     expect(screen.getByText("预估费用")).toBeInTheDocument();
-    expect(screen.getByText("状态分布")).toBeInTheDocument();
+    expect(screen.getByText("余额变化")).toBeInTheDocument();
+    expect(screen.queryByText("总 Token")).not.toBeInTheDocument();
+    expect(screen.queryByText("额度变化")).not.toBeInTheDocument();
+    expect(screen.getByText("模型分布")).toBeInTheDocument();
     expect(screen.getByText("最近记录")).toBeInTheDocument();
     expect(screen.getByText("gpt-5.2")).toBeInTheDocument();
     expect(screen.getByText("Alpha · #1")).toBeInTheDocument();
+    expect(screen.getByTestId("stats-token-trend-chart")).toBeInTheDocument();
+    expect(screen.getByTestId("stats-model-distribution-chart")).toBeInTheDocument();
 
     await waitFor(() => {
       expect(getDashboardSummary).toHaveBeenCalledWith(24, undefined, "");
       expect(getDashboardTrends).toHaveBeenCalledWith(24, undefined, "");
+      expect(getDashboardModelDistribution).toHaveBeenCalledWith(24, undefined, "");
       expect(getDashboardRecentEvents).toHaveBeenCalledWith(24, undefined, "", 20);
     });
   });

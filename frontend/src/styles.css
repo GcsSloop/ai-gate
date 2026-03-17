@@ -453,25 +453,14 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   gap: 16px;
 }
 
-.stats-trend-list,
-.stats-status-list,
 .stats-events-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.stats-trend-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.stats-trend-meta,
-.stats-trend-foot,
 .stats-event-meta,
-.stats-event-metrics,
-.stats-status-row {
+.stats-event-metrics {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -480,17 +469,20 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   font-size: 12px;
 }
 
-.stats-trend-bar-shell {
-  height: 10px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.14);
-  overflow: hidden;
+.stats-chart-shell {
+  width: 100%;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(248, 251, 255, 0.72), rgba(255, 255, 255, 0.94)),
+    var(--panel-bg);
 }
 
-.stats-trend-bar {
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #3e5be8 0%, #6f86ff 100%);
+.stats-chart-shell-lg {
+  min-height: 320px;
+}
+
+.stats-chart-shell-sm {
+  min-height: 320px;
 }
 
 .stats-event-row {
@@ -517,6 +509,14 @@ html[data-theme-mode="dark"] .top-home-update-dot {
 
 .stats-event-main {
   min-width: 0;
+}
+
+.app-theme-shell[data-theme-mode="dark"] .stats-chart-shell,
+body[data-theme-mode="dark"] .stats-chart-shell,
+html[data-theme-mode="dark"] .stats-chart-shell {
+  background:
+    linear-gradient(180deg, rgba(14, 26, 48, 0.82), rgba(11, 20, 36, 0.56)),
+    var(--panel-bg);
 }
 
 .accounts-card,

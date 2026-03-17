@@ -82,6 +82,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/dashboard/summary", dashboardHandler)
 	apiMux.Handle("/dashboard/trends", dashboardHandler)
 	apiMux.Handle("/dashboard/recent-events", dashboardHandler)
+	apiMux.Handle("/dashboard/model-distribution", dashboardHandler)
 	apiMux.Handle("/dashboard/state-events", dashboardHandler)
 	apiMux.Handle("/conversations", conversationsHandler)
 	apiMux.Handle("/conversations/", conversationsHandler)
