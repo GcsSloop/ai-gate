@@ -167,10 +167,10 @@ func parseOfficialRawUsage(raw []byte) (usagedrv.RawUsageResult, bool) {
 func classifyOfficialStatusError(statusCode int, raw []byte) error {
 	body := strings.ToLower(strings.Join(strings.Fields(string(raw)), " "))
 	switch {
-	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
-		return &FetchError{Kind: FetchErrorKindAuth, Op: "usage_status", Err: fmt.Errorf("http status %d: %s", statusCode, strings.TrimSpace(string(raw)))}
 	case statusCode == http.StatusTooManyRequests || strings.Contains(body, "usage limit") || strings.Contains(body, "quota"):
 		return &FetchError{Kind: FetchErrorKindQuota, Op: "usage_status", Err: fmt.Errorf("http status %d: %s", statusCode, strings.TrimSpace(string(raw)))}
+	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
+		return &FetchError{Kind: FetchErrorKindAuth, Op: "usage_status", Err: fmt.Errorf("http status %d: %s", statusCode, strings.TrimSpace(string(raw)))}
 	default:
 		return &FetchError{Kind: FetchErrorKindUpstream, Op: "usage_status", Err: fmt.Errorf("http status %d: %s", statusCode, strings.TrimSpace(string(raw)))}
 	}

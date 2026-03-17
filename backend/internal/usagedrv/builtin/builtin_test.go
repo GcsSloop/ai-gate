@@ -3,8 +3,10 @@ package builtin_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
@@ -75,6 +77,7 @@ func TestOpenAIOfficialDriverFetchClassifiesErrors(t *testing.T) {
 		wantErrKind builtin.FetchErrorKind
 	}{
 		{name: "auth", statusCode: http.StatusUnauthorized, body: `{"error":"unauthorized"}`, wantErrKind: builtin.FetchErrorKindAuth},
+		{name: "quota-like 403", statusCode: http.StatusForbidden, body: `{"error":"usage limit reached"}`, wantErrKind: builtin.FetchErrorKindQuota},
 		{name: "quota", statusCode: http.StatusTooManyRequests, body: `{"error":"usage limit reached"}`, wantErrKind: builtin.FetchErrorKindQuota},
 		{name: "upstream", statusCode: http.StatusBadGateway, body: `{"error":"bad gateway"}`, wantErrKind: builtin.FetchErrorKindUpstream},
 	}
@@ -121,6 +124,7 @@ func TestPPChatDriverFetchParsesUsageLimits(t *testing.T) {
 	defer server.Close()
 
 	driver := builtin.NewPPChatDriver(http.DefaultClient)
+	driver.SetTokenLogsBaseURLForTest(server.URL)
 	result, err := driver.Fetch(context.Background(), accounts.Account{
 		ProviderType: accounts.ProviderOpenAICompatible,
 		BaseURL:      server.URL,
@@ -130,6 +134,34 @@ func TestPPChatDriverFetchParsesUsageLimits(t *testing.T) {
 	}
 	if result.Limits.QuotaRemaining == nil || *result.Limits.QuotaRemaining != 321.9 {
 		t.Fatalf("QuotaRemaining = %#v, want 321.9", result.Limits.QuotaRemaining)
+	}
+}
+
+func TestPPChatDriverFetchAlwaysUsesFixedTokenLogHost(t *testing.T) {
+	t.Parallel()
+
+	capturedHost := ""
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			capturedHost = req.URL.Host
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"success":true,"data":{"token_info":{"remain_quota_display":1}}}`)),
+			}, nil
+		}),
+	}
+
+	driver := builtin.NewPPChatDriver(client)
+	_, err := driver.Fetch(context.Background(), accounts.Account{
+		ProviderType: accounts.ProviderOpenAICompatible,
+		BaseURL:      "https://code.ppchat.vip/v1",
+	}, accountdrv.ResolvedCredential{AccessToken: "ppchat-token"})
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+	if capturedHost != "his.ppchat.vip" {
+		t.Fatalf("host = %q, want %q", capturedHost, "his.ppchat.vip")
 	}
 }
 
@@ -158,6 +190,7 @@ func TestPPChatDriverFetchClassifiesErrors(t *testing.T) {
 			defer server.Close()
 
 			driver := builtin.NewPPChatDriver(http.DefaultClient)
+			driver.SetTokenLogsBaseURLForTest(server.URL)
 			_, err := driver.Fetch(context.Background(), accounts.Account{
 				ProviderType: accounts.ProviderOpenAICompatible,
 				BaseURL:      server.URL,
@@ -174,4 +207,10 @@ func TestPPChatDriverFetchClassifiesErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+type roundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
