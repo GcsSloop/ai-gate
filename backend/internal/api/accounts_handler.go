@@ -896,6 +896,12 @@ func buildUpstreamErrorDetails(status string, raw []byte) string {
 
 func buildUpstreamStatusError(statusCode int, raw []byte) error {
 	body := compactErrorText(strings.TrimSpace(string(raw)), 512)
+	if providers.LooksLikeInsufficientQuotaMessage(body) {
+		if body == "" {
+			return providers.ErrInsufficientQuota
+		}
+		return fmt.Errorf("http status %d: %s: %w", statusCode, body, providers.ErrInsufficientQuota)
+	}
 	if body == "" {
 		return providers.HTTPError{StatusCode: statusCode}
 	}
@@ -909,7 +915,10 @@ func classifyThinResponseStatus(account accounts.Account, resp *http.Response, r
 		}
 		return "rate_limited"
 	}
-	return runStatusForErrorClass(classifyRunError(providers.HTTPError{StatusCode: resp.StatusCode}))
+	if providers.LooksLikeInsufficientQuotaMessage(string(raw)) {
+		return "capacity_failed"
+	}
+	return runStatusForErrorClass(classifyRunError(buildUpstreamStatusError(resp.StatusCode, raw)))
 }
 
 func looksLikeOfficialUsageLimit(account accounts.Account, raw []byte) bool {

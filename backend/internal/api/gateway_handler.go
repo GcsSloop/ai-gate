@@ -166,8 +166,14 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
-			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, providers.HTTPError{StatusCode: resp.StatusCode})
-			return providers.HTTPError{StatusCode: resp.StatusCode}
+			responseBody, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "read_response", startedAt, readErr)
+				return readErr
+			}
+			upstreamErr := buildUpstreamStatusError(resp.StatusCode, responseBody)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, upstreamErr)
+			return upstreamErr
 		}
 
 		upstreamResponse, err = io.ReadAll(resp.Body)
@@ -277,10 +283,21 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		}
 
 		if resp.StatusCode >= 400 {
+			responseBody, readErr := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, providers.HTTPError{StatusCode: resp.StatusCode})
-			err = providers.HTTPError{StatusCode: resp.StatusCode}
+			if readErr != nil {
+				logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "read_response", startedAt, readErr)
+				persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(readErr)), usage.Snapshot{AccountID: account.ID}, startedAt)
+				lastErr = readErr
+				if shouldFailoverOnGatewayStreamError(readErr) {
+					continue
+				}
+				http.Error(w, readErr.Error(), http.StatusBadGateway)
+				return
+			}
+			err = buildUpstreamStatusError(resp.StatusCode, responseBody)
 			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, err)
 			lastErr = err
 			if shouldFailoverOnGatewayStreamError(err) {
 				continue

@@ -17,7 +17,7 @@ type RunRecorder interface {
 
 func classify(err error) providers.ErrorClass {
 	switch {
-	case errors.Is(err, providers.ErrInsufficientQuota):
+	case providers.IsInsufficientQuotaError(err):
 		return providers.ErrorClassCapacity
 	default:
 		var httpErr providers.HTTPError

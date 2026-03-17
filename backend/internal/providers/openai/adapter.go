@@ -29,7 +29,7 @@ func (a *Adapter) Capabilities() providers.Capabilities {
 }
 
 func (a *Adapter) ClassifyError(err error) providers.ErrorClass {
-	if errors.Is(err, providers.ErrInsufficientQuota) {
+	if providers.IsInsufficientQuotaError(err) {
 		return providers.ErrorClassCapacity
 	}
 
