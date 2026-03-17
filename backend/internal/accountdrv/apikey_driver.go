@@ -30,7 +30,8 @@ func (d *APIKeyDriver) Resolve(_ context.Context, account accounts.Account) (Res
 		}
 	}
 	return ResolvedCredential{
-		Kind:   "api_key",
-		APIKey: account.CredentialRef,
+		Kind:        "bearer",
+		AccessToken: account.CredentialRef,
+		APIKey:      account.CredentialRef,
 	}, nil
 }
