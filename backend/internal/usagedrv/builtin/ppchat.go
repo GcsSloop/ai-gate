@@ -17,11 +17,15 @@ import (
 )
 
 type PPChatDriver struct {
-	client *http.Client
+	client           *http.Client
+	tokenLogsBaseURL string
 }
 
 func NewPPChatDriver(client *http.Client) *PPChatDriver {
-	return &PPChatDriver{client: client}
+	return &PPChatDriver{
+		client:           client,
+		tokenLogsBaseURL: "https://his.ppchat.vip",
+	}
 }
 
 func (d *PPChatDriver) Name() string {
@@ -43,11 +47,7 @@ func (d *PPChatDriver) Fetch(ctx context.Context, account accounts.Account, cred
 		return usagedrv.RawUsageResult{}, &FetchError{Kind: FetchErrorKindAuth, Op: "build_usage_request", Err: fmt.Errorf("missing ppchat token")}
 	}
 
-	baseURL := strings.TrimSpace(account.BaseURL)
-	if baseURL == "" {
-		baseURL = "https://his.ppchat.vip"
-	}
-	base, err := url.Parse(baseURL)
+	base, err := url.Parse(d.tokenLogsBaseURL)
 	if err != nil {
 		return usagedrv.RawUsageResult{}, &FetchError{Kind: FetchErrorKindUpstream, Op: "build_usage_request", Err: err}
 	}
@@ -86,6 +86,10 @@ func (d *PPChatDriver) Fetch(ctx context.Context, account accounts.Account, cred
 		return usagedrv.RawUsageResult{}, &FetchError{Kind: FetchErrorKindUpstream, Op: "parse_usage_payload", Err: fmt.Errorf("invalid ppchat usage payload")}
 	}
 	return result, nil
+}
+
+func (d *PPChatDriver) SetTokenLogsBaseURLForTest(baseURL string) {
+	d.tokenLogsBaseURL = strings.TrimSpace(baseURL)
 }
 
 func parsePPChatRawUsage(raw []byte) (usagedrv.RawUsageResult, bool) {
