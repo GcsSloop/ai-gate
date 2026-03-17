@@ -560,6 +560,131 @@ describe("AccountsPage", () => {
     expect(document.querySelector('[aria-label="official-main-7D"] .account-usage-mini-fill')).toHaveClass("is-danger");
   });
 
+  it("keeps previous usage visible while a refresh is pending", async () => {
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "codex",
+        account_name: "official-main",
+        source_icon: "openai",
+        auth_mode: "codex_local_import",
+        base_url: "",
+        status: "active",
+        is_active: true,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    let usageCallCount = 0;
+    let resolveSecondUsage: ((value: Response) => void) | null = null;
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+        usageCallCount += 1;
+        if (usageCallCount === 1) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify([
+                {
+                  account_id: 1,
+                  balance: 0,
+                  quota_remaining: 0,
+                  rpm_remaining: 0,
+                  tpm_remaining: 0,
+                  health_score: 1,
+                  recent_error_rate: 0,
+                  last_total_tokens: 0,
+                  last_input_tokens: 0,
+                  last_output_tokens: 0,
+                  model_context_window: 0,
+                  primary_used_percent: 75,
+                  secondary_used_percent: 95,
+                },
+              ]),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        return new Promise<Response>((resolve) => {
+          resolveSecondUsage = resolve;
+        });
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(
+      <ConfigProvider>
+        <AntApp>
+          <AccountsPage syncToken={0} />
+        </AntApp>
+      </ConfigProvider>,
+    );
+
+    expect(await screen.findByText("official-main")).toBeInTheDocument();
+    expect(await screen.findByText("25%")).toBeInTheDocument();
+    expect(screen.getByText("5%")).toBeInTheDocument();
+
+    rerender(
+      <ConfigProvider>
+        <AntApp>
+          <AccountsPage syncToken={1} />
+        </AntApp>
+      </ConfigProvider>,
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    expect(screen.getByText("25%")).toBeInTheDocument();
+    expect(screen.getByText("5%")).toBeInTheDocument();
+    expect(screen.queryByText("100%")).not.toBeInTheDocument();
+
+    resolveSecondUsage?.(
+      new Response(
+        JSON.stringify([
+          {
+            account_id: 1,
+            balance: 0,
+            quota_remaining: 0,
+            rpm_remaining: 0,
+            tpm_remaining: 0,
+            health_score: 1,
+            recent_error_rate: 0,
+            last_total_tokens: 0,
+            last_input_tokens: 0,
+            last_output_tokens: 0,
+            model_context_window: 0,
+            primary_used_percent: 20,
+            secondary_used_percent: 10,
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    expect(await screen.findByText("80%")).toBeInTheDocument();
+    expect(screen.getByText("90%")).toBeInTheDocument();
+  });
+
   it("renders ppchat daily remaining usage meter on the card", async () => {
     const accountList = [
       {
