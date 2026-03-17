@@ -127,10 +127,16 @@ func CapacityModelFromSnapshot(snapshot usage.Snapshot) CapacityModel {
 	if snapshot.Balance > 0 {
 		return CapacityModelBalanceOnly
 	}
-	if !snapshot.CheckedAt.IsZero() {
+	if !snapshot.CheckedAt.IsZero() &&
+		snapshot.Balance == 0 &&
+		snapshot.QuotaRemaining == 0 &&
+		snapshot.RPMRemaining == 0 &&
+		snapshot.TPMRemaining == 0 &&
+		snapshot.HealthScore == 0 {
 		// Legacy persisted snapshots with no explicit model metadata and no
 		// remaining capacity values should default to the safer quota/rate mode
-		// so exhausted rows do not become permissive after upgrade.
+		// so exhausted rows do not become permissive after upgrade. Keep this
+		// fallback narrow so other legacy snapshot families are not overclassified.
 		return CapacityModelQuotaRate
 	}
 	return CapacityModelManual
