@@ -45,7 +45,10 @@ func TestAccountsHandler(t *testing.T) {
 		"account_name":"mirror-east",
 		"auth_mode":"api_key",
 		"base_url":"https://mirror.example.test/v1",
-		"credential_ref":"cred-api-key"
+		"credential_ref":"cred-api-key",
+		"account_driver":"custom-account-driver",
+		"usage_driver":"lua",
+		"usage_config_json":"{\"script\":\"adapters/vendor.lua\"}"
 	}`)
 	createReq := httptest.NewRequest(http.MethodPost, "/accounts", createBody)
 	createReq.Header.Set("Content-Type", "application/json")
@@ -106,6 +109,15 @@ func TestAccountsHandler(t *testing.T) {
 	}
 	if listed[0]["source_icon"] != "openai" {
 		t.Fatalf("source_icon = %v, want openai", listed[0]["source_icon"])
+	}
+	if listed[0]["account_driver"] != "custom-account-driver" {
+		t.Fatalf("account_driver = %v, want custom-account-driver", listed[0]["account_driver"])
+	}
+	if listed[0]["usage_driver"] != "lua" {
+		t.Fatalf("usage_driver = %v, want lua", listed[0]["usage_driver"])
+	}
+	if listed[0]["usage_config_json"] != "{\"script\":\"adapters/vendor.lua\"}" {
+		t.Fatalf("usage_config_json = %v, want serialized config", listed[0]["usage_config_json"])
 	}
 	if listed[1]["cooldown_remaining_seconds"] == nil {
 		t.Fatal("cooldown_remaining_seconds missing from cooldown account")
@@ -182,6 +194,12 @@ func TestAccountsHandlerImportLocalCodexAuth(t *testing.T) {
 	}
 	if listed[0].BaseURL != "https://chatgpt.com/backend-api/codex" {
 		t.Fatalf("BaseURL = %q, want https://chatgpt.com/backend-api/codex", listed[0].BaseURL)
+	}
+	if listed[0].AccountDriver != "builtin_openai_official_session" {
+		t.Fatalf("AccountDriver = %q, want builtin_openai_official_session", listed[0].AccountDriver)
+	}
+	if listed[0].UsageDriver != "builtin_openai_official" {
+		t.Fatalf("UsageDriver = %q, want builtin_openai_official", listed[0].UsageDriver)
 	}
 }
 
@@ -312,6 +330,9 @@ func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 		"source_icon":"claude_code",
 		"base_url":"`+upstream.URL+`/v1",
 		"credential_ref":"sk-updated",
+		"account_driver":"builtin_api_key",
+		"usage_driver":"lua",
+		"usage_config_json":"{\"script\":\"adapters/vendor.lua\",\"timeout_ms\":5000}",
 		"status":"cooldown",
 		"priority":7,
 		"is_active":true,
@@ -346,6 +367,15 @@ func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 	if listed[0].SourceIcon != "claude_code" {
 		t.Fatalf("SourceIcon = %q, want claude_code", listed[0].SourceIcon)
 	}
+	if listed[0].AccountDriver != "builtin_api_key" {
+		t.Fatalf("AccountDriver = %q, want builtin_api_key", listed[0].AccountDriver)
+	}
+	if listed[0].UsageDriver != "lua" {
+		t.Fatalf("UsageDriver = %q, want lua", listed[0].UsageDriver)
+	}
+	if listed[0].UsageConfigJSON != "{\"script\":\"adapters/vendor.lua\",\"timeout_ms\":5000}" {
+		t.Fatalf("UsageConfigJSON = %q, want serialized config", listed[0].UsageConfigJSON)
+	}
 
 	testReq := httptest.NewRequest(http.MethodPost, "/accounts/1/test", bytes.NewBufferString(`{
 		"model":"gpt-5.2-codex",
@@ -370,6 +400,64 @@ func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 	}
 	if payload["content"] != "pong" {
 		t.Fatalf("content = %v, want pong", payload["content"])
+	}
+}
+
+func TestAccountsHandlerListAccountsDefaultsBuiltInDrivers(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAIOfficial,
+		AccountName:   "official",
+		AuthMode:      accounts.AuthModeLocalImport,
+		CredentialRef: "raw-auth",
+		BaseURL:       "https://chatgpt.com/backend-api/codex",
+		Status:        accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create official returned error: %v", err)
+	}
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat",
+		AuthMode:      accounts.AuthModeAPIKey,
+		CredentialRef: "sk-test",
+		BaseURL:       "https://code.ppchat.vip/v1",
+		Status:        accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create ppchat returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/accounts", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var listed []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if listed[0]["account_driver"] != "builtin_openai_official_session" {
+		t.Fatalf("official account_driver = %v, want builtin_openai_official_session", listed[0]["account_driver"])
+	}
+	if listed[0]["usage_driver"] != "builtin_openai_official" {
+		t.Fatalf("official usage_driver = %v, want builtin_openai_official", listed[0]["usage_driver"])
+	}
+	if listed[1]["account_driver"] != "builtin_api_key" {
+		t.Fatalf("ppchat account_driver = %v, want builtin_api_key", listed[1]["account_driver"])
+	}
+	if listed[1]["usage_driver"] != "builtin_ppchat" {
+		t.Fatalf("ppchat usage_driver = %v, want builtin_ppchat", listed[1]["usage_driver"])
 	}
 }
 

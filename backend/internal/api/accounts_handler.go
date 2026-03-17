@@ -99,6 +99,9 @@ type createAccountRequest struct {
 	AuthMode          accounts.AuthMode     `json:"auth_mode"`
 	BaseURL           string                `json:"base_url"`
 	CredentialRef     string                `json:"credential_ref"`
+	AccountDriver     string                `json:"account_driver"`
+	UsageDriver       string                `json:"usage_driver"`
+	UsageConfigJSON   string                `json:"usage_config_json"`
 	SupportsResponses *bool                 `json:"supports_responses"`
 }
 
@@ -117,6 +120,9 @@ type updateAccountRequest struct {
 	SourceIcon        string          `json:"source_icon"`
 	BaseURL           string          `json:"base_url"`
 	CredentialRef     string          `json:"credential_ref"`
+	AccountDriver     *string         `json:"account_driver"`
+	UsageDriver       *string         `json:"usage_driver"`
+	UsageConfigJSON   *string         `json:"usage_config_json"`
 	Status            accounts.Status `json:"status"`
 	Priority          *int            `json:"priority"`
 	IsActive          *bool           `json:"is_active"`
@@ -150,16 +156,21 @@ func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) 
 		supportsResponses = true
 	}
 
-	err := h.repo.Create(accounts.Account{
+	account := applyBuiltInDriverDefaults(accounts.Account{
 		ProviderType:      req.ProviderType,
 		AccountName:       req.AccountName,
 		SourceIcon:        normalizeAccountSourceIcon(req.SourceIcon),
 		AuthMode:          req.AuthMode,
 		BaseURL:           req.BaseURL,
 		CredentialRef:     req.CredentialRef,
+		AccountDriver:     strings.TrimSpace(req.AccountDriver),
+		UsageDriver:       strings.TrimSpace(req.UsageDriver),
+		UsageConfigJSON:   strings.TrimSpace(req.UsageConfigJSON),
 		Status:            accounts.StatusActive,
 		SupportsResponses: supportsResponses,
 	})
+
+	err := h.repo.Create(account)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -198,6 +209,9 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 		SecondaryUsedPercent     float64               `json:"secondary_used_percent"`
 		PrimaryResetsAt          *time.Time            `json:"primary_resets_at,omitempty"`
 		SecondaryResetsAt        *time.Time            `json:"secondary_resets_at,omitempty"`
+		AccountDriver            string                `json:"account_driver"`
+		UsageDriver              string                `json:"usage_driver"`
+		UsageConfigJSON          string                `json:"usage_config_json"`
 		Priority                 int                   `json:"priority"`
 		IsActive                 bool                  `json:"is_active"`
 		SupportsResponses        bool                  `json:"supports_responses"`
@@ -206,6 +220,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 	response := make([]responseItem, 0, len(accountList))
 	now := time.Now().UTC()
 	for _, account := range accountList {
+		account = applyBuiltInDriverDefaults(account)
 		item := responseItem{
 			ID:                   account.ID,
 			ProviderType:         account.ProviderType,
@@ -229,6 +244,9 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 			ModelContextWindow:   0,
 			PrimaryUsedPercent:   0,
 			SecondaryUsedPercent: 0,
+			AccountDriver:        account.AccountDriver,
+			UsageDriver:          account.UsageDriver,
+			UsageConfigJSON:      account.UsageConfigJSON,
 		}
 		if account.CooldownUntil != nil {
 			remaining := int64(account.CooldownUntil.Sub(now).Seconds())
@@ -369,7 +387,7 @@ func (h *AccountsHandler) importLocalAuth(w http.ResponseWriter, r *http.Request
 		accountName = "local-codex"
 	}
 
-	err = h.repo.Create(accounts.Account{
+	err = h.repo.Create(applyBuiltInDriverDefaults(accounts.Account{
 		ProviderType:      accounts.ProviderOpenAIOfficial,
 		AccountName:       accountName,
 		SourceIcon:        "openai",
@@ -378,7 +396,7 @@ func (h *AccountsHandler) importLocalAuth(w http.ResponseWriter, r *http.Request
 		BaseURL:           officialCodexBaseURL,
 		Status:            accounts.StatusActive,
 		SupportsResponses: true,
-	})
+	}))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -413,7 +431,7 @@ func (h *AccountsHandler) importCurrentAuth(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	err = h.repo.Create(accounts.Account{
+	err = h.repo.Create(applyBuiltInDriverDefaults(accounts.Account{
 		ProviderType:      accounts.ProviderOpenAIOfficial,
 		AccountName:       accountName,
 		SourceIcon:        "openai",
@@ -422,7 +440,7 @@ func (h *AccountsHandler) importCurrentAuth(w http.ResponseWriter, r *http.Reque
 		BaseURL:           officialCodexBaseURL,
 		Status:            accounts.StatusActive,
 		SupportsResponses: true,
-	})
+	}))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -462,6 +480,15 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 	if req.CredentialRef != "" {
 		current.CredentialRef = req.CredentialRef
 	}
+	if req.AccountDriver != nil {
+		current.AccountDriver = strings.TrimSpace(*req.AccountDriver)
+	}
+	if req.UsageDriver != nil {
+		current.UsageDriver = strings.TrimSpace(*req.UsageDriver)
+	}
+	if req.UsageConfigJSON != nil {
+		current.UsageConfigJSON = strings.TrimSpace(*req.UsageConfigJSON)
+	}
 	if req.Status != "" {
 		current.Status = req.Status
 	}
@@ -482,6 +509,7 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 	if req.SupportsResponses != nil {
 		current.SupportsResponses = *req.SupportsResponses
 	}
+	current = applyBuiltInDriverDefaults(current)
 
 	if err := h.repo.Update(current); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -495,6 +523,26 @@ func (h *AccountsHandler) publishAccountRoutingStateChanged() {
 	if h.stateEvents != nil {
 		h.stateEvents.Publish(AccountRoutingStateChangedTopic)
 	}
+}
+
+func applyBuiltInDriverDefaults(account accounts.Account) accounts.Account {
+	if strings.TrimSpace(account.AccountDriver) == "" {
+		switch {
+		case account.AuthMode == accounts.AuthModeAPIKey:
+			account.AccountDriver = "builtin_api_key"
+		case account.AuthMode == accounts.AuthModeLocalImport && account.ProviderType == accounts.ProviderOpenAIOfficial:
+			account.AccountDriver = "builtin_openai_official_session"
+		}
+	}
+	if strings.TrimSpace(account.UsageDriver) == "" {
+		switch {
+		case account.ProviderType == accounts.ProviderOpenAIOfficial:
+			account.UsageDriver = "builtin_openai_official"
+		case strings.Contains(strings.ToLower(strings.TrimSpace(account.BaseURL)), "ppchat.vip"):
+			account.UsageDriver = "builtin_ppchat"
+		}
+	}
+	return account
 }
 
 func (h *AccountsHandler) testAccount(w http.ResponseWriter, r *http.Request) {
