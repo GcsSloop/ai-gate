@@ -551,6 +551,15 @@ describe("App", () => {
 
     expect(await screen.findByRole("dialog", { name: "应用更新" })).toBeInTheDocument();
     expect(screen.queryByText("settings-page:about")).not.toBeInTheDocument();
+    expect(screen.getAllByText("应用更新")).toHaveLength(1);
+    expect(screen.queryByText("从 GitHub Release 检查、下载并安装最新桌面版本。")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "检查更新" })).not.toBeInTheDocument();
+    expect(screen.getByText("当前版本")).toBeInTheDocument();
+    expect(screen.getByText("1.0.0")).toBeInTheDocument();
+    expect(screen.getByText("目标版本")).toBeInTheDocument();
+    expect(screen.getByText("1.0.1")).toBeInTheDocument();
+    expect(screen.getByText("发布时间")).toBeInTheDocument();
+    expect(screen.getByText("Bug fixes")).toBeInTheDocument();
   });
 
   it("checks once more when the user switches back to the accounts page", async () => {
