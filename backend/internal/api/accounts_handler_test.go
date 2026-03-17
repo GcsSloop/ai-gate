@@ -578,6 +578,66 @@ func TestAccountsHandlerListAccountsFetchesOfficialWhamUsage(t *testing.T) {
 	}
 }
 
+func TestAccountsHandlerListAccountsKeepsOfficialSnapshotWhenAllowedWithZeroUsage(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/wham/usage" {
+			t.Fatalf("path = %q, want /backend-api/wham/usage", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"rate_limit":{
+				"allowed":true,
+				"limit_reached":false,
+				"primary_window":{"used_percent":0,"reset_at":0},
+				"secondary_window":{"used_percent":0,"reset_at":0}
+			},
+			"credits":{"has_credits":true,"unlimited":false,"balance":"0"}
+		}`)
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, usageRepo, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	if err := repo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "local-codex",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status: accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/accounts/usage", nil)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts/usage status = %d, want %d", listRec.Code, http.StatusOK)
+	}
+
+	var snapshotRows int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM account_usage_snapshots`).Scan(&snapshotRows); err != nil {
+		t.Fatalf("count snapshots returned error: %v", err)
+	}
+	if snapshotRows != 1 {
+		t.Fatalf("snapshot rows = %d, want 1", snapshotRows)
+	}
+}
+
 func TestAccountsHandlerTestLocalImportedAccount(t *testing.T) {
 	t.Parallel()
 

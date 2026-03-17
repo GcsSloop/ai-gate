@@ -54,6 +54,15 @@ func TestOpenAIOfficialDriverFetchParsesUsageLimits(t *testing.T) {
 	if result.Limits.TPMRemaining == nil || *result.Limits.TPMRemaining != 60 {
 		t.Fatalf("TPMRemaining = %#v, want 60", result.Limits.TPMRemaining)
 	}
+	if got, ok := result.Meta["allowed"].(bool); !ok || !got {
+		t.Fatalf("meta.allowed = %#v, want true", result.Meta["allowed"])
+	}
+	if got, ok := result.Meta["has_credits"].(bool); !ok || !got {
+		t.Fatalf("meta.has_credits = %#v, want true", result.Meta["has_credits"])
+	}
+	if got, ok := result.Meta["unlimited"].(bool); !ok || got {
+		t.Fatalf("meta.unlimited = %#v, want false", result.Meta["unlimited"])
+	}
 }
 
 func TestOpenAIOfficialDriverFetchClassifiesErrors(t *testing.T) {

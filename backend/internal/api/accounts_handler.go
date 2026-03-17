@@ -976,6 +976,8 @@ func snapshotFromRawUsageResult(result usagedrv.RawUsageResult) (usage.Snapshot,
 	}
 	allowed, _ := result.Meta["allowed"].(bool)
 	limitReached, _ := result.Meta["limit_reached"].(bool)
+	hasCredits, _ := result.Meta["has_credits"].(bool)
+	unlimited, _ := result.Meta["unlimited"].(bool)
 	snapshot.ThrottledRecently = limitReached || !allowed
 
 	if snapshot.Balance == 0 &&
@@ -983,7 +985,10 @@ func snapshotFromRawUsageResult(result usagedrv.RawUsageResult) (usage.Snapshot,
 		snapshot.RPMRemaining == 0 &&
 		snapshot.TPMRemaining == 0 &&
 		snapshot.PrimaryUsedPercent == 0 &&
-		snapshot.SecondaryUsedPercent == 0 {
+		snapshot.SecondaryUsedPercent == 0 &&
+		!allowed &&
+		!hasCredits &&
+		!unlimited {
 		return usage.Snapshot{}, false
 	}
 	return snapshot, true
