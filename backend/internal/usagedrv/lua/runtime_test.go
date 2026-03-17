@@ -2,7 +2,9 @@ package lua_test
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,8 +63,8 @@ func TestRuntimeExecuteRequiresFetchUsageFunction(t *testing.T) {
 	t.Parallel()
 
 	scriptPath := writeTempScript(t, `x = 1`)
-	runtime := luadrv.NewRuntime(nil, "")
-	_, err := runtime.Execute(context.Background(), scriptPath, accounts.Account{}, accountdrv.ResolvedCredential{}, map[string]any{})
+	runtime := luadrv.NewRuntime(nil, filepath.Dir(scriptPath))
+	_, err := runtime.Execute(context.Background(), filepath.Base(scriptPath), accounts.Account{}, accountdrv.ResolvedCredential{}, map[string]any{})
 	if err == nil {
 		t.Fatal("Execute returned nil error, want missing function error")
 	}
@@ -88,7 +90,8 @@ end
 	runtime := luadrv.NewRuntime(nil, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err := runtime.Execute(ctx, scriptPath, accounts.Account{}, accountdrv.ResolvedCredential{}, map[string]any{})
+	runtime = luadrv.NewRuntime(nil, filepath.Dir(scriptPath))
+	_, err := runtime.Execute(ctx, filepath.Base(scriptPath), accounts.Account{}, accountdrv.ResolvedCredential{}, map[string]any{})
 	if err == nil {
 		t.Fatal("Execute returned nil error, want timeout error")
 	}
@@ -115,6 +118,122 @@ end
 	_, err := runtime.Execute(context.Background(), scriptPath, accounts.Account{}, accountdrv.ResolvedCredential{}, map[string]any{})
 	if err == nil {
 		t.Fatal("Execute returned nil error, want forbidden global error")
+	}
+}
+
+func TestRuntimeExecuteRejectsAbsoluteScriptOutsideBaseDir(t *testing.T) {
+	t.Parallel()
+
+	scriptPath := writeTempScript(t, `
+function fetch_usage(ctx)
+  return {
+    ok = true,
+    source = "remote",
+    confidence = "high",
+    limits = {}
+  }
+end
+`)
+	runtime := luadrv.NewRuntime(nil, moduleRoot(t))
+	_, err := runtime.Execute(context.Background(), scriptPath, accounts.Account{}, accountdrv.ResolvedCredential{}, map[string]any{})
+	if err == nil {
+		t.Fatal("Execute returned nil error, want script path restriction error")
+	}
+	if !strings.Contains(err.Error(), "outside adapter root") {
+		t.Fatalf("error = %q, want outside adapter root", err.Error())
+	}
+}
+
+func TestRuntimeExecuteRejectsSymlinkScriptOutsideBaseDir(t *testing.T) {
+	t.Parallel()
+
+	outside := writeTempScript(t, `
+function fetch_usage(ctx)
+  return {
+    ok = true,
+    source = "remote",
+    confidence = "high",
+    limits = {}
+  }
+end
+`)
+	baseDir := t.TempDir()
+	linkPath := filepath.Join(baseDir, "linked.lua")
+	if err := os.Symlink(outside, linkPath); err != nil {
+		t.Fatalf("Symlink returned error: %v", err)
+	}
+
+	runtime := luadrv.NewRuntime(nil, baseDir)
+	_, err := runtime.Execute(context.Background(), "linked.lua", accounts.Account{}, accountdrv.ResolvedCredential{}, map[string]any{})
+	if err == nil {
+		t.Fatal("Execute returned nil error, want symlink restriction error")
+	}
+	if !strings.Contains(err.Error(), "outside adapter root") {
+		t.Fatalf("error = %q, want outside adapter root", err.Error())
+	}
+}
+
+func TestRuntimeExecuteRejectsCyclicResult(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv("LUA_CYCLE_HELPER") == "1" {
+		scriptPath := writeTempScript(t, `
+function fetch_usage(ctx)
+  local payload = {}
+  payload.self = payload
+  return {
+    ok = true,
+    source = "remote",
+    confidence = "high",
+    limits = {},
+    payload = payload
+  }
+end
+`)
+		runtime := luadrv.NewRuntime(nil, filepath.Dir(scriptPath))
+		_, err := runtime.Execute(context.Background(), filepath.Base(scriptPath), accounts.Account{}, accountdrv.ResolvedCredential{}, map[string]any{})
+		if err != nil {
+			fmt.Fprintln(os.Stdout, err.Error())
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stdout, "missing cycle rejection")
+		os.Exit(2)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestRuntimeExecuteRejectsCyclicResult")
+	cmd.Env = append(os.Environ(), "LUA_CYCLE_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cycle helper exited with error: %v, output=%s", err, output)
+	}
+	if !strings.Contains(string(output), "cycle") {
+		t.Fatalf("helper output = %q, want cycle error", string(output))
+	}
+}
+
+func TestRuntimeExecuteRejectsCyclicJSONEncode(t *testing.T) {
+	t.Parallel()
+
+	scriptPath := writeTempScript(t, `
+function fetch_usage(ctx)
+  local payload = {}
+  payload.self = payload
+  local _ = ctx.host.json_encode(payload)
+  return {
+    ok = true,
+    source = "remote",
+    confidence = "high",
+    limits = {}
+  }
+end
+`)
+	runtime := luadrv.NewRuntime(nil, filepath.Dir(scriptPath))
+	_, err := runtime.Execute(context.Background(), filepath.Base(scriptPath), accounts.Account{}, accountdrv.ResolvedCredential{}, map[string]any{})
+	if err == nil {
+		t.Fatal("Execute returned nil error, want json_encode cycle error")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("error = %q, want cycle error", err.Error())
 	}
 }
 

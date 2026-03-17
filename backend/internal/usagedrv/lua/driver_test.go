@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
+	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	luadrv "github.com/gcssloop/codex-router/backend/internal/usagedrv/lua"
 )
 
@@ -34,6 +34,7 @@ func TestLuaDriverRejectsMalformedUsageConfig(t *testing.T) {
 		"{invalid",
 		`{"script":"internal/usagedrv/lua/testdata/vendor_x.lua","timeout_ms":{}}`,
 		`{"script":"internal/usagedrv/lua/testdata/vendor_x.lua","timeout_ms":"abc"}`,
+		`{"script":"internal/usagedrv/lua/testdata/vendor_x.lua","timeout_ms":1.5}`,
 	}
 	for _, raw := range tests {
 		_, err := driver.Fetch(context.Background(), accounts.Account{
@@ -43,6 +44,19 @@ func TestLuaDriverRejectsMalformedUsageConfig(t *testing.T) {
 		if err == nil {
 			t.Fatalf("Fetch returned nil error for config %s, want malformed config error", raw)
 		}
+	}
+}
+
+func TestLuaDriverRejectsEscapedScriptPath(t *testing.T) {
+	t.Parallel()
+
+	driver := luadrv.NewDriver(nil, moduleRoot(t))
+	_, err := driver.Fetch(context.Background(), accounts.Account{
+		UsageDriver:     "lua",
+		UsageConfigJSON: `{"script":"../escape.lua"}`,
+	}, accountdrv.ResolvedCredential{})
+	if err == nil {
+		t.Fatal("Fetch returned nil error, want escaped script path error")
 	}
 }
 
@@ -60,10 +74,10 @@ func TestLuaDriverPassesContextToScript(t *testing.T) {
 
 	driver := luadrv.NewDriver(nil, moduleRoot(t))
 	account := accounts.Account{
-		ID:            42,
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "vendor-x",
-		UsageDriver:   "lua",
+		ID:           42,
+		ProviderType: accounts.ProviderOpenAICompatible,
+		AccountName:  "vendor-x",
+		UsageDriver:  "lua",
 		UsageConfigJSON: `{
 			"script":"internal/usagedrv/lua/testdata/vendor_x.lua",
 			"timeout_ms":2000,

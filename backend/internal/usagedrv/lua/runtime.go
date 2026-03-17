@@ -154,7 +154,7 @@ func (r *Runtime) registerHostAPI(L *golua.LState, ctx context.Context) error {
 		return 1
 	}))
 	host.RawSetString("json_encode", L.NewFunction(func(state *golua.LState) int {
-		value, err := decodeValue(state.CheckAny(1))
+		value, err := decodeValue(state.CheckAny(1), newDecodeState())
 		if err != nil {
 			state.RaiseError("json_encode convert: %v", err)
 			return 0
@@ -287,17 +287,45 @@ func (r *Runtime) resolveScriptPath(script string) (string, error) {
 	if script == "" {
 		return "", fmt.Errorf("usage config missing script path")
 	}
-	if filepath.IsAbs(script) {
-		return script, nil
+	baseDir := r.baseDir
+	if strings.TrimSpace(baseDir) == "" {
+		moduleRoot, err := findModuleRoot()
+		if err != nil {
+			return "", err
+		}
+		baseDir = moduleRoot
 	}
-	if r.baseDir != "" {
-		return filepath.Clean(filepath.Join(r.baseDir, script)), nil
-	}
-	moduleRoot, err := findModuleRoot()
+	baseDir, err := filepath.Abs(baseDir)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve adapter root: %w", err)
 	}
-	return filepath.Clean(filepath.Join(moduleRoot, script)), nil
+	baseDir, err = filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve adapter root symlinks: %w", err)
+	}
+
+	var candidate string
+	if filepath.IsAbs(script) {
+		candidate = filepath.Clean(script)
+	} else {
+		candidate = filepath.Clean(filepath.Join(baseDir, script))
+	}
+	candidate, err = filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("resolve script path: %w", err)
+	}
+	candidate, err = filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", fmt.Errorf("resolve script path symlinks: %w", err)
+	}
+	rel, err := filepath.Rel(baseDir, candidate)
+	if err != nil {
+		return "", fmt.Errorf("resolve script path: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("resolve script path: %s outside adapter root", script)
+	}
+	return candidate, nil
 }
 
 func findModuleRoot() (string, error) {

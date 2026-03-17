@@ -9,9 +9,22 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv"
 )
 
+const maxDecodeDepth = 64
+
 type ScriptFailure struct {
 	Kind    string
 	Message string
+}
+
+type decodeState struct {
+	visited map[*golua.LTable]struct{}
+	depth   int
+}
+
+func newDecodeState() *decodeState {
+	return &decodeState{
+		visited: make(map[*golua.LTable]struct{}),
+	}
 }
 
 func (e *ScriptFailure) Error() string {
@@ -219,10 +232,15 @@ func decodeOptionalMap(value golua.LValue) (map[string]any, error) {
 	if !ok {
 		return nil, fmt.Errorf("must be object table or nil")
 	}
-	return decodeTableToMap(table)
+	return decodeTableToMap(table, newDecodeState())
 }
 
-func decodeTableToMap(table *golua.LTable) (map[string]any, error) {
+func decodeTableToMap(table *golua.LTable, state *decodeState) (map[string]any, error) {
+	if err := state.enter(table); err != nil {
+		return nil, err
+	}
+	defer state.leave(table)
+
 	result := map[string]any{}
 	var decodeErr error
 	table.ForEach(func(key golua.LValue, value golua.LValue) {
@@ -234,7 +252,7 @@ func decodeTableToMap(table *golua.LTable) (map[string]any, error) {
 			decodeErr = fmt.Errorf("object key must be string")
 			return
 		}
-		decoded, err := decodeValue(value)
+		decoded, err := decodeValue(value, state)
 		if err != nil {
 			decodeErr = err
 			return
@@ -247,7 +265,7 @@ func decodeTableToMap(table *golua.LTable) (map[string]any, error) {
 	return result, nil
 }
 
-func decodeValue(value golua.LValue) (any, error) {
+func decodeValue(value golua.LValue, state *decodeState) (any, error) {
 	switch typed := value.(type) {
 	case golua.LBool:
 		return bool(typed), nil
@@ -256,7 +274,7 @@ func decodeValue(value golua.LValue) (any, error) {
 	case golua.LString:
 		return string(typed), nil
 	case *golua.LTable:
-		return decodeTableLike(typed)
+		return decodeTableLike(typed, state)
 	case *golua.LNilType:
 		return nil, nil
 	default:
@@ -264,7 +282,12 @@ func decodeValue(value golua.LValue) (any, error) {
 	}
 }
 
-func decodeTableLike(table *golua.LTable) (any, error) {
+func decodeTableLike(table *golua.LTable, state *decodeState) (any, error) {
+	if err := state.enter(table); err != nil {
+		return nil, err
+	}
+	defer state.leave(table)
+
 	maxIndex := 0
 	hasNonArrayKey := false
 	table.ForEach(func(key golua.LValue, _ golua.LValue) {
@@ -286,16 +309,62 @@ func decodeTableLike(table *golua.LTable) (any, error) {
 		}
 	})
 	if hasNonArrayKey {
-		return decodeTableToMap(table)
+		result := map[string]any{}
+		var decodeErr error
+		table.ForEach(func(key golua.LValue, value golua.LValue) {
+			if decodeErr != nil {
+				return
+			}
+			keyString, ok := key.(golua.LString)
+			if !ok {
+				decodeErr = fmt.Errorf("object key must be string")
+				return
+			}
+			decoded, err := decodeValue(value, state)
+			if err != nil {
+				decodeErr = err
+				return
+			}
+			result[string(keyString)] = decoded
+		})
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		return result, nil
 	}
 	items := make([]any, 0, maxIndex)
 	for i := 1; i <= maxIndex; i++ {
 		value := table.RawGetInt(i)
-		decoded, err := decodeValue(value)
+		decoded, err := decodeValue(value, state)
 		if err != nil {
 			return nil, err
 		}
 		items = append(items, decoded)
 	}
 	return items, nil
+}
+
+func (s *decodeState) enter(table *golua.LTable) error {
+	if table == nil {
+		return nil
+	}
+	if _, ok := s.visited[table]; ok {
+		return fmt.Errorf("cycle detected in table value")
+	}
+	if s.depth >= maxDecodeDepth {
+		return fmt.Errorf("table value exceeds max depth %d", maxDecodeDepth)
+	}
+	s.visited[table] = struct{}{}
+	s.depth++
+	return nil
+}
+
+func (s *decodeState) leave(table *golua.LTable) {
+	if table == nil {
+		return
+	}
+	delete(s.visited, table)
+	if s.depth > 0 {
+		s.depth--
+	}
 }
