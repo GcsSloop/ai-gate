@@ -61,12 +61,6 @@ func NewDashboardHandler(usageRepo DashboardUsageSummary, opts ...DashboardHandl
 func (h *DashboardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	filter := dashboardEventFilter(r)
 	filter.CostCalculator = h.costCalculator()
-	if compactor, ok := h.usage.(interface{ CompactEvents(time.Time) error }); ok {
-		if err := compactor.CompactEvents(timeNow().UTC()); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/dashboard/state-events":
 		h.serveStateEvents(w, r)

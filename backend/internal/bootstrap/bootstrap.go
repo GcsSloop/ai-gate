@@ -143,6 +143,9 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		settingsRepo,
 		settings.NewDBBackupManager(store.DB(), cfg.DatabasePath),
 	)
+	compactionJob := scheduler.NewUsageCompactionJob(func(_ context.Context, now time.Time) error {
+		return usageRepo.CompactEvents(now.UTC())
+	})
 	app.background.Add(1)
 	go func() {
 		defer app.background.Done()
@@ -154,6 +157,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 				return
 			case now := <-ticker.C:
 				_ = recoveryJob.Run(appCtx, now.UTC())
+				_ = compactionJob.Run(appCtx, now.UTC())
 				_ = backupJob.Run(appCtx, now.UTC())
 			}
 		}
