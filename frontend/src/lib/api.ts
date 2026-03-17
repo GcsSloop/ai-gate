@@ -8,6 +8,9 @@ export type AccountRecord = {
   source_icon?: "openai" | "claude_code" | "ppchat";
   auth_mode: string;
   base_url: string;
+  account_driver: string;
+  usage_driver: string;
+  usage_config_json: string;
   status: string;
   priority: number;
   is_active: boolean;
@@ -60,6 +63,9 @@ export type CreateAccountPayload = {
   auth_mode: string;
   base_url: string;
   credential_ref: string;
+  account_driver?: string;
+  usage_driver?: string;
+  usage_config_json?: string;
   supports_responses?: boolean;
 };
 
