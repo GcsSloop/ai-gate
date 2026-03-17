@@ -2,23 +2,32 @@ package settings
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
+type PricingRule struct {
+	InputPerMillion  float64 `json:"input_per_million"`
+	OutputPerMillion float64 `json:"output_per_million"`
+}
+
 type AppSettings struct {
-	LaunchAtLogin                bool   `json:"launch_at_login"`
-	SilentStart                  bool   `json:"silent_start"`
-	CloseToTray                  bool   `json:"close_to_tray"`
-	ShowProxySwitchOnHome        bool   `json:"show_proxy_switch_on_home"`
-	ShowHomeUpdateIndicator      bool   `json:"show_home_update_indicator"`
-	StatusRefreshIntervalSeconds int    `json:"status_refresh_interval_seconds"`
-	ProxyHost                    string `json:"proxy_host"`
-	ProxyPort                    int    `json:"proxy_port"`
-	AutoFailoverEnabled          bool   `json:"auto_failover_enabled"`
-	AutoBackupIntervalHours      int    `json:"auto_backup_interval_hours"`
-	BackupRetentionCount         int    `json:"backup_retention_count"`
-	Language                     string `json:"language"`
-	ThemeMode                    string `json:"theme_mode"`
+	LaunchAtLogin                bool                   `json:"launch_at_login"`
+	SilentStart                  bool                   `json:"silent_start"`
+	CloseToTray                  bool                   `json:"close_to_tray"`
+	ShowProxySwitchOnHome        bool                   `json:"show_proxy_switch_on_home"`
+	ShowHomeUpdateIndicator      bool                   `json:"show_home_update_indicator"`
+	StatusRefreshIntervalSeconds int                    `json:"status_refresh_interval_seconds"`
+	ProxyHost                    string                 `json:"proxy_host"`
+	ProxyPort                    int                    `json:"proxy_port"`
+	AutoFailoverEnabled          bool                   `json:"auto_failover_enabled"`
+	AutoBackupIntervalHours      int                    `json:"auto_backup_interval_hours"`
+	BackupRetentionCount         int                    `json:"backup_retention_count"`
+	Language                     string                 `json:"language"`
+	ThemeMode                    string                 `json:"theme_mode"`
+	ProviderPricing              map[string]PricingRule `json:"provider_pricing"`
+	AccountPricing               map[string]PricingRule `json:"account_pricing"`
 }
 
 type ReadRepository interface {
@@ -59,7 +68,7 @@ func DefaultAppSettings() AppSettings {
 func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	row := r.db.QueryRow(
 		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
-		        language, theme_mode
+		        language, theme_mode, provider_pricing, account_pricing
 		 FROM app_settings WHERE id = 1`,
 	)
 
@@ -76,6 +85,8 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	var backupRetentionCount int
 	var language string
 	var themeMode string
+	var providerPricingJSON string
+	var accountPricingJSON string
 
 	if err := row.Scan(
 		&launchAtLogin,
@@ -91,11 +102,22 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		&backupRetentionCount,
 		&language,
 		&themeMode,
+		&providerPricingJSON,
+		&accountPricingJSON,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return DefaultAppSettings(), nil
 		}
 		return AppSettings{}, fmt.Errorf("select app settings: %w", err)
+	}
+
+	providerPricing, err := decodePricingMap(providerPricingJSON)
+	if err != nil {
+		return AppSettings{}, fmt.Errorf("decode provider pricing: %w", err)
+	}
+	accountPricing, err := decodePricingMap(accountPricingJSON)
+	if err != nil {
+		return AppSettings{}, fmt.Errorf("decode account pricing: %w", err)
 	}
 
 	return sanitize(AppSettings{
@@ -112,16 +134,26 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		BackupRetentionCount:         backupRetentionCount,
 		Language:                     language,
 		ThemeMode:                    themeMode,
+		ProviderPricing:              providerPricing,
+		AccountPricing:               accountPricing,
 	}), nil
 }
 
 func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 	value = sanitize(value)
-	_, err := r.db.Exec(
+	providerPricingJSON, err := encodePricingMap(value.ProviderPricing)
+	if err != nil {
+		return fmt.Errorf("encode provider pricing: %w", err)
+	}
+	accountPricingJSON, err := encodePricingMap(value.AccountPricing)
+	if err != nil {
+		return fmt.Errorf("encode account pricing: %w", err)
+	}
+	_, err = r.db.Exec(
 		`INSERT INTO app_settings (
 			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
-			language, theme_mode, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			language, theme_mode, provider_pricing, account_pricing, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			launch_at_login = excluded.launch_at_login,
 			silent_start = excluded.silent_start,
@@ -136,6 +168,8 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 			backup_retention_count = excluded.backup_retention_count,
 			language = excluded.language,
 			theme_mode = excluded.theme_mode,
+			provider_pricing = excluded.provider_pricing,
+			account_pricing = excluded.account_pricing,
 			updated_at = CURRENT_TIMESTAMP`,
 		1,
 		boolToInt(value.LaunchAtLogin),
@@ -151,6 +185,8 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 		value.BackupRetentionCount,
 		value.Language,
 		value.ThemeMode,
+		providerPricingJSON,
+		accountPricingJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert app settings: %w", err)
@@ -237,7 +273,67 @@ func sanitize(value AppSettings) AppSettings {
 	if value.ThemeMode != "light" && value.ThemeMode != "dark" {
 		value.ThemeMode = defaults.ThemeMode
 	}
+	value.ProviderPricing = sanitizePricingMap(value.ProviderPricing)
+	value.AccountPricing = sanitizePricingMap(value.AccountPricing)
 	return value
+}
+
+func sanitizePricingMap(input map[string]PricingRule) map[string]PricingRule {
+	if len(input) == 0 {
+		return map[string]PricingRule{}
+	}
+	output := make(map[string]PricingRule, len(input))
+	for key, rule := range input {
+		if key == "" {
+			continue
+		}
+		if rule.InputPerMillion < 0 || rule.OutputPerMillion < 0 {
+			continue
+		}
+		output[key] = rule
+	}
+	if len(output) == 0 {
+		return map[string]PricingRule{}
+	}
+	return output
+}
+
+func encodePricingMap(input map[string]PricingRule) (string, error) {
+	if len(input) == 0 {
+		return "{}", nil
+	}
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
+func decodePricingMap(raw string) (map[string]PricingRule, error) {
+	if raw == "" {
+		return map[string]PricingRule{}, nil
+	}
+	decoded := make(map[string]PricingRule)
+	if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+		return sanitizePricingMap(decoded), nil
+	}
+
+	legacy := make(map[string]map[string]float64)
+	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+		return nil, err
+	}
+	converted := make(map[string]PricingRule, len(legacy))
+	for key, item := range legacy {
+		converted[key] = PricingRule{
+			InputPerMillion:  item["input_per_million"],
+			OutputPerMillion: item["output_per_million"],
+		}
+	}
+	return sanitizePricingMap(converted), nil
+}
+
+func AccountPricingKey(accountID int64) string {
+	return strconv.FormatInt(accountID, 10)
 }
 
 func boolToInt(value bool) int {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
 
@@ -158,4 +159,14 @@ func estimateModelCostUSD(model string, inputTokens float64, outputTokens float6
 		}
 	}
 	return (inputTokens/1_000_000)*rate.inputPerMillion + (outputTokens/1_000_000)*rate.outputPerMillion
+}
+
+func estimateUsageCostUSD(app settings.AppSettings, accountID int64, providerType string, model string, inputTokens int64, outputTokens int64) float64 {
+	if rule, ok := app.AccountPricing[settings.AccountPricingKey(accountID)]; ok {
+		return (float64(inputTokens)/1_000_000)*rule.InputPerMillion + (float64(outputTokens)/1_000_000)*rule.OutputPerMillion
+	}
+	if rule, ok := app.ProviderPricing[providerType]; ok {
+		return (float64(inputTokens)/1_000_000)*rule.InputPerMillion + (float64(outputTokens)/1_000_000)*rule.OutputPerMillion
+	}
+	return estimateModelCostUSD(model, float64(inputTokens), float64(outputTokens))
 }

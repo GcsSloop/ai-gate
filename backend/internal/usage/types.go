@@ -44,11 +44,14 @@ type Event struct {
 }
 
 type EventFilter struct {
-	From      *time.Time
-	To        *time.Time
-	AccountID *int64
-	Model     string
-	Limit     int
+	From           *time.Time
+	To             *time.Time
+	AccountID      *int64
+	Model          string
+	Limit          int
+	BucketSize     time.Duration
+	IncludeZeroes  bool
+	CostCalculator func(accountID int64, providerType string, model string, inputTokens int64, outputTokens int64) float64
 }
 
 type EventSummary struct {
@@ -77,4 +80,21 @@ type TrendPoint struct {
 type ModelDistributionPoint struct {
 	Model        string `json:"model"`
 	RequestCount int64  `json:"request_count"`
+}
+
+type RollupPoint struct {
+	BucketStart   time.Time `json:"bucket_start"`
+	AccountID     int64     `json:"account_id"`
+	ProviderType  string    `json:"provider_type"`
+	RequestKind   string    `json:"request_kind"`
+	Model         string    `json:"model"`
+	RequestCount  int64     `json:"request_count"`
+	SuccessCount  int64     `json:"success_count"`
+	FailureCount  int64     `json:"failure_count"`
+	InputTokens   int64     `json:"input_tokens"`
+	OutputTokens  int64     `json:"output_tokens"`
+	TotalTokens   int64     `json:"total_tokens"`
+	EstimatedCost float64   `json:"estimated_cost"`
+	BalanceDelta  float64   `json:"balance_delta"`
+	QuotaDelta    float64   `json:"quota_delta"`
 }

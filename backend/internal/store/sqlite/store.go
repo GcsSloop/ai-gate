@@ -99,6 +99,8 @@ func (s *Store) migrate() error {
 		{table: "app_settings", name: "audit_limit_custom_tool_call_output", definition: "INTEGER NOT NULL DEFAULT 100"},
 		{table: "app_settings", name: "language", definition: "TEXT NOT NULL DEFAULT 'zh-CN'"},
 		{table: "app_settings", name: "theme_mode", definition: "TEXT NOT NULL DEFAULT 'system'"},
+		{table: "app_settings", name: "provider_pricing", definition: "TEXT NOT NULL DEFAULT '{}'"},
+		{table: "app_settings", name: "account_pricing", definition: "TEXT NOT NULL DEFAULT '{}'"},
 		{table: "runs", name: "model", definition: "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := s.addColumnIfMissing(column.table, column.name, column.definition); err != nil {
