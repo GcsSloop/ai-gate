@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
+	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv"
 )
 
@@ -101,20 +102,23 @@ func parseDriverConfig(raw string) (DriverConfig, error) {
 func parseTimeoutMSStrict(value any) (int, error) {
 	switch typed := value.(type) {
 	case float64:
+		if math.Trunc(typed) != typed {
+			return 0, fmt.Errorf("lua usage config timeout_ms must be positive integer")
+		}
 		timeout := int(typed)
 		if timeout <= 0 {
-			return 0, fmt.Errorf("lua usage config timeout_ms must be positive")
+			return 0, fmt.Errorf("lua usage config timeout_ms must be positive integer")
 		}
 		return timeout, nil
 	case int:
 		if typed <= 0 {
-			return 0, fmt.Errorf("lua usage config timeout_ms must be positive")
+			return 0, fmt.Errorf("lua usage config timeout_ms must be positive integer")
 		}
 		return typed, nil
 	case int64:
 		timeout := int(typed)
 		if timeout <= 0 {
-			return 0, fmt.Errorf("lua usage config timeout_ms must be positive")
+			return 0, fmt.Errorf("lua usage config timeout_ms must be positive integer")
 		}
 		return timeout, nil
 	case string:
