@@ -5,6 +5,11 @@ import "time"
 type Snapshot struct {
 	ID                   int64      `json:"id"`
 	AccountID            int64      `json:"account_id"`
+	Source               string     `json:"source"`
+	Confidence           string     `json:"confidence"`
+	ProviderSnapshotJSON string     `json:"provider_snapshot_json"`
+	Stale                bool       `json:"stale"`
+	LastError            string     `json:"last_error"`
 	Balance              float64    `json:"balance"`
 	QuotaRemaining       float64    `json:"quota_remaining"`
 	RPMRemaining         float64    `json:"rpm_remaining"`

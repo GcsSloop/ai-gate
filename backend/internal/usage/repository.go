@@ -30,12 +30,18 @@ func NewSQLiteRepository(db *sql.DB) *SQLiteRepository {
 func (r *SQLiteRepository) Save(snapshot Snapshot) error {
 	_, err := r.db.Exec(
 		`INSERT INTO account_usage_snapshots (
-			account_id, balance, quota_remaining, rpm_remaining, tpm_remaining, health_score,
+			account_id, source, confidence, provider_snapshot_json, stale, last_error,
+			balance, quota_remaining, rpm_remaining, tpm_remaining, health_score,
 			recent_error_rate, avg_latency_ms, throttled_recently, last_total_tokens, last_input_tokens,
 			last_output_tokens, model_context_window, primary_used_percent, secondary_used_percent,
 			primary_resets_at, secondary_resets_at, checked_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		snapshot.AccountID,
+		snapshot.Source,
+		snapshot.Confidence,
+		snapshot.ProviderSnapshotJSON,
+		snapshot.Stale,
+		snapshot.LastError,
 		snapshot.Balance,
 		snapshot.QuotaRemaining,
 		snapshot.RPMRemaining,
@@ -64,7 +70,8 @@ func (r *SQLiteRepository) GetLatest(accountID int64) (Snapshot, error) {
 	var snapshot Snapshot
 
 	err := r.db.QueryRow(
-		`SELECT id, account_id, balance, quota_remaining, rpm_remaining, tpm_remaining, health_score,
+		`SELECT id, account_id, source, confidence, provider_snapshot_json, stale, last_error,
+			balance, quota_remaining, rpm_remaining, tpm_remaining, health_score,
 			recent_error_rate, avg_latency_ms, throttled_recently, last_total_tokens, last_input_tokens,
 			last_output_tokens, model_context_window, primary_used_percent, secondary_used_percent,
 			primary_resets_at, secondary_resets_at, checked_at
@@ -76,6 +83,11 @@ func (r *SQLiteRepository) GetLatest(accountID int64) (Snapshot, error) {
 	).Scan(
 		&snapshot.ID,
 		&snapshot.AccountID,
+		&snapshot.Source,
+		&snapshot.Confidence,
+		&snapshot.ProviderSnapshotJSON,
+		&snapshot.Stale,
+		&snapshot.LastError,
 		&snapshot.Balance,
 		&snapshot.QuotaRemaining,
 		&snapshot.RPMRemaining,
@@ -103,7 +115,8 @@ func (r *SQLiteRepository) GetLatest(accountID int64) (Snapshot, error) {
 
 func (r *SQLiteRepository) ListLatest() ([]Snapshot, error) {
 	rows, err := r.db.Query(
-		`SELECT s.id, s.account_id, s.balance, s.quota_remaining, s.rpm_remaining, s.tpm_remaining, s.health_score,
+		`SELECT s.id, s.account_id, s.source, s.confidence, s.provider_snapshot_json, s.stale, s.last_error,
+			s.balance, s.quota_remaining, s.rpm_remaining, s.tpm_remaining, s.health_score,
 			s.recent_error_rate, s.avg_latency_ms, s.throttled_recently, s.last_total_tokens, s.last_input_tokens,
 			s.last_output_tokens, s.model_context_window, s.primary_used_percent, s.secondary_used_percent,
 			s.primary_resets_at, s.secondary_resets_at, s.checked_at
@@ -126,6 +139,11 @@ func (r *SQLiteRepository) ListLatest() ([]Snapshot, error) {
 		if err := rows.Scan(
 			&snapshot.ID,
 			&snapshot.AccountID,
+			&snapshot.Source,
+			&snapshot.Confidence,
+			&snapshot.ProviderSnapshotJSON,
+			&snapshot.Stale,
+			&snapshot.LastError,
 			&snapshot.Balance,
 			&snapshot.QuotaRemaining,
 			&snapshot.RPMRemaining,

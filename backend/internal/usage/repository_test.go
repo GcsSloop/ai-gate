@@ -25,6 +25,11 @@ func TestSQLiteRepositorySaveAndGetLatest(t *testing.T) {
 
 	err = repo.Save(usage.Snapshot{
 		AccountID:            7,
+		Source:               "remote",
+		Confidence:           "high",
+		ProviderSnapshotJSON: `{"vendor":"official"}`,
+		Stale:                true,
+		LastError:            "temporary upstream timeout",
 		Balance:              19.25,
 		QuotaRemaining:       120000,
 		RPMRemaining:         100,
@@ -51,6 +56,21 @@ func TestSQLiteRepositorySaveAndGetLatest(t *testing.T) {
 
 	if got.Balance != 19.25 {
 		t.Fatalf("Balance = %v, want %v", got.Balance, 19.25)
+	}
+	if got.Source != "remote" {
+		t.Fatalf("Source = %q, want %q", got.Source, "remote")
+	}
+	if got.Confidence != "high" {
+		t.Fatalf("Confidence = %q, want %q", got.Confidence, "high")
+	}
+	if got.ProviderSnapshotJSON != `{"vendor":"official"}` {
+		t.Fatalf("ProviderSnapshotJSON = %q, want %q", got.ProviderSnapshotJSON, `{"vendor":"official"}`)
+	}
+	if !got.Stale {
+		t.Fatal("Stale = false, want true")
+	}
+	if got.LastError != "temporary upstream timeout" {
+		t.Fatalf("LastError = %q, want %q", got.LastError, "temporary upstream timeout")
 	}
 	if got.QuotaRemaining != 120000 {
 		t.Fatalf("QuotaRemaining = %v, want %v", got.QuotaRemaining, 120000)
@@ -99,6 +119,8 @@ func TestSQLiteRepositoryListLatest(t *testing.T) {
 
 	if err := repo.Save(usage.Snapshot{
 		AccountID:      1,
+		Source:         "remote",
+		Confidence:     "medium",
 		Balance:        10,
 		QuotaRemaining: 500,
 		CheckedAt:      time.Date(2026, 3, 7, 10, 0, 0, 0, time.UTC),
@@ -107,6 +129,10 @@ func TestSQLiteRepositoryListLatest(t *testing.T) {
 	}
 	if err := repo.Save(usage.Snapshot{
 		AccountID:      1,
+		Source:         "mixed",
+		Confidence:     "low",
+		LastError:      "quota endpoint unavailable",
+		Stale:          true,
 		Balance:        8,
 		QuotaRemaining: 300,
 		CheckedAt:      time.Date(2026, 3, 7, 11, 0, 0, 0, time.UTC),
@@ -115,6 +141,8 @@ func TestSQLiteRepositoryListLatest(t *testing.T) {
 	}
 	if err := repo.Save(usage.Snapshot{
 		AccountID:      2,
+		Source:         "inferred",
+		Confidence:     "low",
 		Balance:        5,
 		QuotaRemaining: 200,
 		CheckedAt:      time.Date(2026, 3, 7, 9, 0, 0, 0, time.UTC),
@@ -131,6 +159,21 @@ func TestSQLiteRepositoryListLatest(t *testing.T) {
 	}
 	if got[0].AccountID != 1 || got[0].Balance != 8 {
 		t.Fatalf("first latest snapshot = %+v, want latest account 1 snapshot", got[0])
+	}
+	if got[0].Source != "mixed" || got[0].Confidence != "low" {
+		t.Fatalf("first latest metadata = source=%q confidence=%q, want mixed/low", got[0].Source, got[0].Confidence)
+	}
+	if !got[0].Stale || got[0].LastError != "quota endpoint unavailable" {
+		t.Fatalf("first latest stale metadata = stale=%t last_error=%q", got[0].Stale, got[0].LastError)
+	}
+	if got[1].Source != "inferred" || got[1].Confidence != "low" {
+		t.Fatalf("second latest metadata = source=%q confidence=%q, want inferred/low", got[1].Source, got[1].Confidence)
+	}
+	if got[1].Stale {
+		t.Fatal("second latest Stale = true, want false")
+	}
+	if got[1].LastError != "" {
+		t.Fatalf("second latest LastError = %q, want empty", got[1].LastError)
 	}
 }
 
