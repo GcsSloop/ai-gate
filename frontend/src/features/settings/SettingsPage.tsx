@@ -23,12 +23,14 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 
 import {
+  type AccountRecord,
   type AppSettings,
   type DatabaseBackupItem,
   createDatabaseBackup,
   deleteDatabaseBackup,
   exportDatabaseSQL,
   getAppSettings,
+  listAccounts,
   importDatabaseSQL,
   listDatabaseBackups,
   restoreDatabaseBackup,
@@ -157,6 +159,7 @@ export function SettingsPage({
   const [messageApi, contextHolder] = message.useMessage();
   const [draftSettings, setDraftSettings] = useState<AppSettings>(initialSettings);
   const [dbBackups, setDbBackups] = useState<DatabaseBackupItem[]>([]);
+  const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [metadata, setMetadata] = useState<AppMetadata>({
     name: "AI Gate",
     version: "0.1.0",
@@ -175,7 +178,11 @@ export function SettingsPage({
   const [activeTab, setActiveTab] = useState<SettingsTabKey>(initialTab);
 
   useEffect(() => {
-    setDraftSettings(initialSettings);
+    setDraftSettings({
+      ...initialSettings,
+      provider_pricing: initialSettings.provider_pricing ?? {},
+      account_pricing: initialSettings.account_pricing ?? {},
+    });
   }, [initialSettings]);
 
   useEffect(() => {
@@ -185,11 +192,12 @@ export function SettingsPage({
   useEffect(() => {
     async function loadSettingsPageData() {
       try {
-        const [backups, about] = await Promise.all([listDatabaseBackups(), getAppMetadata()]);
+        const [backups, about, accountList] = await Promise.all([listDatabaseBackups(), getAppMetadata(), listAccounts()]);
         const logs = await getRecentDesktopLogs(50);
         setDbBackups(backups);
         setMetadata(about);
         setRecentDesktopLogs(logs);
+        setAccounts(accountList);
       } catch (error) {
         void messageApi.error(error instanceof Error ? t(error.message) : t("加载设置数据失败"));
       }
@@ -223,6 +231,35 @@ export function SettingsPage({
     setDraftSettings((current) => ({
       ...current,
       ...patch,
+    }));
+  }
+
+  function updateProviderPricing(providerType: string, field: "input_per_million" | "output_per_million", value: number | null) {
+    setDraftSettings((current) => ({
+      ...current,
+      provider_pricing: {
+        ...(current.provider_pricing ?? {}),
+        [providerType]: {
+          input_per_million: current.provider_pricing?.[providerType]?.input_per_million ?? 0,
+          output_per_million: current.provider_pricing?.[providerType]?.output_per_million ?? 0,
+          [field]: Number(value) || 0,
+        },
+      },
+    }));
+  }
+
+  function updateAccountPricing(accountID: number, field: "input_per_million" | "output_per_million", value: number | null) {
+    const key = String(accountID);
+    setDraftSettings((current) => ({
+      ...current,
+      account_pricing: {
+        ...(current.account_pricing ?? {}),
+        [key]: {
+          input_per_million: current.account_pricing?.[key]?.input_per_million ?? 0,
+          output_per_million: current.account_pricing?.[key]?.output_per_million ?? 0,
+          [field]: Number(value) || 0,
+        },
+      },
     }));
   }
 
@@ -579,6 +616,72 @@ export function SettingsPage({
                   className="settings-number"
                 />
               </label>
+            </div>
+          </Card>
+
+          <Card className="settings-card" variant="borderless">
+            <SectionHeader icon={<ControlOutlined />} title={t("费用统计")} description={t("设置来源级与账户级费率，账户级优先覆盖来源级。")} />
+            <div className="settings-stack">
+              <div className="settings-subsection-title">{t("来源费率")}</div>
+              {Array.from(new Set(accounts.map((account) => account.provider_type))).sort().map((providerType) => (
+                <div key={providerType} className="settings-pricing-row">
+                  <div className="settings-pricing-name">{providerType}</div>
+                  <label className="settings-pricing-input">
+                    <span className="settings-pricing-prefix">In</span>
+                    <InputNumber
+                      aria-label={`${providerType} input pricing`}
+                      min={0}
+                      step={0.1}
+                      value={draftSettings.provider_pricing?.[providerType]?.input_per_million ?? 0}
+                      onChange={(value) => updateProviderPricing(providerType, "input_per_million", value)}
+                      className="settings-number"
+                    />
+                    <span className="settings-pricing-suffix">/1M</span>
+                  </label>
+                  <label className="settings-pricing-input">
+                    <span className="settings-pricing-prefix">Out</span>
+                    <InputNumber
+                      aria-label={`${providerType} output pricing`}
+                      min={0}
+                      step={0.1}
+                      value={draftSettings.provider_pricing?.[providerType]?.output_per_million ?? 0}
+                      onChange={(value) => updateProviderPricing(providerType, "output_per_million", value)}
+                      className="settings-number"
+                    />
+                    <span className="settings-pricing-suffix">/1M</span>
+                  </label>
+                </div>
+              ))}
+              <div className="settings-subsection-title">{t("账户费率覆盖")}</div>
+              {accounts.map((account) => (
+                <div key={account.id} className="settings-pricing-row">
+                  <div className="settings-pricing-name">{account.account_name}</div>
+                  <label className="settings-pricing-input">
+                    <span className="settings-pricing-prefix">In</span>
+                    <InputNumber
+                      aria-label={`${account.account_name} input pricing`}
+                      min={0}
+                      step={0.1}
+                      value={draftSettings.account_pricing?.[String(account.id)]?.input_per_million ?? 0}
+                      onChange={(value) => updateAccountPricing(account.id, "input_per_million", value)}
+                      className="settings-number"
+                    />
+                    <span className="settings-pricing-suffix">/1M</span>
+                  </label>
+                  <label className="settings-pricing-input">
+                    <span className="settings-pricing-prefix">Out</span>
+                    <InputNumber
+                      aria-label={`${account.account_name} output pricing`}
+                      min={0}
+                      step={0.1}
+                      value={draftSettings.account_pricing?.[String(account.id)]?.output_per_million ?? 0}
+                      onChange={(value) => updateAccountPricing(account.id, "output_per_million", value)}
+                      className="settings-number"
+                    />
+                    <span className="settings-pricing-suffix">/1M</span>
+                  </label>
+                </div>
+              ))}
             </div>
           </Card>
 

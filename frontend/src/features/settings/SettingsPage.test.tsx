@@ -31,6 +31,8 @@ const baseSettings = {
   audit_limit_custom_tool_call_output: 100,
   language: "zh-CN",
   theme_mode: "system",
+  provider_pricing: {},
+  account_pricing: {},
 };
 
 describe("SettingsPage", () => {
@@ -105,6 +107,10 @@ describe("SettingsPage", () => {
     fireEvent.click(screen.getByRole("tab", { name: "代理" }));
     expect(await screen.findByRole("switch", { name: "自动故障转移开关" })).toBeInTheDocument();
     expect(screen.queryByText("自动故障转移队列")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "数据" }));
+    expect(await screen.findByText("费用统计")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "codex input pricing" }), { target: { value: "4.5" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Alpha output pricing" }), { target: { value: "15.2" } });
     fireEvent.click(screen.getByRole("tab", { name: "通用" }));
 
     fireEvent.click(screen.getByRole("switch", { name: "开机自启" }));
@@ -115,12 +121,27 @@ describe("SettingsPage", () => {
         "/ai-router/api/settings/app",
         expect.objectContaining({
           method: "PUT",
-          body: JSON.stringify({ ...baseSettings, launch_at_login: true }),
+          body: JSON.stringify({
+            ...baseSettings,
+            launch_at_login: true,
+            provider_pricing: { codex: { input_per_million: 4.5, output_per_million: 0 } },
+            account_pricing: { "1": { input_per_million: 0, output_per_million: 15.2 } },
+          }),
         }),
       );
     });
-    expect(applyDesktopAppSettings).toHaveBeenCalledWith({ ...baseSettings, launch_at_login: true });
-    expect(onSettingsChanged).toHaveBeenCalledWith({ ...baseSettings, launch_at_login: true });
+    expect(applyDesktopAppSettings).toHaveBeenCalledWith({
+      ...baseSettings,
+      launch_at_login: true,
+      provider_pricing: { codex: { input_per_million: 4.5, output_per_million: 0 } },
+      account_pricing: { "1": { input_per_million: 0, output_per_million: 15.2 } },
+    });
+    expect(onSettingsChanged).toHaveBeenCalledWith({
+      ...baseSettings,
+      launch_at_login: true,
+      provider_pricing: { codex: { input_per_million: 4.5, output_per_million: 0 } },
+      account_pricing: { "1": { input_per_million: 0, output_per_million: 15.2 } },
+    });
   });
 
   it("supports database backup actions and about metadata", async () => {
