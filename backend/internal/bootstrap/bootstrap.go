@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/api"
 	"github.com/gcssloop/codex-router/backend/internal/auth"
@@ -19,6 +20,11 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
+	"github.com/gcssloop/codex-router/backend/internal/usage/refresh"
+	"github.com/gcssloop/codex-router/backend/internal/usagedrv"
+	"github.com/gcssloop/codex-router/backend/internal/usagedrv/builtin"
+	luadrv "github.com/gcssloop/codex-router/backend/internal/usagedrv/lua"
+	"github.com/gcssloop/codex-router/backend/internal/usagedrv/registry"
 )
 
 type Config struct {
@@ -146,6 +152,22 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	compactionJob := scheduler.NewUsageCompactionJob(func(_ context.Context, now time.Time) error {
 		return usageRepo.CompactEvents(now.UTC())
 	})
+	driverRegistry, err := registry.New(
+		[]accountdrv.AccountDriver{
+			accountdrv.NewOfficialDriver(http.DefaultClient, accountRepo),
+			accountdrv.NewAPIKeyDriver(),
+		},
+		[]usagedrv.UsageDriver{
+			builtin.NewOpenAIOfficialDriver(http.DefaultClient),
+			builtin.NewPPChatDriver(http.DefaultClient),
+			luadrv.NewDriver(http.DefaultClient, ""),
+		},
+	)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	refreshOrchestrator := refresh.NewOrchestrator(accountRepo, usageRepo, driverRegistry)
 	app.background.Add(1)
 	go func() {
 		defer app.background.Done()
@@ -157,6 +179,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 				return
 			case now := <-ticker.C:
 				_ = recoveryJob.Run(appCtx, now.UTC())
+				_ = refreshOrchestrator.Run(appCtx, now.UTC())
 				_ = compactionJob.Run(appCtx, now.UTC())
 				_ = backupJob.Run(appCtx, now.UTC())
 			}
