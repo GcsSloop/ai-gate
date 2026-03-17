@@ -22,17 +22,29 @@ type ModelDistributionChartProps = {
 };
 
 function formatCompactNumber(language: AppLanguage, value: number): string {
-  return new Intl.NumberFormat(language, { notation: "compact", maximumFractionDigits: 1 }).format(value);
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000) {
+    return `${new Intl.NumberFormat(language, { maximumFractionDigits: absolute >= 10_000_000 ? 0 : 1 }).format(value / 1_000_000)}M`;
+  }
+  if (absolute >= 1_000) {
+    return `${new Intl.NumberFormat(language, { maximumFractionDigits: absolute >= 10_000 ? 0 : 1 }).format(value / 1_000)}K`;
+  }
+  return new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(value);
 }
 
-function formatBucket(language: AppLanguage, bucket: string): string {
-  return new Date(bucket).toLocaleString(language, {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
+function formatBucket(language: AppLanguage, bucket: string, withHour: boolean): string {
+  return new Date(bucket).toLocaleString(language, withHour
+    ? {
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }
+    : {
+        month: "numeric",
+        day: "numeric",
+      });
 }
 
 function readChartTheme(): ChartTheme {
@@ -47,6 +59,7 @@ function readChartTheme(): ChartTheme {
 
 function useEChart(option: echarts.EChartsCoreOption | null) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<echarts.EChartsType | null>(null);
 
   useEffect(() => {
     if (import.meta.env.MODE === "test") {
@@ -56,8 +69,9 @@ function useEChart(option: echarts.EChartsCoreOption | null) {
       return;
     }
 
-    const chart = echarts.getInstanceByDom(containerRef.current) ?? echarts.init(containerRef.current, undefined, { renderer: "canvas" });
-    chart.setOption(option, true);
+    const chart = chartRef.current ?? echarts.getInstanceByDom(containerRef.current) ?? echarts.init(containerRef.current, undefined, { renderer: "canvas" });
+    chartRef.current = chart;
+    chart.setOption(option, { notMerge: false, replaceMerge: ["series"] });
 
     const resize = () => chart.resize();
     const resizeObserver = new ResizeObserver(resize);
@@ -67,9 +81,15 @@ function useEChart(option: echarts.EChartsCoreOption | null) {
     return () => {
       resizeObserver.disconnect();
       window.removeEventListener("resize", resize);
-      chart.dispose();
     };
   }, [option]);
+
+  useEffect(() => {
+    return () => {
+      chartRef.current?.dispose();
+      chartRef.current = null;
+    };
+  }, []);
 
   return containerRef;
 }
@@ -82,8 +102,11 @@ export function TokenTrendChart({ data, language }: TokenTrendChartProps) {
     const theme = readChartTheme();
     const inputLabel = language === "zh-CN" ? "输入" : "Input";
     const outputLabel = language === "zh-CN" ? "输出" : "Output";
+    const withHour = data.length > 0 && data[0]?.bucket.includes("T");
     return {
-      animationDuration: 280,
+      animationDuration: 420,
+      animationDurationUpdate: 420,
+      animationEasingUpdate: "cubicOut",
       color: ["#3b82f6", "#14b8a6"],
       grid: {
         top: 34,
@@ -126,7 +149,7 @@ export function TokenTrendChart({ data, language }: TokenTrendChartProps) {
       xAxis: {
         type: "category",
         boundaryGap: false,
-        data: data.map((point) => formatBucket(language, point.bucket)),
+        data: data.map((point) => formatBucket(language, point.bucket, withHour)),
         axisLabel: {
           color: theme.textSecondary,
           fontSize: 11,
@@ -196,7 +219,9 @@ export function ModelDistributionChart({ data, language }: ModelDistributionChar
     const total = data.reduce((sum, item) => sum + item.request_count, 0);
     const requestLabel = language === "zh-CN" ? "请求" : "Requests";
     return {
-      animationDuration: 280,
+      animationDuration: 420,
+      animationDurationUpdate: 420,
+      animationEasingUpdate: "cubicOut",
       color: ["#3b82f6", "#14b8a6", "#f59e0b", "#8b5cf6", "#ef4444", "#06b6d4"],
       tooltip: {
         trigger: "item",

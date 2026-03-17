@@ -81,14 +81,15 @@ describe("StatsPage", () => {
     expect(screen.getByText("最近记录")).toBeInTheDocument();
     expect(screen.getByText("gpt-5.2")).toBeInTheDocument();
     expect(screen.getByText("Alpha · #1")).toBeInTheDocument();
+    expect(screen.getByText("12K")).toBeInTheDocument();
     expect(screen.getByTestId("stats-token-trend-chart")).toBeInTheDocument();
     expect(screen.getByTestId("stats-model-distribution-chart")).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(getDashboardSummary).toHaveBeenCalledWith(24, undefined, "");
-      expect(getDashboardTrends).toHaveBeenCalledWith(24, undefined, "");
-      expect(getDashboardModelDistribution).toHaveBeenCalledWith(24, undefined, "");
-      expect(getDashboardRecentEvents).toHaveBeenCalledWith(24, undefined, "", 20);
+      expect(getDashboardSummary).toHaveBeenCalledWith("24h", undefined, "");
+      expect(getDashboardTrends).toHaveBeenCalledWith("24h", undefined, "");
+      expect(getDashboardModelDistribution).toHaveBeenCalledWith("24h", undefined, "");
+      expect(getDashboardRecentEvents).toHaveBeenCalledWith("24h", undefined, "", 20);
     });
   });
 });

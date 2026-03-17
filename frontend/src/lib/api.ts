@@ -110,6 +110,11 @@ export type UsageEventRecord = {
   created_at: string;
 };
 
+export type PricingRule = {
+  input_per_million: number;
+  output_per_million: number;
+};
+
 export type AccountTestResult = {
   ok: boolean;
   message: string;
@@ -201,6 +206,8 @@ export type AppSettings = {
   audit_limit_custom_tool_call_output: number;
   language: "zh-CN" | "en-US";
   theme_mode: "system" | "light" | "dark";
+  provider_pricing?: Record<string, PricingRule>;
+  account_pricing?: Record<string, PricingRule>;
 };
 
 export type DatabaseBackupItem = {
@@ -277,9 +284,11 @@ export async function duplicateAccount(id: number): Promise<void> {
   }
 }
 
-function dashboardQuery(hours = 24, accountID?: number, model?: string, limit?: number): string {
+export type DashboardRangeKey = "24h" | "7d" | "30d";
+
+function dashboardQuery(range: DashboardRangeKey = "24h", accountID?: number, model?: string, limit?: number): string {
   const params = new URLSearchParams();
-  params.set("hours", String(hours));
+  params.set("range", range);
   if (accountID && accountID > 0) {
     params.set("account_id", String(accountID));
   }
@@ -292,32 +301,32 @@ function dashboardQuery(hours = 24, accountID?: number, model?: string, limit?: 
   return params.toString();
 }
 
-export async function getDashboardSummary(hours = 24, accountID?: number, model?: string): Promise<UsageDashboardSummary> {
-  const response = await fetch(apiPath(`/dashboard/summary?${dashboardQuery(hours, accountID, model)}`));
+export async function getDashboardSummary(range: DashboardRangeKey = "24h", accountID?: number, model?: string): Promise<UsageDashboardSummary> {
+  const response = await fetch(apiPath(`/dashboard/summary?${dashboardQuery(range, accountID, model)}`));
   if (!response.ok) {
     throw new Error("failed to load dashboard summary");
   }
   return response.json();
 }
 
-export async function getDashboardTrends(hours = 24, accountID?: number, model?: string): Promise<UsageTrendPoint[]> {
-  const response = await fetch(apiPath(`/dashboard/trends?${dashboardQuery(hours, accountID, model)}`));
+export async function getDashboardTrends(range: DashboardRangeKey = "24h", accountID?: number, model?: string): Promise<UsageTrendPoint[]> {
+  const response = await fetch(apiPath(`/dashboard/trends?${dashboardQuery(range, accountID, model)}`));
   if (!response.ok) {
     throw new Error("failed to load dashboard trends");
   }
   return response.json();
 }
 
-export async function getDashboardRecentEvents(hours = 24, accountID?: number, model?: string, limit = 20): Promise<UsageEventRecord[]> {
-  const response = await fetch(apiPath(`/dashboard/recent-events?${dashboardQuery(hours, accountID, model, limit)}`));
+export async function getDashboardRecentEvents(range: DashboardRangeKey = "24h", accountID?: number, model?: string, limit = 20): Promise<UsageEventRecord[]> {
+  const response = await fetch(apiPath(`/dashboard/recent-events?${dashboardQuery(range, accountID, model, limit)}`));
   if (!response.ok) {
     throw new Error("failed to load recent usage events");
   }
   return response.json();
 }
 
-export async function getDashboardModelDistribution(hours = 24, accountID?: number, model?: string): Promise<UsageModelDistributionPoint[]> {
-  const response = await fetch(apiPath(`/dashboard/model-distribution?${dashboardQuery(hours, accountID, model)}`));
+export async function getDashboardModelDistribution(range: DashboardRangeKey = "24h", accountID?: number, model?: string): Promise<UsageModelDistributionPoint[]> {
+  const response = await fetch(apiPath(`/dashboard/model-distribution?${dashboardQuery(range, accountID, model)}`));
   if (!response.ok) {
     throw new Error("failed to load model distribution");
   }
