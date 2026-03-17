@@ -18,8 +18,23 @@ type responsesUsageCollector struct {
 	outputs  []map[string]any
 }
 
+type chatCompletionsUsageCollector struct {
+	snapshot usage.Snapshot
+	hasData  bool
+}
+
 func newResponsesUsageCollector(accountID int64) *responsesUsageCollector {
 	return &responsesUsageCollector{
+		snapshot: usage.Snapshot{
+			AccountID:   accountID,
+			CheckedAt:   time.Now().UTC(),
+			HealthScore: 1,
+		},
+	}
+}
+
+func newChatCompletionsUsageCollector(accountID int64) *chatCompletionsUsageCollector {
+	return &chatCompletionsUsageCollector{
 		snapshot: usage.Snapshot{
 			AccountID:   accountID,
 			CheckedAt:   time.Now().UTC(),
@@ -52,6 +67,27 @@ func (c *responsesUsageCollector) Save(repo usageSaver) {
 		c.snapshot.HealthScore = 1
 	}
 	_ = repo.Save(c.snapshot)
+}
+
+func (c *chatCompletionsUsageCollector) snapshotOrDefault() usage.Snapshot {
+	if !c.hasData {
+		return emptyResponsesUsageSnapshot()
+	}
+	return c.snapshot
+}
+
+func (c *chatCompletionsUsageCollector) Observe(frame map[string]any) {
+	if frame == nil {
+		return
+	}
+	usagePayload, ok := frame["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	c.hasData = true
+	c.snapshot.LastInputTokens = asFloat(usagePayload["prompt_tokens"])
+	c.snapshot.LastOutputTokens = asFloat(usagePayload["completion_tokens"])
+	c.snapshot.LastTotalTokens = asFloat(usagePayload["total_tokens"])
 }
 
 func (c *responsesUsageCollector) snapshotOrDefault() usage.Snapshot {
