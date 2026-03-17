@@ -16,8 +16,8 @@ function buildAdapter(result: DesktopUpdateCheckResult | null): DesktopUpdateAda
 }
 
 describe("updateService", () => {
-  it("returns unsupported result with null update when manifest lookup fails", async () => {
-    const fetchMock = vi.fn().mockRejectedValue(new Error("network unavailable"));
+  it("returns unsupported result without requesting remote metadata in web mode", async () => {
+    const fetchMock = vi.fn();
     const service = createDesktopUpdateService({
         isSupported: () => false,
         check: vi.fn(),
@@ -27,36 +27,7 @@ describe("updateService", () => {
     );
 
     await expect(service.check()).resolves.toEqual({ supported: false, update: null });
-    expect(fetchMock).toHaveBeenCalledOnce();
-  });
-
-  it("falls back to latest manifest lookup when desktop updater is unsupported", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        version: "2.3.6",
-        notes: "Read-only fallback",
-        pub_date: "2026-03-11T13:30:00Z",
-      }),
-    });
-    const service = createDesktopUpdateService(
-      {
-        isSupported: () => false,
-        check: vi.fn(),
-        relaunch: vi.fn(),
-      },
-      fetchMock as typeof fetch,
-    );
-
-    await expect(service.check("2.3.4")).resolves.toEqual({
-      supported: false,
-      update: {
-        body: "Read-only fallback",
-        currentVersion: "2.3.4",
-        date: "2026-03-11T13:30:00Z",
-        version: "2.3.6",
-      },
-    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("returns update details when a newer release is available", async () => {
