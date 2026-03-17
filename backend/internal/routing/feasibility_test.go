@@ -168,6 +168,24 @@ func TestIsFeasible(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name: "legacy persisted exhausted snapshot without model is rejected conservatively",
+			budget: routing.TokenBudget{
+				ProjectedInputTokens:  200,
+				ProjectedOutputTokens: 200,
+				SafetyFactor:          1,
+				EstimatedCost:         1,
+			},
+			snapshot: usage.Snapshot{
+				Balance:         0,
+				QuotaRemaining:  0,
+				RPMRemaining:    0,
+				TPMRemaining:    0,
+				CheckedAt:       mustTimeValue("2026-03-17T00:00:00Z"),
+				RecentErrorRate: 0,
+			},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -189,4 +207,12 @@ func timePtr(value string) *time.Time {
 		panic(err)
 	}
 	return &parsed
+}
+
+func mustTimeValue(value string) time.Time {
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
 }
