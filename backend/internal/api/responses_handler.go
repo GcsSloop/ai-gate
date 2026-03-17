@@ -433,18 +433,13 @@ func (h *ResponsesHandler) orderedThinGatewayCandidates() ([]routing.Candidate, 
 		}
 	}
 
-	ordered := orderCandidatesByPriority(candidates)
-	for _, candidate := range candidates {
-		if !candidate.Account.IsActive {
-			continue
-		}
+	if candidate, ok := activeCandidate(candidates); ok {
 		if !candidate.Account.NativeResponsesCapable() {
 			logThinGatewayCandidate(candidate.Account, "reject", "active_account_missing_responses_capability")
 			return nil, errThinGatewayActiveAccountUnsupported
 		}
-		break
 	}
-	return ordered, nil
+	return orderCandidatesActiveFirst(candidates), nil
 }
 
 func (h *ResponsesHandler) nextThinFailoverTarget(candidates []routing.Candidate, currentIndex int) (routing.Candidate, bool) {

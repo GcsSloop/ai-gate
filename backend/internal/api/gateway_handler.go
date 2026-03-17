@@ -330,7 +330,7 @@ func (h *GatewayHandler) orderedCandidates(candidates []routing.Candidate) ([]ro
 		}
 		return orderCandidatesByPriority(candidates), nil
 	}
-	return orderCandidatesByPriority(candidates), nil
+	return orderCandidatesActiveFirst(candidates), nil
 }
 
 func resolveCredential(account accounts.Account) (string, error) {
