@@ -127,6 +127,12 @@ func CapacityModelFromSnapshot(snapshot usage.Snapshot) CapacityModel {
 	if snapshot.Balance > 0 {
 		return CapacityModelBalanceOnly
 	}
+	if !snapshot.CheckedAt.IsZero() {
+		// Legacy persisted snapshots with no explicit model metadata and no
+		// remaining capacity values should default to the safer quota/rate mode
+		// so exhausted rows do not become permissive after upgrade.
+		return CapacityModelQuotaRate
+	}
 	return CapacityModelManual
 }
 
