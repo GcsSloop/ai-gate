@@ -16,22 +16,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/auth"
 	"github.com/gcssloop/codex-router/backend/internal/providers"
 	providercodex "github.com/gcssloop/codex-router/backend/internal/providers/codex"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
+	"github.com/gcssloop/codex-router/backend/internal/usagedrv"
+	"github.com/gcssloop/codex-router/backend/internal/usagedrv/builtin"
 )
 
 const officialOpenAIBaseURL = "https://api.openai.com/v1"
 
 type AccountsHandler struct {
-	repo       accounts.Repository
-	usage      AccountsUsage
-	connector  *auth.OAuthConnector
-	stateStore *auth.StateStore
-	client     *http.Client
+	repo        accounts.Repository
+	usage       AccountsUsage
+	connector   *auth.OAuthConnector
+	stateStore  *auth.StateStore
+	client      *http.Client
 	stateEvents *StateEventBus
 }
 
@@ -304,6 +307,7 @@ func (h *AccountsHandler) refreshOfficialUsage(ctx context.Context, accountList 
 	if h.usage == nil {
 		return
 	}
+	officialUsageDriver := builtin.NewOpenAIOfficialDriver(h.client)
 	for i := range accountList {
 		account := &accountList[i]
 		if !usesOfficialCodexAdapter(*account) {
@@ -320,20 +324,19 @@ func (h *AccountsHandler) refreshOfficialUsage(ctx context.Context, accountList 
 		if err != nil {
 			continue
 		}
-		req, err := providercodex.NewAdapter(resolveAccountBaseURL(*account)).BuildUsageRequest(ctx, credential, accountID)
+		usageAccount := *account
+		usageAccount.BaseURL = resolveAccountBaseURL(*account)
+		result, err := officialUsageDriver.Fetch(ctx, usageAccount, accountdrv.ResolvedCredential{
+			Kind:        "bearer",
+			AccessToken: credential,
+			Metadata: map[string]any{
+				"account_id": accountID,
+			},
+		})
 		if err != nil {
 			continue
 		}
-		resp, err := h.client.Do(req)
-		if err != nil {
-			continue
-		}
-		raw, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil || resp.StatusCode >= 400 {
-			continue
-		}
-		snapshot, ok := parseOfficialUsageSnapshot(raw)
+		snapshot, ok := snapshotFromRawUsageResult(result)
 		if !ok {
 			continue
 		}
@@ -944,63 +947,46 @@ func looksLikeOfficialUsageLimit(account accounts.Account, raw []byte) bool {
 	return false
 }
 
-func parseOfficialUsageSnapshot(raw []byte) (usage.Snapshot, bool) {
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return usage.Snapshot{}, false
+func snapshotFromRawUsageResult(result usagedrv.RawUsageResult) (usage.Snapshot, bool) {
+	snapshot := usage.Snapshot{}
+
+	if result.Limits.Balance != nil {
+		snapshot.Balance = *result.Limits.Balance
 	}
-
-	rateLimit, _ := payload["rate_limit"].(map[string]any)
-	primary, _ := rateLimit["primary_window"].(map[string]any)
-	secondary, _ := rateLimit["secondary_window"].(map[string]any)
-	credits, _ := payload["credits"].(map[string]any)
-
-	primaryUsed := asFloat(primary["used_percent"])
-	secondaryUsed := asFloat(secondary["used_percent"])
-	balance := asFloat(credits["balance"])
-	allowed, _ := rateLimit["allowed"].(bool)
-	limitReached, _ := rateLimit["limit_reached"].(bool)
-	hasCredits, _ := credits["has_credits"].(bool)
-	unlimited, _ := credits["unlimited"].(bool)
-
-	if primaryUsed == 0 &&
-		secondaryUsed == 0 &&
-		balance == 0 &&
-		!allowed &&
-		!hasCredits &&
-		!unlimited {
-		return usage.Snapshot{}, false
+	if result.Limits.QuotaRemaining != nil {
+		snapshot.QuotaRemaining = *result.Limits.QuotaRemaining
 	}
+	if result.Limits.RPMRemaining != nil {
+		snapshot.RPMRemaining = *result.Limits.RPMRemaining
+	}
+	if result.Limits.TPMRemaining != nil {
+		snapshot.TPMRemaining = *result.Limits.TPMRemaining
+	}
+	if result.Limits.PrimaryUsedPercent != nil {
+		snapshot.PrimaryUsedPercent = *result.Limits.PrimaryUsedPercent
+	}
+	if result.Limits.SecondaryUsedPercent != nil {
+		snapshot.SecondaryUsedPercent = *result.Limits.SecondaryUsedPercent
+	}
+	snapshot.PrimaryResetsAt = result.Limits.PrimaryResetsAt
+	snapshot.SecondaryResetsAt = result.Limits.SecondaryResetsAt
 
-	primaryRemaining := mathMax(100-primaryUsed, 0)
-	secondaryRemaining := mathMax(100-secondaryUsed, 0)
-	snapshot := usage.Snapshot{
-		Balance:              balance,
-		RPMRemaining:         primaryRemaining,
-		TPMRemaining:         secondaryRemaining,
-		PrimaryUsedPercent:   primaryUsed,
-		SecondaryUsedPercent: secondaryUsed,
-		PrimaryResetsAt:      unixSecondsPtr(int64(asFloat(primary["reset_at"]))),
-		SecondaryResetsAt:    unixSecondsPtr(int64(asFloat(secondary["reset_at"]))),
-		HealthScore:          (primaryRemaining + secondaryRemaining) / 200,
-		ThrottledRecently:    limitReached || !allowed,
+	if result.Limits.RPMRemaining != nil && result.Limits.TPMRemaining != nil {
+		snapshot.HealthScore = (*result.Limits.RPMRemaining + *result.Limits.TPMRemaining) / 200
+	}
+	allowed, _ := result.Meta["allowed"].(bool)
+	limitReached, _ := result.Meta["limit_reached"].(bool)
+	snapshot.ThrottledRecently = limitReached || !allowed
+
+	if snapshot.Balance == 0 &&
+		snapshot.QuotaRemaining == 0 &&
+		snapshot.RPMRemaining == 0 &&
+		snapshot.TPMRemaining == 0 &&
+		snapshot.PrimaryUsedPercent == 0 &&
+		snapshot.SecondaryUsedPercent == 0 {
+		return usage.Snapshot{}, false
 	}
 	return snapshot, true
-}
-
-func unixSecondsPtr(seconds int64) *time.Time {
-	if seconds <= 0 {
-		return nil
-	}
-	value := time.Unix(seconds, 0).UTC()
-	return &value
-}
-
-func mathMax(a float64, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func (h *AccountsHandler) deleteAccount(w http.ResponseWriter, r *http.Request) {
