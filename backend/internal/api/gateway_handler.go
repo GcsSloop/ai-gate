@@ -17,6 +17,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/routing"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
+	"github.com/gcssloop/codex-router/backend/internal/usage/normalize"
 )
 
 type GatewayAccounts interface {
@@ -106,15 +107,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, account := range accountList {
 		snapshot, err := h.usage.GetLatest(account.ID)
 		if err != nil {
-			snapshot = usage.Snapshot{
-				AccountID:       account.ID,
-				Balance:         1,
-				QuotaRemaining:  1_000_000,
-				RPMRemaining:    100,
-				TPMRemaining:    1_000_000,
-				HealthScore:     0.5,
-				RecentErrorRate: 0,
-			}
+			snapshot = normalize.DefaultFallbackSnapshot(account.ID)
 		}
 		candidates = append(candidates, routing.Candidate{Account: account, Snapshot: snapshot})
 	}

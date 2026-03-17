@@ -101,6 +101,73 @@ func TestIsFeasible(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name: "third-party quota and rate limits stay feasible without balance field",
+			budget: routing.TokenBudget{
+				ProjectedInputTokens:  1500,
+				ProjectedOutputTokens: 1500,
+				SafetyFactor:          1.2,
+				EstimatedCost:         10,
+			},
+			snapshot: usage.Snapshot{
+				Balance:              0,
+				QuotaRemaining:       10000,
+				RPMRemaining:         20,
+				TPMRemaining:         10000,
+				ProviderSnapshotJSON: `{"capacity_model":"quota_rate"}`,
+			},
+			want: true,
+		},
+		{
+			name: "balance-only providers should not be rejected by missing quota rates",
+			budget: routing.TokenBudget{
+				ProjectedInputTokens:  600,
+				ProjectedOutputTokens: 400,
+				SafetyFactor:          1.0,
+				EstimatedCost:         2,
+			},
+			snapshot: usage.Snapshot{
+				Balance:              8,
+				QuotaRemaining:       0,
+				RPMRemaining:         0,
+				TPMRemaining:         0,
+				ProviderSnapshotJSON: `{"capacity_model":"balance_only"}`,
+			},
+			want: true,
+		},
+		{
+			name: "exhausted quota-rate snapshot with explicit model should be rejected",
+			budget: routing.TokenBudget{
+				ProjectedInputTokens:  200,
+				ProjectedOutputTokens: 200,
+				SafetyFactor:          1,
+				EstimatedCost:         1,
+			},
+			snapshot: usage.Snapshot{
+				Balance:              0,
+				QuotaRemaining:       0,
+				RPMRemaining:         0,
+				TPMRemaining:         0,
+				ProviderSnapshotJSON: `{"capacity_model":"quota_rate"}`,
+			},
+			want: false,
+		},
+		{
+			name: "unknown manual snapshot without model stays feasible",
+			budget: routing.TokenBudget{
+				ProjectedInputTokens:  200,
+				ProjectedOutputTokens: 200,
+				SafetyFactor:          1,
+				EstimatedCost:         1,
+			},
+			snapshot: usage.Snapshot{
+				Balance:        0,
+				QuotaRemaining: 0,
+				RPMRemaining:   0,
+				TPMRemaining:   0,
+			},
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {
