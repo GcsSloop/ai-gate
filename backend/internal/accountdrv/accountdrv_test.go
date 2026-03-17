@@ -170,6 +170,37 @@ func TestOfficialDriverResolveReturnsAuthErrorForInvalidCredential(t *testing.T)
 	}
 }
 
+func TestOfficialDriverResolveFallsBackToIDToken(t *testing.T) {
+	t.Parallel()
+
+	rawCredential, err := json.Marshal(map[string]any{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]any{
+			"id_token":   "id-only-token",
+			"account_id": "acct-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	driver := accountdrv.NewOfficialDriver(http.DefaultClient, nil)
+	resolved, err := driver.Resolve(context.Background(), accounts.Account{
+		ProviderType:  accounts.ProviderOpenAIOfficial,
+		AuthMode:      accounts.AuthModeLocalImport,
+		CredentialRef: string(rawCredential),
+	})
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if resolved.Kind != "bearer" {
+		t.Fatalf("Kind = %q, want %q", resolved.Kind, "bearer")
+	}
+	if resolved.AccessToken != "id-only-token" {
+		t.Fatalf("AccessToken = %q, want %q", resolved.AccessToken, "id-only-token")
+	}
+}
+
 type capturingUpdater struct {
 	mu         sync.Mutex
 	updates    int
