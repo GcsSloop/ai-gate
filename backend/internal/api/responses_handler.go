@@ -494,9 +494,9 @@ func copyResponseStreamWithObserver(w http.ResponseWriter, body io.Reader, obser
 	reader := bufio.NewReader(body)
 	var dataLines []string
 
-	flush := func() error {
+	flush := func() {
 		if len(dataLines) == 0 {
-			return nil
+			return
 		}
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
@@ -507,35 +507,16 @@ func copyResponseStreamWithObserver(w http.ResponseWriter, body io.Reader, obser
 				observe(frame)
 			}
 		}
-
-		if _, err := io.WriteString(w, "data: "+payload+"\n\n"); err != nil {
-			return err
-		}
-		if flusher != nil {
-			flusher.Flush()
-		}
-		return nil
 	}
 
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := reader.ReadBytes('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
 			return err
 		}
-		line = strings.TrimRight(line, "\r\n")
 
-		if line == "" {
-			if flushErr := flush(); flushErr != nil {
-				return flushErr
-			}
-		} else if strings.HasPrefix(line, "data:") {
-			payload := strings.TrimPrefix(line, "data:")
-			if strings.HasPrefix(payload, " ") {
-				payload = payload[1:]
-			}
-			dataLines = append(dataLines, payload)
-		} else {
-			if _, writeErr := io.WriteString(w, line+"\n"); writeErr != nil {
+		if len(line) > 0 {
+			if _, writeErr := w.Write(line); writeErr != nil {
 				return writeErr
 			}
 			if flusher != nil {
@@ -543,10 +524,20 @@ func copyResponseStreamWithObserver(w http.ResponseWriter, body io.Reader, obser
 			}
 		}
 
-		if errors.Is(err, io.EOF) {
-			if flushErr := flush(); flushErr != nil {
-				return flushErr
+		trimmed := strings.TrimRight(string(line), "\r\n")
+
+		if trimmed == "" {
+			flush()
+		} else if strings.HasPrefix(trimmed, "data:") {
+			payload := strings.TrimPrefix(trimmed, "data:")
+			if strings.HasPrefix(payload, " ") {
+				payload = payload[1:]
 			}
+			dataLines = append(dataLines, payload)
+		}
+
+		if errors.Is(err, io.EOF) {
+			flush()
 			return nil
 		}
 	}
