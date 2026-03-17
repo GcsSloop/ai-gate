@@ -1,8 +1,9 @@
 package bootstrap_test
 
 import (
-	"context"
 	"bytes"
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -103,6 +104,72 @@ func TestNewAppSchedulesAutomaticDatabaseBackups(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("expected automatic backup files in %s", backupPath)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestNewAppSchedulesUsageRefreshOrchestrator(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	usageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-refresh" {
+			t.Fatalf("Authorization = %q, want Bearer sk-refresh", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"quota_remaining":321}`))
+	}))
+	defer usageServer.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "router.sqlite")
+	app, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
+		ListenAddr:        "127.0.0.1:0",
+		DatabasePath:      dbPath,
+		SchedulerInterval: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewApp returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = app.Close()
+	})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/ai-router/api/accounts", bytes.NewBufferString(`{
+		"provider_type":"openai-compatible",
+		"account_name":"lua-refresh",
+		"auth_mode":"api_key",
+		"base_url":"https://mirror.example.test/v1",
+		"credential_ref":"sk-refresh",
+		"usage_driver":"lua",
+		"usage_config_json":"{\"script\":\"internal/usagedrv/lua/testdata/vendor_x.lua\",\"endpoint\":\"`+usageServer.URL+`/usage\"}"
+	}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("POST /ai-router/api/accounts status = %d, want %d", createRec.Code, http.StatusCreated)
+	}
+
+	deadline := time.Now().Add(1 * time.Second)
+	var lastStatus int
+	var lastBody string
+	for {
+		req := httptest.NewRequest(http.MethodGet, "/ai-router/api/accounts/usage", nil)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		lastStatus = rec.Code
+		lastBody = rec.Body.String()
+		if rec.Code == http.StatusOK {
+			var items []map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+				t.Fatalf("json.Unmarshal returned error: %v", err)
+			}
+			if len(items) == 1 && items[0]["quota_remaining"] == float64(321) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("usage refresh did not populate snapshot before deadline: status=%d body=%s", lastStatus, lastBody)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
