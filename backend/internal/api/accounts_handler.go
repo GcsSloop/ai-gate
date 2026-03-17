@@ -23,7 +23,7 @@ import (
 	providercodex "github.com/gcssloop/codex-router/backend/internal/providers/codex"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
-	"github.com/gcssloop/codex-router/backend/internal/usagedrv"
+	"github.com/gcssloop/codex-router/backend/internal/usage/normalize"
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv/builtin"
 )
 
@@ -336,12 +336,7 @@ func (h *AccountsHandler) refreshOfficialUsage(ctx context.Context, accountList 
 		if err != nil {
 			continue
 		}
-		snapshot, ok := snapshotFromRawUsageResult(result)
-		if !ok {
-			continue
-		}
-		snapshot.AccountID = account.ID
-		snapshot.CheckedAt = time.Now().UTC()
+		snapshot := normalize.FromRaw(account.ID, result, time.Now().UTC())
 		_ = h.usage.Save(snapshot)
 	}
 }
@@ -945,53 +940,6 @@ func looksLikeOfficialUsageLimit(account accounts.Account, raw []byte) bool {
 		}
 	}
 	return false
-}
-
-func snapshotFromRawUsageResult(result usagedrv.RawUsageResult) (usage.Snapshot, bool) {
-	snapshot := usage.Snapshot{}
-
-	if result.Limits.Balance != nil {
-		snapshot.Balance = *result.Limits.Balance
-	}
-	if result.Limits.QuotaRemaining != nil {
-		snapshot.QuotaRemaining = *result.Limits.QuotaRemaining
-	}
-	if result.Limits.RPMRemaining != nil {
-		snapshot.RPMRemaining = *result.Limits.RPMRemaining
-	}
-	if result.Limits.TPMRemaining != nil {
-		snapshot.TPMRemaining = *result.Limits.TPMRemaining
-	}
-	if result.Limits.PrimaryUsedPercent != nil {
-		snapshot.PrimaryUsedPercent = *result.Limits.PrimaryUsedPercent
-	}
-	if result.Limits.SecondaryUsedPercent != nil {
-		snapshot.SecondaryUsedPercent = *result.Limits.SecondaryUsedPercent
-	}
-	snapshot.PrimaryResetsAt = result.Limits.PrimaryResetsAt
-	snapshot.SecondaryResetsAt = result.Limits.SecondaryResetsAt
-
-	if result.Limits.RPMRemaining != nil && result.Limits.TPMRemaining != nil {
-		snapshot.HealthScore = (*result.Limits.RPMRemaining + *result.Limits.TPMRemaining) / 200
-	}
-	allowed, _ := result.Meta["allowed"].(bool)
-	limitReached, _ := result.Meta["limit_reached"].(bool)
-	hasCredits, _ := result.Meta["has_credits"].(bool)
-	unlimited, _ := result.Meta["unlimited"].(bool)
-	snapshot.ThrottledRecently = limitReached || !allowed
-
-	if snapshot.Balance == 0 &&
-		snapshot.QuotaRemaining == 0 &&
-		snapshot.RPMRemaining == 0 &&
-		snapshot.TPMRemaining == 0 &&
-		snapshot.PrimaryUsedPercent == 0 &&
-		snapshot.SecondaryUsedPercent == 0 &&
-		!allowed &&
-		!hasCredits &&
-		!unlimited {
-		return usage.Snapshot{}, false
-	}
-	return snapshot, true
 }
 
 func (h *AccountsHandler) deleteAccount(w http.ResponseWriter, r *http.Request) {
