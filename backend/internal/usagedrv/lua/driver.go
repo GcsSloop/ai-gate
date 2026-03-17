@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,9 +86,46 @@ func parseDriverConfig(raw string) (DriverConfig, error) {
 		Script: strings.TrimSpace(filepath.Clean(script)),
 		Raw:    decoded,
 	}
-	cfg.TimeoutMS = parseTimeoutMS(decoded["timeout_ms"], 5000)
-	if cfg.TimeoutMS <= 0 {
+	if timeoutValue, ok := decoded["timeout_ms"]; ok {
+		timeoutMS, err := parseTimeoutMSStrict(timeoutValue)
+		if err != nil {
+			return DriverConfig{}, err
+		}
+		cfg.TimeoutMS = timeoutMS
+	} else {
 		cfg.TimeoutMS = 5000
 	}
 	return cfg, nil
+}
+
+func parseTimeoutMSStrict(value any) (int, error) {
+	switch typed := value.(type) {
+	case float64:
+		timeout := int(typed)
+		if timeout <= 0 {
+			return 0, fmt.Errorf("lua usage config timeout_ms must be positive")
+		}
+		return timeout, nil
+	case int:
+		if typed <= 0 {
+			return 0, fmt.Errorf("lua usage config timeout_ms must be positive")
+		}
+		return typed, nil
+	case int64:
+		timeout := int(typed)
+		if timeout <= 0 {
+			return 0, fmt.Errorf("lua usage config timeout_ms must be positive")
+		}
+		return timeout, nil
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		if err != nil || parsed <= 0 {
+			return 0, fmt.Errorf("lua usage config timeout_ms must be positive integer")
+		}
+		return parsed, nil
+	case nil:
+		return 5000, nil
+	default:
+		return 0, fmt.Errorf("lua usage config timeout_ms has invalid type %T", value)
+	}
 }
