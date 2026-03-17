@@ -197,12 +197,32 @@ func TestDashboardHandlerUsesPricingSettingsForCostCalculation(t *testing.T) {
 	}
 }
 
+func TestDashboardHandlerDoesNotCompactEventsOnReadRequests(t *testing.T) {
+	t.Parallel()
+
+	stub := &dashboardUsageStub{
+		summary: usage.EventSummary{RequestCount: 1},
+	}
+	handler := api.NewDashboardHandler(stub)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/summary?range=24h", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /dashboard/summary status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if stub.compactCalls != 0 {
+		t.Fatalf("CompactEvents calls = %d, want 0", stub.compactCalls)
+	}
+}
+
 type dashboardUsageStub struct {
 	summary           usage.EventSummary
 	trends            []usage.TrendPoint
 	recent            []usage.Event
 	modelDistribution []usage.ModelDistributionPoint
 	lastFilter        usage.EventFilter
+	compactCalls      int
 }
 
 func (s *dashboardUsageStub) SummarizeEvents(filter usage.EventFilter) (usage.EventSummary, error) {
@@ -226,6 +246,7 @@ func (s *dashboardUsageStub) ModelDistribution(filter usage.EventFilter) ([]usag
 }
 
 func (s *dashboardUsageStub) CompactEvents(time.Time) error {
+	s.compactCalls++
 	return nil
 }
 
