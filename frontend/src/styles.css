@@ -953,6 +953,34 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   animation: update-status-pulse 1s ease-in-out infinite;
 }
 
+.home-update-panel {
+  padding: 8px;
+}
+
+.home-update-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 12px;
+}
+
+.home-update-panel-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.update-release-notes {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.update-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 @keyframes update-status-pulse {
   0%,
   100% {

@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { AccountsPage } from "./features/accounts/AccountsPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import { StatsPage } from "./features/stats/StatsPage";
-import { UpdateCard } from "./features/updates/UpdateCard";
+import { HomeUpdatePanel } from "./features/updates/HomeUpdatePanel";
 import { createDesktopUpdateService, type DesktopUpdateInfo } from "./features/updates/updateService";
 import appLogo from "./assets/aigate_1024_1024.png";
 import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus, subscribeAccountRoutingStateChanged } from "./lib/api";
@@ -439,8 +439,9 @@ export function App() {
                 destroyOnHidden
                 width={720}
               >
-                <UpdateCard
+                <HomeUpdatePanel
                   currentVersion={homeUpdate?.currentVersion ?? ""}
+                  initialUpdate={homeUpdate}
                   language={language}
                   t={t}
                   service={updateService}
