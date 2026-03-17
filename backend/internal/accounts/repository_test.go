@@ -185,6 +185,69 @@ func TestSQLiteRepositoryReadsLegacyPlaintextCredentialRef(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryPersistsUsageDriverFields(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	account := accounts.Account{
+		ProviderType:    accounts.ProviderOpenAICompatible,
+		AccountName:     "driver-account",
+		AuthMode:        accounts.AuthModeAPIKey,
+		CredentialRef:   "sk-driver",
+		UsageDriver:     "lua",
+		UsageConfigJSON: `{"script":"vendor.lua"}`,
+		AccountDriver:   "apikey",
+		Status:          accounts.StatusActive,
+	}
+	if err := repo.Create(account); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	got, err := repo.GetByID(1)
+	if err != nil {
+		t.Fatalf("GetByID returned error: %v", err)
+	}
+	if got.UsageDriver != account.UsageDriver {
+		t.Fatalf("UsageDriver = %q, want %q", got.UsageDriver, account.UsageDriver)
+	}
+	if got.AccountDriver != account.AccountDriver {
+		t.Fatalf("AccountDriver = %q, want %q", got.AccountDriver, account.AccountDriver)
+	}
+	if got.UsageConfigJSON != account.UsageConfigJSON {
+		t.Fatalf("UsageConfigJSON = %q, want %q", got.UsageConfigJSON, account.UsageConfigJSON)
+	}
+
+	got.AccountDriver = "oauth-session"
+	got.UsageDriver = "builtin_openai_official"
+	got.UsageConfigJSON = `{"refresh":true}`
+	if err := repo.Update(got); err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+
+	items, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("List returned %d items, want 1", len(items))
+	}
+	if items[0].AccountDriver != "oauth-session" {
+		t.Fatalf("List AccountDriver = %q, want %q", items[0].AccountDriver, "oauth-session")
+	}
+	if items[0].UsageDriver != "builtin_openai_official" {
+		t.Fatalf("List UsageDriver = %q, want %q", items[0].UsageDriver, "builtin_openai_official")
+	}
+	if items[0].UsageConfigJSON != `{"refresh":true}` {
+		t.Fatalf("List UsageConfigJSON = %q, want %q", items[0].UsageConfigJSON, `{"refresh":true}`)
+	}
+}
+
 func TestSQLiteRepositorySetActiveKeepsSingleActiveAccount(t *testing.T) {
 	t.Parallel()
 

@@ -40,3 +40,27 @@ func TestOpenCreatesCoreTables(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAddsUsageDriverColumnsToAccounts(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "codex-router.sqlite")
+
+	store, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	for _, column := range []string{"account_driver", "usage_driver", "usage_config_json"} {
+		var count int
+		if err := store.DB().QueryRow(`SELECT COUNT(*) FROM pragma_table_info('accounts') WHERE name = ?`, column).Scan(&count); err != nil {
+			t.Fatalf("QueryRow(%q) returned error: %v", column, err)
+		}
+		if count != 1 {
+			t.Fatalf("column %q count = %d, want 1", column, count)
+		}
+	}
+}
