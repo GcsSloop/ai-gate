@@ -399,6 +399,131 @@ func TestSQLiteRepositoryModelDistribution(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositorySummarizeEventsUsesDynamicCostCalculator(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	if err := repo.SaveEvent(usage.Event{
+		AccountID:    7,
+		ProviderType: "codex",
+		Model:        "gpt-5.4",
+		Status:       "completed",
+		InputTokens:  1_000_000,
+		OutputTokens: 500_000,
+		TotalTokens:  1_500_000,
+		CreatedAt:    time.Date(2026, 3, 15, 9, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("SaveEvent returned error: %v", err)
+	}
+
+	summary, err := repo.SummarizeEvents(usage.EventFilter{
+		From: ptrTime(time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)),
+		To:   ptrTime(time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)),
+		CostCalculator: func(accountID int64, providerType string, model string, inputTokens int64, outputTokens int64) float64 {
+			if accountID != 7 || providerType != "codex" || model != "gpt-5.4" {
+				t.Fatalf("unexpected calculator input: %d %s %s", accountID, providerType, model)
+			}
+			return 20
+		},
+	})
+	if err != nil {
+		t.Fatalf("SummarizeEvents returned error: %v", err)
+	}
+	if summary.EstimatedCost != 20 {
+		t.Fatalf("EstimatedCost = %v, want 20", summary.EstimatedCost)
+	}
+}
+
+func TestSQLiteRepositoryCompactsEventsIntoRollups(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	now := time.Date(2026, 3, 17, 12, 0, 0, 0, time.UTC)
+	for _, event := range []usage.Event{
+		{
+			AccountID:    1,
+			ProviderType: "codex",
+			RequestKind:  "responses",
+			Model:        "gpt-5.4",
+			Status:       "completed",
+			InputTokens:  100,
+			OutputTokens: 20,
+			TotalTokens:  120,
+			CreatedAt:    now.AddDate(0, 0, -8).Add(10 * time.Minute),
+		},
+		{
+			AccountID:    1,
+			ProviderType: "codex",
+			RequestKind:  "responses",
+			Model:        "gpt-5.4",
+			Status:       "rate_limited",
+			InputTokens:  40,
+			OutputTokens: 0,
+			TotalTokens:  40,
+			CreatedAt:    now.AddDate(0, 0, -8).Add(20 * time.Minute),
+		},
+		{
+			AccountID:    1,
+			ProviderType: "codex",
+			RequestKind:  "responses",
+			Model:        "gpt-5.4",
+			Status:       "completed",
+			InputTokens:  200,
+			OutputTokens: 30,
+			TotalTokens:  230,
+			CreatedAt:    now.AddDate(0, 0, -40).Add(2 * time.Hour),
+		},
+	} {
+		if err := repo.SaveEvent(event); err != nil {
+			t.Fatalf("SaveEvent returned error: %v", err)
+		}
+	}
+
+	if err := repo.CompactEvents(now); err != nil {
+		t.Fatalf("CompactEvents returned error: %v", err)
+	}
+
+	summary, err := repo.SummarizeEvents(usage.EventFilter{
+		From: ptrTime(now.AddDate(0, 0, -50)),
+		To:   ptrTime(now.Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("SummarizeEvents returned error: %v", err)
+	}
+	if summary.RequestCount != 3 || summary.TotalTokens != 390 {
+		t.Fatalf("summary = %+v, want request_count=3 total_tokens=390", summary)
+	}
+
+	trends, err := repo.TrendEventsByHour(usage.EventFilter{
+		From:          ptrTime(time.Date(2026, 2, 5, 0, 0, 0, 0, time.UTC)),
+		To:            ptrTime(time.Date(2026, 3, 18, 0, 0, 0, 0, time.UTC)),
+		BucketSize:    24 * time.Hour,
+		IncludeZeroes: false,
+	})
+	if err != nil {
+		t.Fatalf("TrendEventsByHour returned error: %v", err)
+	}
+	if len(trends) != 2 {
+		t.Fatalf("len(trends) = %d, want 2", len(trends))
+	}
+}
+
 func ptrTime(value time.Time) *time.Time {
 	return &value
 }

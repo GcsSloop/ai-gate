@@ -3,6 +3,7 @@ package usage
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -11,6 +12,7 @@ type Repository interface {
 	GetLatest(accountID int64) (Snapshot, error)
 	ListLatest() ([]Snapshot, error)
 	SaveEvent(event Event) error
+	CompactEvents(now time.Time) error
 	ListRecentEvents(filter EventFilter) ([]Event, error)
 	SummarizeEvents(filter EventFilter) (EventSummary, error)
 	TrendEventsByHour(filter EventFilter) ([]TrendPoint, error)
@@ -182,6 +184,32 @@ func (r *SQLiteRepository) SaveEvent(event Event) error {
 	return nil
 }
 
+func (r *SQLiteRepository) CompactEvents(now time.Time) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin compact usage events: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	hourlyCutoff := now.UTC().AddDate(0, 0, -7).Truncate(time.Hour)
+	dailyCutoff := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -30)
+
+	if err = compactRawEventsToHourly(tx, dailyCutoff, hourlyCutoff); err != nil {
+		return err
+	}
+	if err = compactHourlyRollupsToDaily(tx, dailyCutoff); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit compact usage events: %w", err)
+	}
+	return nil
+}
+
 func (r *SQLiteRepository) ListRecentEvents(filter EventFilter) ([]Event, error) {
 	query := `SELECT id, account_id, provider_type, request_kind, model, status,
 		input_tokens, output_tokens, total_tokens, estimated_cost,
@@ -234,83 +262,43 @@ func (r *SQLiteRepository) ListRecentEvents(filter EventFilter) ([]Event, error)
 }
 
 func (r *SQLiteRepository) SummarizeEvents(filter EventFilter) (EventSummary, error) {
-	query := `SELECT
-		COUNT(*),
-		SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
-		SUM(CASE WHEN status <> 'completed' THEN 1 ELSE 0 END),
-		COALESCE(SUM(input_tokens), 0),
-		COALESCE(SUM(output_tokens), 0),
-		COALESCE(SUM(total_tokens), 0),
-		COALESCE(SUM(estimated_cost), 0),
-		COALESCE(SUM(CASE
-			WHEN balance_before IS NOT NULL AND balance_after IS NOT NULL THEN balance_after - balance_before
-			ELSE 0
-		END), 0),
-		COALESCE(SUM(CASE
-			WHEN quota_before IS NOT NULL AND quota_after IS NOT NULL THEN quota_after - quota_before
-			ELSE 0
-		END), 0)
-		FROM usage_events`
-	where, args := eventFilterWhere(filter)
-
 	var summary EventSummary
-	err := r.db.QueryRow(query+where, args...).Scan(
-		&summary.RequestCount,
-		&summary.SuccessCount,
-		&summary.FailureCount,
-		&summary.InputTokens,
-		&summary.OutputTokens,
-		&summary.TotalTokens,
-		&summary.EstimatedCost,
-		&summary.BalanceDelta,
-		&summary.QuotaDelta,
-	)
+	rows, err := r.loadAggregateRows(filter)
 	if err != nil {
-		return EventSummary{}, fmt.Errorf("summarize usage events: %w", err)
+		return EventSummary{}, err
+	}
+	for _, row := range rows {
+		summary.RequestCount += row.RequestCount
+		summary.SuccessCount += row.SuccessCount
+		summary.FailureCount += row.FailureCount
+		summary.InputTokens += row.InputTokens
+		summary.OutputTokens += row.OutputTokens
+		summary.TotalTokens += row.TotalTokens
+		summary.BalanceDelta += row.BalanceDelta
+		summary.QuotaDelta += row.QuotaDelta
+		summary.EstimatedCost += calculateCost(filter, row)
 	}
 	return summary, nil
 }
 
 func (r *SQLiteRepository) TrendEventsByHour(filter EventFilter) ([]TrendPoint, error) {
-	query := `SELECT id, account_id, provider_type, request_kind, model, status,
-		input_tokens, output_tokens, total_tokens, estimated_cost,
-		balance_before, balance_after, quota_before, quota_after,
-		latency_ms, created_at
-		FROM usage_events`
-	where, args := eventFilterWhere(filter)
-	query += where + ` ORDER BY created_at ASC, id ASC`
-
-	rows, err := r.db.Query(query, args...)
+	rows, err := r.loadAggregateRows(filter)
 	if err != nil {
-		return nil, fmt.Errorf("query usage trends by hour: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
+	bucketSize := filter.BucketSize
+	if bucketSize <= 0 {
+		bucketSize = time.Hour
+	}
 
-	var points []TrendPoint
-	indexByBucket := make(map[time.Time]int)
-	for rows.Next() {
-		var event Event
-		if err := rows.Scan(
-			&event.ID,
-			&event.AccountID,
-			&event.ProviderType,
-			&event.RequestKind,
-			&event.Model,
-			&event.Status,
-			&event.InputTokens,
-			&event.OutputTokens,
-			&event.TotalTokens,
-			&event.EstimatedCost,
-			nullFloatDest(&event.BalanceBefore),
-			nullFloatDest(&event.BalanceAfter),
-			nullFloatDest(&event.QuotaBefore),
-			nullFloatDest(&event.QuotaAfter),
-			&event.LatencyMS,
-			&event.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan usage trend point: %w", err)
+	points, indexByBucket := initializeTrendBuckets(filter, bucketSize)
+	for _, row := range rows {
+		bucket := row.BucketStart.UTC()
+		if bucketSize == time.Hour {
+			bucket = bucket.Truncate(time.Hour)
+		} else {
+			bucket = time.Date(bucket.Year(), bucket.Month(), bucket.Day(), 0, 0, 0, 0, time.UTC)
 		}
-		bucket := event.CreatedAt.UTC().Truncate(time.Hour)
 		idx, ok := indexByBucket[bucket]
 		if !ok {
 			points = append(points, TrendPoint{Bucket: bucket})
@@ -318,46 +306,189 @@ func (r *SQLiteRepository) TrendEventsByHour(filter EventFilter) ([]TrendPoint, 
 			indexByBucket[bucket] = idx
 		}
 		point := &points[idx]
-		point.RequestCount++
-		point.InputTokens += event.InputTokens
-		point.OutputTokens += event.OutputTokens
-		point.TotalTokens += event.TotalTokens
-		point.EstimatedCost += event.EstimatedCost
-		if event.BalanceBefore != nil && event.BalanceAfter != nil {
-			point.BalanceDelta += *event.BalanceAfter - *event.BalanceBefore
-		}
-		if event.QuotaBefore != nil && event.QuotaAfter != nil {
-			point.QuotaDelta += *event.QuotaAfter - *event.QuotaBefore
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate usage trends by hour: %w", err)
+		point.RequestCount += row.RequestCount
+		point.InputTokens += row.InputTokens
+		point.OutputTokens += row.OutputTokens
+		point.TotalTokens += row.TotalTokens
+		point.BalanceDelta += row.BalanceDelta
+		point.QuotaDelta += row.QuotaDelta
+		point.EstimatedCost += calculateCost(filter, row)
 	}
 	return points, nil
 }
 
 func (r *SQLiteRepository) ModelDistribution(filter EventFilter) ([]ModelDistributionPoint, error) {
-	query := `SELECT model, COUNT(*)
+	rows, err := r.loadAggregateRows(filter)
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int64)
+	for _, row := range rows {
+		counts[row.Model] += row.RequestCount
+	}
+	points := make([]ModelDistributionPoint, 0, len(counts))
+	for model, requestCount := range counts {
+		points = append(points, ModelDistributionPoint{Model: model, RequestCount: requestCount})
+	}
+	sortModelDistribution(points)
+	return points, nil
+}
+
+func initializeTrendBuckets(filter EventFilter, bucketSize time.Duration) ([]TrendPoint, map[time.Time]int) {
+	if !filter.IncludeZeroes || filter.From == nil || filter.To == nil {
+		return []TrendPoint{}, map[time.Time]int{}
+	}
+	points := make([]TrendPoint, 0)
+	indexByBucket := make(map[time.Time]int)
+	for bucket := filter.From.UTC(); bucket.Before(filter.To.UTC()); bucket = bucket.Add(bucketSize) {
+		points = append(points, TrendPoint{Bucket: bucket})
+		indexByBucket[bucket] = len(points) - 1
+	}
+	return points, indexByBucket
+}
+
+func calculateCost(filter EventFilter, row RollupPoint) float64 {
+	if filter.CostCalculator == nil {
+		return row.EstimatedCost
+	}
+	return filter.CostCalculator(row.AccountID, row.ProviderType, row.Model, row.InputTokens, row.OutputTokens)
+}
+
+func sortModelDistribution(points []ModelDistributionPoint) {
+	sort.Slice(points, func(i, j int) bool {
+		if points[i].RequestCount == points[j].RequestCount {
+			return points[i].Model < points[j].Model
+		}
+		return points[i].RequestCount > points[j].RequestCount
+	})
+}
+
+func (r *SQLiteRepository) loadAggregateRows(filter EventFilter) ([]RollupPoint, error) {
+	rows := make([]RollupPoint, 0)
+
+	rawRows, err := r.queryRawAggregateRows(filter)
+	if err != nil {
+		return nil, err
+	}
+	rows = append(rows, rawRows...)
+
+	if filter.From != nil && filter.To != nil {
+		hourlyRows, err := r.queryRollupRows("usage_rollups_hourly", filter)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, hourlyRows...)
+
+		dailyRows, err := r.queryRollupRows("usage_rollups_daily", filter)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, dailyRows...)
+	}
+
+	return rows, nil
+}
+
+func (r *SQLiteRepository) queryRawAggregateRows(filter EventFilter) ([]RollupPoint, error) {
+	query := `SELECT created_at, account_id, provider_type, request_kind, model, status,
+		input_tokens, output_tokens, total_tokens, estimated_cost,
+		balance_before, balance_after, quota_before, quota_after
 		FROM usage_events`
 	where, args := eventFilterWhere(filter)
-	query += where + ` GROUP BY model ORDER BY COUNT(*) DESC, model ASC`
+	query += where + ` ORDER BY created_at ASC, id ASC`
 
 	rows, err := r.db.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query usage model distribution: %w", err)
+		return nil, fmt.Errorf("query raw usage rows: %w", err)
 	}
 	defer rows.Close()
 
-	points := make([]ModelDistributionPoint, 0)
+	points := make([]RollupPoint, 0)
 	for rows.Next() {
-		var point ModelDistributionPoint
-		if err := rows.Scan(&point.Model, &point.RequestCount); err != nil {
-			return nil, fmt.Errorf("scan usage model distribution: %w", err)
+		var createdAt time.Time
+		var point RollupPoint
+		var status string
+		var balanceBefore *float64
+		var balanceAfter *float64
+		var quotaBefore *float64
+		var quotaAfter *float64
+		if err := rows.Scan(
+			&createdAt,
+			&point.AccountID,
+			&point.ProviderType,
+			&point.RequestKind,
+			&point.Model,
+			&status,
+			&point.InputTokens,
+			&point.OutputTokens,
+			&point.TotalTokens,
+			&point.EstimatedCost,
+			nullFloatDest(&balanceBefore),
+			nullFloatDest(&balanceAfter),
+			nullFloatDest(&quotaBefore),
+			nullFloatDest(&quotaAfter),
+		); err != nil {
+			return nil, fmt.Errorf("scan raw usage row: %w", err)
+		}
+		point.BucketStart = createdAt.UTC()
+		point.RequestCount = 1
+		if status == "completed" {
+			point.SuccessCount = 1
+		} else {
+			point.FailureCount = 1
+		}
+		if balanceBefore != nil && balanceAfter != nil {
+			point.BalanceDelta = *balanceAfter - *balanceBefore
+		}
+		if quotaBefore != nil && quotaAfter != nil {
+			point.QuotaDelta = *quotaAfter - *quotaBefore
 		}
 		points = append(points, point)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate usage model distribution: %w", err)
+		return nil, fmt.Errorf("iterate raw usage rows: %w", err)
+	}
+	return points, nil
+}
+
+func (r *SQLiteRepository) queryRollupRows(table string, filter EventFilter) ([]RollupPoint, error) {
+	query := fmt.Sprintf(`SELECT bucket_start, account_id, provider_type, request_kind, model,
+		request_count, success_count, failure_count, input_tokens, output_tokens, total_tokens,
+		balance_delta, quota_delta
+		FROM %s`, table)
+	where, args := rollupFilterWhere(filter)
+	query += where + ` ORDER BY bucket_start ASC, id ASC`
+
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query %s rows: %w", table, err)
+	}
+	defer rows.Close()
+
+	points := make([]RollupPoint, 0)
+	for rows.Next() {
+		var point RollupPoint
+		if err := rows.Scan(
+			&point.BucketStart,
+			&point.AccountID,
+			&point.ProviderType,
+			&point.RequestKind,
+			&point.Model,
+			&point.RequestCount,
+			&point.SuccessCount,
+			&point.FailureCount,
+			&point.InputTokens,
+			&point.OutputTokens,
+			&point.TotalTokens,
+			&point.BalanceDelta,
+			&point.QuotaDelta,
+		); err != nil {
+			return nil, fmt.Errorf("scan %s row: %w", table, err)
+		}
+		points = append(points, point)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate %s rows: %w", table, err)
 	}
 	return points, nil
 }
@@ -370,7 +501,7 @@ func eventFilterWhere(filter EventFilter) (string, []any) {
 		args = append(args, filter.From.UTC())
 	}
 	if filter.To != nil {
-		clauses = append(clauses, "created_at <= ?")
+		clauses = append(clauses, "created_at < ?")
 		args = append(args, filter.To.UTC())
 	}
 	if filter.AccountID != nil {
@@ -385,6 +516,227 @@ func eventFilterWhere(filter EventFilter) (string, []any) {
 		return "", args
 	}
 	return " WHERE " + joinClauses(clauses), args
+}
+
+func rollupFilterWhere(filter EventFilter) (string, []any) {
+	clauses := make([]string, 0, 4)
+	args := make([]any, 0, 4)
+	if filter.From != nil {
+		clauses = append(clauses, "bucket_start >= ?")
+		args = append(args, filter.From.UTC())
+	}
+	if filter.To != nil {
+		clauses = append(clauses, "bucket_start < ?")
+		args = append(args, filter.To.UTC())
+	}
+	if filter.AccountID != nil {
+		clauses = append(clauses, "account_id = ?")
+		args = append(args, *filter.AccountID)
+	}
+	if filter.Model != "" {
+		clauses = append(clauses, "model = ?")
+		args = append(args, filter.Model)
+	}
+	if len(clauses) == 0 {
+		return "", args
+	}
+	return " WHERE " + joinClauses(clauses), args
+}
+
+func compactRawEventsToHourly(tx *sql.Tx, from time.Time, to time.Time) error {
+	if !from.Before(to) {
+		return nil
+	}
+	rows, err := tx.Query(
+		`SELECT created_at, account_id, provider_type, request_kind, model, status,
+			input_tokens, output_tokens, total_tokens,
+			balance_before, balance_after, quota_before, quota_after
+		FROM usage_events
+		WHERE created_at >= ? AND created_at < ?`,
+		from.UTC(),
+		to.UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("query raw events for compaction: %w", err)
+	}
+	defer rows.Close()
+
+	buckets := make(map[string]RollupPoint)
+	for rows.Next() {
+		var createdAt time.Time
+		var accountID int64
+		var providerType string
+		var requestKind string
+		var model string
+		var status string
+		var inputTokens int64
+		var outputTokens int64
+		var totalTokens int64
+		var balanceBefore *float64
+		var balanceAfter *float64
+		var quotaBefore *float64
+		var quotaAfter *float64
+		if err := rows.Scan(
+			&createdAt,
+			&accountID,
+			&providerType,
+			&requestKind,
+			&model,
+			&status,
+			&inputTokens,
+			&outputTokens,
+			&totalTokens,
+			nullFloatDest(&balanceBefore),
+			nullFloatDest(&balanceAfter),
+			nullFloatDest(&quotaBefore),
+			nullFloatDest(&quotaAfter),
+		); err != nil {
+			return fmt.Errorf("scan raw events for compaction: %w", err)
+		}
+		bucket := createdAt.UTC().Truncate(time.Hour)
+		key := aggregateKey(bucket, accountID, providerType, requestKind, model)
+		point := buckets[key]
+		point.BucketStart = bucket
+		point.AccountID = accountID
+		point.ProviderType = providerType
+		point.RequestKind = requestKind
+		point.Model = model
+		point.RequestCount++
+		if status == "completed" {
+			point.SuccessCount++
+		} else {
+			point.FailureCount++
+		}
+		point.InputTokens += inputTokens
+		point.OutputTokens += outputTokens
+		point.TotalTokens += totalTokens
+		if balanceBefore != nil && balanceAfter != nil {
+			point.BalanceDelta += *balanceAfter - *balanceBefore
+		}
+		if quotaBefore != nil && quotaAfter != nil {
+			point.QuotaDelta += *quotaAfter - *quotaBefore
+		}
+		buckets[key] = point
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate raw events for compaction: %w", err)
+	}
+
+	for _, point := range buckets {
+		if err := upsertRollup(tx, "usage_rollups_hourly", point); err != nil {
+			return fmt.Errorf("compact raw events to hourly: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM usage_events WHERE created_at >= ? AND created_at < ?`, from.UTC(), to.UTC()); err != nil {
+		return fmt.Errorf("delete compacted raw events: %w", err)
+	}
+	return nil
+}
+
+func compactHourlyRollupsToDaily(tx *sql.Tx, cutoff time.Time) error {
+	rows, err := tx.Query(
+		`SELECT bucket_start, account_id, provider_type, request_kind, model,
+			request_count, success_count, failure_count, input_tokens, output_tokens, total_tokens,
+			balance_delta, quota_delta
+		FROM usage_rollups_hourly
+		WHERE bucket_start < ?`,
+		cutoff.UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("query hourly rollups for compaction: %w", err)
+	}
+	defer rows.Close()
+
+	buckets := make(map[string]RollupPoint)
+	for rows.Next() {
+		var point RollupPoint
+		if err := rows.Scan(
+			&point.BucketStart,
+			&point.AccountID,
+			&point.ProviderType,
+			&point.RequestKind,
+			&point.Model,
+			&point.RequestCount,
+			&point.SuccessCount,
+			&point.FailureCount,
+			&point.InputTokens,
+			&point.OutputTokens,
+			&point.TotalTokens,
+			&point.BalanceDelta,
+			&point.QuotaDelta,
+		); err != nil {
+			return fmt.Errorf("scan hourly rollups for compaction: %w", err)
+		}
+		bucket := time.Date(point.BucketStart.UTC().Year(), point.BucketStart.UTC().Month(), point.BucketStart.UTC().Day(), 0, 0, 0, 0, time.UTC)
+		key := aggregateKey(bucket, point.AccountID, point.ProviderType, point.RequestKind, point.Model)
+		current := buckets[key]
+		current.BucketStart = bucket
+		current.AccountID = point.AccountID
+		current.ProviderType = point.ProviderType
+		current.RequestKind = point.RequestKind
+		current.Model = point.Model
+		current.RequestCount += point.RequestCount
+		current.SuccessCount += point.SuccessCount
+		current.FailureCount += point.FailureCount
+		current.InputTokens += point.InputTokens
+		current.OutputTokens += point.OutputTokens
+		current.TotalTokens += point.TotalTokens
+		current.BalanceDelta += point.BalanceDelta
+		current.QuotaDelta += point.QuotaDelta
+		buckets[key] = current
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate hourly rollups for compaction: %w", err)
+	}
+
+	for _, point := range buckets {
+		if err := upsertRollup(tx, "usage_rollups_daily", point); err != nil {
+			return fmt.Errorf("compact hourly rollups to daily: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM usage_rollups_hourly WHERE bucket_start < ?`, cutoff.UTC()); err != nil {
+		return fmt.Errorf("delete compacted hourly rollups: %w", err)
+	}
+	return nil
+}
+
+func upsertRollup(tx *sql.Tx, table string, point RollupPoint) error {
+	query := fmt.Sprintf(`INSERT INTO %s (
+		bucket_start, account_id, provider_type, request_kind, model,
+		request_count, success_count, failure_count, input_tokens, output_tokens, total_tokens,
+		balance_delta, quota_delta
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(bucket_start, account_id, provider_type, request_kind, model) DO UPDATE SET
+		request_count = %s.request_count + excluded.request_count,
+		success_count = %s.success_count + excluded.success_count,
+		failure_count = %s.failure_count + excluded.failure_count,
+		input_tokens = %s.input_tokens + excluded.input_tokens,
+		output_tokens = %s.output_tokens + excluded.output_tokens,
+		total_tokens = %s.total_tokens + excluded.total_tokens,
+		balance_delta = %s.balance_delta + excluded.balance_delta,
+		quota_delta = %s.quota_delta + excluded.quota_delta`, table, table, table, table, table, table, table, table, table)
+
+	_, err := tx.Exec(
+		query,
+		point.BucketStart.UTC(),
+		point.AccountID,
+		point.ProviderType,
+		point.RequestKind,
+		point.Model,
+		point.RequestCount,
+		point.SuccessCount,
+		point.FailureCount,
+		point.InputTokens,
+		point.OutputTokens,
+		point.TotalTokens,
+		point.BalanceDelta,
+		point.QuotaDelta,
+	)
+	return err
+}
+
+func aggregateKey(bucket time.Time, accountID int64, providerType string, requestKind string, model string) string {
+	return fmt.Sprintf("%s|%d|%s|%s|%s", bucket.UTC().Format(time.RFC3339), accountID, providerType, requestKind, model)
 }
 
 func joinClauses(clauses []string) string {

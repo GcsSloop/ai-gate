@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,7 +35,7 @@ func TestSettingsHandlerGetAndPutAppSettings(t *testing.T) {
 	if err := json.Unmarshal(getRec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal app settings: %v", err)
 	}
-	if got != settings.DefaultAppSettings() {
+	if !reflect.DeepEqual(got, settings.DefaultAppSettings()) {
 		t.Fatalf("default settings = %+v, want %+v", got, settings.DefaultAppSettings())
 	}
 
