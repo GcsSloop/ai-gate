@@ -4,14 +4,17 @@ import { useEffect, useMemo, useState } from "react";
 import {
   type AccountRecord,
   type UsageDashboardSummary,
+  type UsageModelDistributionPoint,
   type UsageEventRecord,
   type UsageTrendPoint,
+  getDashboardModelDistribution,
   getDashboardRecentEvents,
   getDashboardSummary,
   getDashboardTrends,
   listAccounts,
 } from "../../lib/api";
 import type { AppLanguage, Translator } from "../../lib/i18n";
+import { ModelDistributionChart, TokenTrendChart } from "./StatsCharts";
 
 type StatsPageProps = {
   language: AppLanguage;
@@ -58,6 +61,7 @@ export function StatsPage({ language, t }: StatsPageProps) {
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [summary, setSummary] = useState<UsageDashboardSummary | null>(null);
   const [trends, setTrends] = useState<UsageTrendPoint[]>([]);
+  const [modelDistribution, setModelDistribution] = useState<UsageModelDistributionPoint[]>([]);
   const [events, setEvents] = useState<UsageEventRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,10 +72,11 @@ export function StatsPage({ language, t }: StatsPageProps) {
       setLoading(true);
       setError(null);
       try {
-        const [accountList, nextSummary, nextTrends, nextEvents] = await Promise.all([
+        const [accountList, nextSummary, nextTrends, nextModelDistribution, nextEvents] = await Promise.all([
           listAccounts(),
           getDashboardSummary(rangeHours, accountID, model),
           getDashboardTrends(rangeHours, accountID, model),
+          getDashboardModelDistribution(rangeHours, accountID, model),
           getDashboardRecentEvents(rangeHours, accountID, model, 20),
         ]);
         if (disposed) {
@@ -80,6 +85,7 @@ export function StatsPage({ language, t }: StatsPageProps) {
         setAccounts(accountList);
         setSummary(nextSummary);
         setTrends(nextTrends);
+        setModelDistribution(nextModelDistribution);
         setEvents(nextEvents);
       } catch (loadError) {
         if (!disposed) {
@@ -98,22 +104,13 @@ export function StatsPage({ language, t }: StatsPageProps) {
     };
   }, [accountID, model, rangeHours, t]);
 
-  const maxTrendTokens = useMemo(
-    () => Math.max(...trends.map((item) => item.total_tokens), 1),
-    [trends],
-  );
-
-  const statusSummary = useMemo(() => {
-    const counts = new Map<string, number>();
-    events.forEach((event) => {
-      counts.set(event.status, (counts.get(event.status) ?? 0) + 1);
-    });
-    return Array.from(counts.entries());
-  }, [events]);
-
   const accountNameByID = useMemo(() => {
     return new Map(accounts.map((account) => [account.id, account.account_name]));
   }, [accounts]);
+
+  const totalTokens = summary?.total_tokens ?? 0;
+  const inputShare = totalTokens > 0 ? (summary?.input_tokens ?? 0) / totalTokens : 0;
+  const outputShare = totalTokens > 0 ? (summary?.output_tokens ?? 0) / totalTokens : 0;
 
   const summaryCards = [
     {
@@ -122,9 +119,14 @@ export function StatsPage({ language, t }: StatsPageProps) {
       hint: summary ? `${summary.success_count} ${t("成功")} / ${summary.failure_count} ${t("失败")}` : "--",
     },
     {
-      label: t("总 Token"),
-      value: summary ? formatCompactNumber(language, summary.total_tokens) : "--",
-      hint: summary ? `${formatCompactNumber(language, summary.input_tokens)} in · ${formatCompactNumber(language, summary.output_tokens)} out` : "--",
+      label: t("输入 Token"),
+      value: summary ? formatCompactNumber(language, summary.input_tokens) : "--",
+      hint: summary ? `${Math.round(inputShare * 100)}% ${t("占总 Token")}` : "--",
+    },
+    {
+      label: t("输出 Token"),
+      value: summary ? formatCompactNumber(language, summary.output_tokens) : "--",
+      hint: summary ? `${Math.round(outputShare * 100)}% ${t("占总 Token")}` : "--",
     },
     {
       label: t("预估费用"),
@@ -136,11 +138,6 @@ export function StatsPage({ language, t }: StatsPageProps) {
       value: summary ? formatSigned(language, summary.balance_delta) : "--",
       hint: t("与费用视角分开展示"),
     },
-    {
-      label: t("额度变化"),
-      value: summary ? formatSigned(language, summary.quota_delta) : "--",
-      hint: t("适合 quota 型账户"),
-    },
   ];
 
   return (
@@ -148,7 +145,7 @@ export function StatsPage({ language, t }: StatsPageProps) {
       <div className="stats-header">
         <div>
           <div className="stats-title">{t("Token 与费用统计")}</div>
-          <div className="stats-subtitle">{t("聚焦请求量、Token 消耗、预估费用与余额/额度变化。")}</div>
+          <div className="stats-subtitle">{t("聚焦请求量、输入输出 Token、预估费用与余额变化。")}</div>
         </div>
         <div className="stats-filters">
           <Segmented
@@ -203,41 +200,15 @@ export function StatsPage({ language, t }: StatsPageProps) {
               {trends.length === 0 ? (
                 <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("暂无趋势数据")} />
               ) : (
-                <div className="stats-trend-list">
-                  {trends.map((point) => (
-                    <div key={point.bucket} className="stats-trend-row">
-                      <div className="stats-trend-meta">
-                        <span>{new Date(point.bucket).toLocaleString(language, { month: "numeric", day: "numeric", hour: "2-digit", hour12: false })}</span>
-                        <span>{formatCompactNumber(language, point.total_tokens)}</span>
-                      </div>
-                      <div className="stats-trend-bar-shell">
-                        <div
-                          className="stats-trend-bar"
-                          style={{ width: `${Math.max((point.total_tokens / maxTrendTokens) * 100, 8)}%` }}
-                        />
-                      </div>
-                      <div className="stats-trend-foot">
-                        <span>{formatCurrency(language, point.estimated_cost)}</span>
-                        <span>{point.request_count} {t("次请求")}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <TokenTrendChart data={trends} language={language} />
               )}
             </Card>
 
-            <Card className="stats-panel" variant="borderless" title={t("状态分布")}>
-              {statusSummary.length === 0 ? (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("暂无状态数据")} />
+            <Card className="stats-panel" variant="borderless" title={t("模型分布")}>
+              {modelDistribution.length === 0 ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("暂无模型数据")} />
               ) : (
-                <div className="stats-status-list">
-                  {statusSummary.map(([status, count]) => (
-                    <div key={status} className="stats-status-row">
-                      <Tag color={eventStatusColor(status)}>{status}</Tag>
-                      <span>{count}</span>
-                    </div>
-                  ))}
-                </div>
+                <ModelDistributionChart data={modelDistribution} language={language} />
               )}
             </Card>
           </div>

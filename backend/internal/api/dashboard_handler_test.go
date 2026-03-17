@@ -101,10 +101,40 @@ func TestDashboardHandlerRecentEvents(t *testing.T) {
 	}
 }
 
+func TestDashboardHandlerModelDistribution(t *testing.T) {
+	t.Parallel()
+
+	handler := api.NewDashboardHandler(dashboardUsageStub{
+		modelDistribution: []usage.ModelDistributionPoint{
+			{Model: "gpt-5.2", RequestCount: 8},
+			{Model: "gpt-5.4", RequestCount: 4},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/model-distribution?hours=24&account_id=9&model=gpt-5.2", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /dashboard/model-distribution status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var got []usage.ModelDistributionPoint
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].Model != "gpt-5.2" || got[0].RequestCount != 8 {
+		t.Fatalf("distribution[0] = %+v, want gpt-5.2 with count 8", got[0])
+	}
+}
+
 type dashboardUsageStub struct {
-	summary usage.EventSummary
-	trends  []usage.TrendPoint
-	recent  []usage.Event
+	summary           usage.EventSummary
+	trends            []usage.TrendPoint
+	recent            []usage.Event
+	modelDistribution []usage.ModelDistributionPoint
 }
 
 func (s dashboardUsageStub) SummarizeEvents(_ usage.EventFilter) (usage.EventSummary, error) {
@@ -117,4 +147,8 @@ func (s dashboardUsageStub) TrendEventsByHour(_ usage.EventFilter) ([]usage.Tren
 
 func (s dashboardUsageStub) ListRecentEvents(_ usage.EventFilter) ([]usage.Event, error) {
 	return s.recent, nil
+}
+
+func (s dashboardUsageStub) ModelDistribution(_ usage.EventFilter) ([]usage.ModelDistributionPoint, error) {
+	return s.modelDistribution, nil
 }

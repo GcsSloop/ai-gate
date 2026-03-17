@@ -73,3 +73,8 @@ type TrendPoint struct {
 	BalanceDelta  float64   `json:"balance_delta"`
 	QuotaDelta    float64   `json:"quota_delta"`
 }
+
+type ModelDistributionPoint struct {
+	Model        string `json:"model"`
+	RequestCount int64  `json:"request_count"`
+}

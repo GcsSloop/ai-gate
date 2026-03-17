@@ -14,6 +14,7 @@ type Repository interface {
 	ListRecentEvents(filter EventFilter) ([]Event, error)
 	SummarizeEvents(filter EventFilter) (EventSummary, error)
 	TrendEventsByHour(filter EventFilter) ([]TrendPoint, error)
+	ModelDistribution(filter EventFilter) ([]ModelDistributionPoint, error)
 }
 
 type SQLiteRepository struct {
@@ -331,6 +332,32 @@ func (r *SQLiteRepository) TrendEventsByHour(filter EventFilter) ([]TrendPoint, 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate usage trends by hour: %w", err)
+	}
+	return points, nil
+}
+
+func (r *SQLiteRepository) ModelDistribution(filter EventFilter) ([]ModelDistributionPoint, error) {
+	query := `SELECT model, COUNT(*)
+		FROM usage_events`
+	where, args := eventFilterWhere(filter)
+	query += where + ` GROUP BY model ORDER BY COUNT(*) DESC, model ASC`
+
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query usage model distribution: %w", err)
+	}
+	defer rows.Close()
+
+	points := make([]ModelDistributionPoint, 0)
+	for rows.Next() {
+		var point ModelDistributionPoint
+		if err := rows.Scan(&point.Model, &point.RequestCount); err != nil {
+			return nil, fmt.Errorf("scan usage model distribution: %w", err)
+		}
+		points = append(points, point)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usage model distribution: %w", err)
 	}
 	return points, nil
 }

@@ -313,6 +313,92 @@ func TestSQLiteRepositoryTrendEventsByHour(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryModelDistribution(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	from := time.Date(2026, 3, 15, 8, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+	accountID := int64(9)
+
+	for _, event := range []usage.Event{
+		{
+			AccountID:     9,
+			ProviderType:  "openai",
+			RequestKind:   "responses",
+			Model:         "gpt-5.2",
+			Status:        "completed",
+			TotalTokens:   1500,
+			EstimatedCost: 0.42,
+			LatencyMS:     321,
+			CreatedAt:     time.Date(2026, 3, 15, 10, 5, 0, 0, time.UTC),
+		},
+		{
+			AccountID:     9,
+			ProviderType:  "openai",
+			RequestKind:   "responses",
+			Model:         "gpt-5.4",
+			Status:        "completed",
+			TotalTokens:   800,
+			EstimatedCost: 0.24,
+			LatencyMS:     280,
+			CreatedAt:     time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC),
+		},
+		{
+			AccountID:     9,
+			ProviderType:  "openai",
+			RequestKind:   "responses",
+			Model:         "gpt-5.2",
+			Status:        "rate_limited",
+			TotalTokens:   200,
+			EstimatedCost: 0.01,
+			LatencyMS:     99,
+			CreatedAt:     time.Date(2026, 3, 15, 11, 0, 0, 0, time.UTC),
+		},
+		{
+			AccountID:     7,
+			ProviderType:  "openai",
+			RequestKind:   "responses",
+			Model:         "gpt-4.1",
+			Status:        "completed",
+			TotalTokens:   999,
+			EstimatedCost: 0.5,
+			LatencyMS:     100,
+			CreatedAt:     time.Date(2026, 3, 15, 10, 45, 0, 0, time.UTC),
+		},
+	} {
+		if err := repo.SaveEvent(event); err != nil {
+			t.Fatalf("SaveEvent(%s) returned error: %v", event.Model, err)
+		}
+	}
+
+	distribution, err := repo.ModelDistribution(usage.EventFilter{
+		From:      &from,
+		To:        &to,
+		AccountID: &accountID,
+	})
+	if err != nil {
+		t.Fatalf("ModelDistribution returned error: %v", err)
+	}
+	if len(distribution) != 2 {
+		t.Fatalf("len(distribution) = %d, want 2", len(distribution))
+	}
+	if distribution[0].Model != "gpt-5.2" || distribution[0].RequestCount != 2 {
+		t.Fatalf("distribution[0] = %+v, want gpt-5.2 with 2 requests", distribution[0])
+	}
+	if distribution[1].Model != "gpt-5.4" || distribution[1].RequestCount != 1 {
+		t.Fatalf("distribution[1] = %+v, want gpt-5.4 with 1 request", distribution[1])
+	}
+}
+
 func ptrTime(value time.Time) *time.Time {
 	return &value
 }

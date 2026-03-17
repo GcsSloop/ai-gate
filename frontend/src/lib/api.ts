@@ -86,6 +86,11 @@ export type UsageTrendPoint = {
   quota_delta: number;
 };
 
+export type UsageModelDistributionPoint = {
+  model: string;
+  request_count: number;
+};
+
 export type UsageEventRecord = {
   id: number;
   account_id: number;
@@ -307,6 +312,14 @@ export async function getDashboardRecentEvents(hours = 24, accountID?: number, m
   const response = await fetch(apiPath(`/dashboard/recent-events?${dashboardQuery(hours, accountID, model, limit)}`));
   if (!response.ok) {
     throw new Error("failed to load recent usage events");
+  }
+  return response.json();
+}
+
+export async function getDashboardModelDistribution(hours = 24, accountID?: number, model?: string): Promise<UsageModelDistributionPoint[]> {
+  const response = await fetch(apiPath(`/dashboard/model-distribution?${dashboardQuery(hours, accountID, model)}`));
+  if (!response.ok) {
+    throw new Error("failed to load model distribution");
   }
   return response.json();
 }
