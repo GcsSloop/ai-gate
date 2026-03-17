@@ -264,6 +264,106 @@ func TestResponsesHandlerThinModeUsesPriorityOrderWhenAutoFailoverEnabled(t *tes
 	}
 }
 
+func TestResponsesHandlerThinModePrefersActiveAccountWhenAvailable(t *testing.T) {
+	t.Parallel()
+
+	highPriorityCalls := 0
+	highPriorityUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		highPriorityCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_high","object":"response","status":"completed","output_text":"should-not-run"}`)
+	}))
+	defer highPriorityUpstream.Close()
+
+	activeCalls := 0
+	activeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		activeCalls++
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-active" {
+			t.Fatalf("authorization = %q, want Bearer sk-active", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_active","object":"response","status":"completed","output_text":"active-first"}`)
+	}))
+	defer activeUpstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, item := range []accounts.Account{
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "higher-priority",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           highPriorityUpstream.URL + "/v1",
+			CredentialRef:     "sk-high",
+			Status:            accounts.StatusActive,
+			Priority:          100,
+			SupportsResponses: true,
+		},
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "manual-active",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           activeUpstream.URL + "/v1",
+			CredentialRef:     "sk-active",
+			Status:            accounts.StatusActive,
+			Priority:          10,
+			SupportsResponses: true,
+			IsActive:          true,
+		},
+	} {
+		if err := accountRepo.Create(item); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for _, snapshot := range []usage.Snapshot{
+		{AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.95},
+		{AccountID: 2, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.8},
+	} {
+		if err := usageRepo.Save(snapshot); err != nil {
+			t.Fatalf("Save returned error: %v", err)
+		}
+	}
+
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithResponsesSettings(settingsRepo),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if activeCalls != 1 {
+		t.Fatalf("activeCalls = %d, want 1", activeCalls)
+	}
+	if highPriorityCalls != 0 {
+		t.Fatalf("highPriorityCalls = %d, want 0", highPriorityCalls)
+	}
+	if !strings.Contains(rec.Body.String(), `"output_text":"active-first"`) {
+		t.Fatalf("body = %s, want active-selected output", rec.Body.String())
+	}
+}
+
 func TestResponsesHandlerThinModeUsesOnlyActiveAccountWhenAutoFailoverDisabled(t *testing.T) {
 	t.Parallel()
 

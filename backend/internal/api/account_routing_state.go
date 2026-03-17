@@ -35,6 +35,25 @@ func orderCandidatesByPriority(candidates []routing.Candidate) []routing.Candida
 	return ordered
 }
 
+func orderCandidatesActiveFirst(candidates []routing.Candidate) []routing.Candidate {
+	ordered := orderCandidatesByPriority(candidates)
+	activeIndex := -1
+	for index, candidate := range ordered {
+		if candidate.Account.IsActive {
+			activeIndex = index
+			break
+		}
+	}
+	if activeIndex <= 0 {
+		return ordered
+	}
+
+	active := ordered[activeIndex]
+	copy(ordered[1:activeIndex+1], ordered[0:activeIndex])
+	ordered[0] = active
+	return ordered
+}
+
 func activeCandidate(candidates []routing.Candidate) (routing.Candidate, bool) {
 	for _, candidate := range candidates {
 		if candidate.Account.IsActive {
