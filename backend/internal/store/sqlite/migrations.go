@@ -27,6 +27,11 @@ var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS account_usage_snapshots (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		account_id INTEGER NOT NULL,
+		source TEXT NOT NULL DEFAULT '',
+		confidence TEXT NOT NULL DEFAULT '',
+		provider_snapshot_json TEXT NOT NULL DEFAULT '',
+		stale INTEGER NOT NULL DEFAULT 0,
+		last_error TEXT NOT NULL DEFAULT '',
 		balance REAL,
 		quota_remaining REAL,
 		rpm_remaining REAL,
