@@ -96,7 +96,7 @@ func (e *Executor) tryCandidate(ctx context.Context, conversationID int64, model
 
 func classify(err error) providers.ErrorClass {
 	switch {
-	case errors.Is(err, providers.ErrInsufficientQuota):
+	case providers.IsInsufficientQuotaError(err):
 		return providers.ErrorClassCapacity
 	default:
 		var httpErr providers.HTTPError

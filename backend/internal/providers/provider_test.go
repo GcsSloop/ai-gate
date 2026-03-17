@@ -59,6 +59,7 @@ func TestOpenAIAdapterClassifyError(t *testing.T) {
 	}{
 		{name: "rate limit", err: providers.HTTPError{StatusCode: http.StatusTooManyRequests}, want: providers.ErrorClassRateLimit},
 		{name: "unauthorized", err: providers.HTTPError{StatusCode: http.StatusUnauthorized}, want: providers.ErrorClassHard},
+		{name: "quota-like forbidden", err: errors.New("unexpected status 403 Forbidden: 令牌额度不足"), want: providers.ErrorClassCapacity},
 		{name: "server error", err: providers.HTTPError{StatusCode: http.StatusBadGateway}, want: providers.ErrorClassSoft},
 		{name: "capacity", err: providers.ErrInsufficientQuota, want: providers.ErrorClassCapacity},
 		{name: "generic", err: errors.New("boom"), want: providers.ErrorClassSoft},

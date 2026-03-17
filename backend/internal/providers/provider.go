@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 var ErrInsufficientQuota = errors.New("insufficient quota")
@@ -43,6 +44,41 @@ type HTTPError struct {
 
 func (e HTTPError) Error() string {
 	return fmt.Sprintf("http status %d", e.StatusCode)
+}
+
+func LooksLikeInsufficientQuotaMessage(value string) bool {
+	body := strings.ToLower(strings.Join(strings.Fields(value), " "))
+	if body == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"insufficient quota",
+		"quota exceeded",
+		"quota exhausted",
+		"usage limit",
+		"purchase more credits",
+		"upgrade to pro",
+		"upgrade to plus",
+		"credits exhausted",
+		"balance is not enough",
+		"余额不足",
+		"额度不足",
+	} {
+		if strings.Contains(body, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func IsInsufficientQuotaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrInsufficientQuota) {
+		return true
+	}
+	return LooksLikeInsufficientQuotaMessage(err.Error())
 }
 
 func NewJSONRequest(ctx context.Context, method, url, apiKey string, body []byte) (*http.Request, error) {

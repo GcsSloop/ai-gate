@@ -996,19 +996,14 @@ func usesOfficialCodexAdapter(account accounts.Account) bool {
 }
 
 func classifyHTTPError(resp *http.Response) error {
+	if resp.StatusCode < 400 {
+		return nil
+	}
+	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return providers.ErrInsufficientQuota
 	}
-	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(resp.Body)
-		detail := strings.TrimSpace(string(raw))
-		if detail != "" {
-			detail = compactErrorText(detail, 512)
-			return fmt.Errorf("http status %d: %s: %w", resp.StatusCode, detail, providers.HTTPError{StatusCode: resp.StatusCode})
-		}
-		return providers.HTTPError{StatusCode: resp.StatusCode}
-	}
-	return nil
+	return buildUpstreamStatusError(resp.StatusCode, raw)
 }
 
 func compactErrorText(value string, limit int) string {
@@ -1028,7 +1023,7 @@ func isStreamClosedBeforeCompleted(err error) bool {
 
 func classifyRunError(err error) providers.ErrorClass {
 	switch {
-	case errors.Is(err, providers.ErrInsufficientQuota):
+	case providers.IsInsufficientQuotaError(err):
 		return providers.ErrorClassCapacity
 	default:
 		var httpErr providers.HTTPError
