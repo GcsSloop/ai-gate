@@ -28,8 +28,8 @@ var accountExchangeTableNames = []string{
 const accountUsageSnapshotExportLimit = 2000
 
 type SQLTransfer struct {
-	db                    *sql.DB
-	accountCredentialRead func(accountID int64, stored string) (string, error)
+	db                     *sql.DB
+	accountCredentialRead  func(accountID int64, stored string) (string, error)
 	accountCredentialWrite func(plain string) (string, error)
 }
 
@@ -88,23 +88,28 @@ func (t *SQLTransfer) Export() ([]byte, error) {
 		query := fmt.Sprintf("SELECT %s FROM %s ORDER BY rowid ASC", strings.Join(quoteIdentifiers(columns), ", "), quoteIdentifier(table))
 		if table == "account_usage_snapshots" {
 			query = fmt.Sprintf(
-				`WITH ranked AS (
+				`WITH anchor AS (
+					SELECT datetime(COALESCE(MAX(checked_at), 'now')) AS reference_now
+					FROM %s
+				),
+				ranked AS (
 					SELECT %s,
 						CASE
-							WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime('now', '-7 day') THEN 'recent:' || CAST(id AS TEXT)
-							WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime('now', '-30 day') THEN 'mid:' || strftime('%%Y-%%m-%%d', COALESCE(checked_at, '1970-01-01T00:00:00Z')) || ':' || printf('%%02d', (CAST(strftime('%%H', COALESCE(checked_at, '1970-01-01T00:00:00Z')) AS INTEGER) / 6) * 6)
+							WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime(anchor.reference_now, '-7 day') THEN 'recent:' || CAST(id AS TEXT)
+							WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime(anchor.reference_now, '-30 day') THEN 'mid:' || strftime('%%Y-%%m-%%d', COALESCE(checked_at, '1970-01-01T00:00:00Z')) || ':' || printf('%%02d', (CAST(strftime('%%H', COALESCE(checked_at, '1970-01-01T00:00:00Z')) AS INTEGER) / 6) * 6)
 							ELSE 'old:' || strftime('%%Y-%%m-%%d', COALESCE(checked_at, '1970-01-01T00:00:00Z'))
 						END AS bucket_key,
 						ROW_NUMBER() OVER (
 							PARTITION BY
 								CASE
-									WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime('now', '-7 day') THEN 'recent:' || CAST(id AS TEXT)
-									WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime('now', '-30 day') THEN 'mid:' || strftime('%%Y-%%m-%%d', COALESCE(checked_at, '1970-01-01T00:00:00Z')) || ':' || printf('%%02d', (CAST(strftime('%%H', COALESCE(checked_at, '1970-01-01T00:00:00Z')) AS INTEGER) / 6) * 6)
+									WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime(anchor.reference_now, '-7 day') THEN 'recent:' || CAST(id AS TEXT)
+									WHEN datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) >= datetime(anchor.reference_now, '-30 day') THEN 'mid:' || strftime('%%Y-%%m-%%d', COALESCE(checked_at, '1970-01-01T00:00:00Z')) || ':' || printf('%%02d', (CAST(strftime('%%H', COALESCE(checked_at, '1970-01-01T00:00:00Z')) AS INTEGER) / 6) * 6)
 									ELSE 'old:' || strftime('%%Y-%%m-%%d', COALESCE(checked_at, '1970-01-01T00:00:00Z'))
 								END
 							ORDER BY datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) DESC, id DESC
 						) AS bucket_rank
 					FROM %s
+					CROSS JOIN anchor
 				),
 				sampled AS (
 					SELECT %s
@@ -116,6 +121,7 @@ func (t *SQLTransfer) Export() ([]byte, error) {
 				SELECT %s
 				FROM sampled
 				ORDER BY datetime(COALESCE(checked_at, '1970-01-01T00:00:00Z')) ASC, id ASC`,
+				quoteIdentifier(table),
 				strings.Join(quoteIdentifiers(columns), ", "),
 				quoteIdentifier(table),
 				strings.Join(quoteIdentifiers(columns), ", "),
