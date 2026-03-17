@@ -158,6 +158,8 @@ func parseOfficialRawUsage(raw []byte) (usagedrv.RawUsageResult, bool) {
 		Meta: map[string]any{
 			"allowed":       allowed,
 			"limit_reached": limitReached,
+			"has_credits":   hasCredits,
+			"unlimited":     unlimited,
 		},
 	}, true
 }
