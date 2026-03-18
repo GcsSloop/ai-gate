@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -41,6 +43,8 @@ type App struct {
 	cancel     context.CancelFunc
 	background sync.WaitGroup
 }
+
+type backgroundTask func(context.Context, time.Time)
 
 func NewApp(_ context.Context, cfg Config) (*App, error) {
 	if cfg.ListenAddr == "" {
@@ -180,20 +184,59 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		defer app.background.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		for {
-			select {
-			case <-appCtx.Done():
-				return
-			case now := <-ticker.C:
-				_ = recoveryJob.Run(appCtx, now.UTC())
-				_ = refreshOrchestrator.Run(appCtx, now.UTC())
-				_ = compactionJob.Run(appCtx, now.UTC())
-				_ = backupJob.Run(appCtx, now.UTC())
-			}
+		startupTasks := []backgroundTask{
+			loggedBackgroundTask("account recovery", recoveryJob.Run),
+			loggedBackgroundTask("usage refresh", refreshOrchestrator.Run),
 		}
+		tasks := []backgroundTask{
+			loggedBackgroundTask("account recovery", recoveryJob.Run),
+			loggedBackgroundTask("usage refresh", refreshOrchestrator.Run),
+			loggedBackgroundTask("usage compaction", compactionJob.Run),
+			loggedBackgroundTask("database backup", backupJob.Run),
+		}
+		runBackgroundCycle(appCtx, time.Now().UTC(), startupTasks...)
+		runBackgroundLoop(appCtx, ticker.C, tasks...)
 	}()
 
 	return app, nil
+}
+
+func loggedBackgroundTask(name string, task func(context.Context, time.Time) error) backgroundTask {
+	return func(ctx context.Context, runAt time.Time) {
+		if task == nil {
+			return
+		}
+		if err := task(ctx, runAt.UTC()); err != nil {
+			log.Printf("%s failed: %v", name, err)
+		}
+	}
+}
+
+func runBackgroundLoop(ctx context.Context, ticks <-chan time.Time, tasks ...backgroundTask) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now, ok := <-ticks:
+			if !ok {
+				return
+			}
+			runBackgroundCycle(ctx, now.UTC(), tasks...)
+		}
+	}
+}
+
+func runBackgroundCycle(ctx context.Context, now time.Time, tasks ...backgroundTask) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("background scheduler panic recovered: %v\n%s", recovered, debug.Stack())
+		}
+	}()
+	for _, task := range tasks {
+		if task != nil {
+			task(ctx, now.UTC())
+		}
+	}
 }
 
 func cleanupLegacyAuditData(db *sql.DB) error {

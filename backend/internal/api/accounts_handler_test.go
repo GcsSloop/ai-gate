@@ -869,6 +869,75 @@ func TestAccountsHandlerListUsageReadsCachedSnapshotsOnly(t *testing.T) {
 	}
 }
 
+func TestAccountsHandlerListUsageIncludesPPChatDailySummaryFromCachedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, usageRepo, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "ppchat-main",
+		SourceIcon:    "ppchat",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       "https://code.ppchat.vip/v1",
+		CredentialRef: "sk-ppchat",
+		Status:        accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		QuotaRemaining: 13931,
+		CheckedAt:      time.Now().UTC(),
+		Source:         "remote",
+		Confidence:     "high",
+		ProviderSnapshotJSON: `{
+			"capacity_model":"quota_rate",
+			"payload":{
+				"success":true,
+				"data":{
+					"token_info":{
+						"today_used_quota":1068,
+						"remain_quota_display":13931,
+						"today_added_quota":14999
+					}
+				}
+			}
+		}`,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/accounts/usage", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts/usage status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var listed []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if listed[0]["ppchat_today_used_quota"].(float64) != 1068 {
+		t.Fatalf("ppchat_today_used_quota = %v, want 1068", listed[0]["ppchat_today_used_quota"])
+	}
+	if listed[0]["ppchat_today_remaining_quota"].(float64) != 13931 {
+		t.Fatalf("ppchat_today_remaining_quota = %v, want 13931", listed[0]["ppchat_today_remaining_quota"])
+	}
+	if listed[0]["ppchat_today_added_quota"].(float64) != 14999 {
+		t.Fatalf("ppchat_today_added_quota = %v, want 14999", listed[0]["ppchat_today_added_quota"])
+	}
+}
+
 func TestAccountsHandlerRefreshUsage(t *testing.T) {
 	t.Parallel()
 

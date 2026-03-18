@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/bootstrap"
+	"github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 )
 
 func TestNewApp(t *testing.T) {
@@ -122,6 +124,7 @@ func TestNewAppSchedulesUsageRefreshOrchestrator(t *testing.T) {
 	defer usageServer.Close()
 
 	dbPath := filepath.Join(t.TempDir(), "router.sqlite")
+	seedUsageAccount(t, dbPath, usageServer.URL, "lua-refresh", "sk-refresh")
 	app, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
 		ListenAddr:        "127.0.0.1:0",
 		DatabasePath:      dbPath,
@@ -133,22 +136,6 @@ func TestNewAppSchedulesUsageRefreshOrchestrator(t *testing.T) {
 	t.Cleanup(func() {
 		_ = app.Close()
 	})
-
-	createReq := httptest.NewRequest(http.MethodPost, "/ai-router/api/accounts", bytes.NewBufferString(`{
-		"provider_type":"openai-compatible",
-		"account_name":"lua-refresh",
-		"auth_mode":"api_key",
-		"base_url":"https://mirror.example.test/v1",
-		"credential_ref":"sk-refresh",
-		"usage_driver":"lua",
-		"usage_config_json":"{\"script\":\"internal/usagedrv/lua/testdata/vendor_x.lua\",\"endpoint\":\"`+usageServer.URL+`/usage\"}"
-	}`))
-	createReq.Header.Set("Content-Type", "application/json")
-	createRec := httptest.NewRecorder()
-	app.Handler().ServeHTTP(createRec, createReq)
-	if createRec.Code != http.StatusCreated {
-		t.Fatalf("POST /ai-router/api/accounts status = %d, want %d", createRec.Code, http.StatusCreated)
-	}
 
 	deadline := time.Now().Add(1 * time.Second)
 	var lastStatus int
@@ -172,5 +159,81 @@ func TestNewAppSchedulesUsageRefreshOrchestrator(t *testing.T) {
 			t.Fatalf("usage refresh did not populate snapshot before deadline: status=%d body=%s", lastStatus, lastBody)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestNewAppRefreshesUsageImmediatelyOnStartup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	usageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-immediate" {
+			t.Fatalf("Authorization = %q, want Bearer sk-immediate", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"quota_remaining":654}`))
+	}))
+	defer usageServer.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "router.sqlite")
+	seedUsageAccount(t, dbPath, usageServer.URL, "lua-immediate", "sk-immediate")
+
+	app, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
+		ListenAddr:        "127.0.0.1:0",
+		DatabasePath:      dbPath,
+		SchedulerInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("restart NewApp returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = app.Close()
+	})
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for {
+		req := httptest.NewRequest(http.MethodGet, "/ai-router/api/accounts/usage", nil)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code == http.StatusOK {
+			var items []map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+				t.Fatalf("json.Unmarshal returned error: %v", err)
+			}
+			if len(items) == 1 && items[0]["quota_remaining"] == float64(654) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("usage refresh did not run immediately on startup: status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func seedUsageAccount(t *testing.T, dbPath, usageServerURL, accountName, credential string) {
+	t.Helper()
+
+	store, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("sqlite.Open returned error: %v", err)
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	err = repo.Create(accounts.Account{
+		ProviderType:    accounts.ProviderOpenAICompatible,
+		AccountName:     accountName,
+		AuthMode:        accounts.AuthModeAPIKey,
+		CredentialRef:   credential,
+		UsageDriver:     "lua",
+		UsageConfigJSON: "{\"script\":\"internal/usagedrv/lua/testdata/vendor_x.lua\",\"endpoint\":\"" + usageServerURL + "/usage\"}",
+		BaseURL:         "https://mirror.example.test/v1",
+		Status:          accounts.StatusActive,
+		Priority:        1,
+	})
+	if err != nil {
+		t.Fatalf("seed usage account returned error: %v", err)
 	}
 }

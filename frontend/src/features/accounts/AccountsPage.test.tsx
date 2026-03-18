@@ -899,26 +899,28 @@ describe("AccountsPage", () => {
         return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
       }
       if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.startsWith("/ai-router/api/accounts/1/ppchat-token-logs") && (!init?.method || init.method === "GET")) {
         return Promise.resolve(
           new Response(
-            JSON.stringify({
-              success: true,
-              data: {
-                logs: [],
-                pagination: { page: 1, page_size: 10, total: 0, total_pages: 0 },
-                token_info: {
-                  name: "ppchat-main",
-                  today_usage_count: 172,
-                  today_used_quota: 1068,
-                  remain_quota_display: 13931,
-                  today_added_quota: 14999,
-                  expired_time_formatted: "2026-04-23 08:18:32",
-                },
+            JSON.stringify([
+              {
+                account_id: 1,
+                balance: 0,
+                quota_remaining: 0,
+                rpm_remaining: 0,
+                tpm_remaining: 0,
+                health_score: 1,
+                recent_error_rate: 0,
+                last_total_tokens: 0,
+                last_input_tokens: 0,
+                last_output_tokens: 0,
+                model_context_window: 0,
+                primary_used_percent: 0,
+                secondary_used_percent: 0,
+                ppchat_today_used_quota: 1068,
+                ppchat_today_remaining_quota: 13931,
+                ppchat_today_added_quota: 14999,
               },
-            }),
+            ]),
             { status: 200, headers: { "Content-Type": "application/json" } },
           ),
         );
@@ -934,6 +936,7 @@ describe("AccountsPage", () => {
     expect(await screen.findByText("1D")).toBeInTheDocument();
     expect(screen.getByText("93%")).toBeInTheDocument();
     expect(document.querySelector(".account-usage-mini")).toHaveClass("account-usage-mini-single");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/ai-router/api/accounts/1/ppchat-token-logs"))).toBe(false);
   });
 
   it("reorders account cards during pointer drag before release", async () => {
