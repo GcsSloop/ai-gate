@@ -93,12 +93,16 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.importLocalAuth(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts/import-current":
 		h.importCurrentAuth(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/accounts/import-shared":
+		h.importSharedAccount(w, r)
 	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/accounts/") && countPathSegments(r.URL.Path) == 2:
 		h.updateAccount(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/accounts/") && countPathSegments(r.URL.Path) == 2:
 		h.deleteAccount(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/duplicate"):
 		h.duplicateAccount(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/share"):
+		h.shareAccount(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/test"):
 		h.testAccount(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/ppchat-token-logs"):
@@ -133,6 +137,30 @@ type importCurrentAuthRequest struct {
 	AccountName string `json:"account_name"`
 }
 
+type importSharedAccountRequest struct {
+	Payload string `json:"payload"`
+}
+
+type accountShareEnvelope struct {
+	Kind          string               `json:"kind"`
+	SchemaVersion int                  `json:"schema_version"`
+	ExportedAt    string               `json:"exported_at"`
+	Account       accountSharePayload  `json:"account"`
+}
+
+type accountSharePayload struct {
+	ProviderType      accounts.ProviderType `json:"provider_type"`
+	AccountName       string                `json:"account_name"`
+	SourceIcon        string                `json:"source_icon"`
+	AuthMode          accounts.AuthMode     `json:"auth_mode"`
+	BaseURL           string                `json:"base_url"`
+	CredentialRef     string                `json:"credential_ref"`
+	AccountDriver     string                `json:"account_driver"`
+	UsageDriver       string                `json:"usage_driver"`
+	UsageConfigJSON   string                `json:"usage_config_json"`
+	SupportsResponses bool                  `json:"supports_responses"`
+}
+
 type updateAccountRequest struct {
 	AccountName       string          `json:"account_name"`
 	SourceIcon        string          `json:"source_icon"`
@@ -158,6 +186,9 @@ type accountChatTestRequest struct {
 	Model string `json:"model"`
 	Input string `json:"input"`
 }
+
+const accountShareKind = "aigate-account-share"
+const accountShareSchemaVersion = 1
 
 func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) {
 	var req createAccountRequest
@@ -444,6 +475,81 @@ func (h *AccountsHandler) importCurrentAuth(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (h *AccountsHandler) shareAccount(w http.ResponseWriter, r *http.Request) {
+	id, err := accountIDFromPath(strings.TrimSuffix(strings.TrimSuffix(r.URL.Path, "/share"), "/"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	account, err := h.repo.GetByID(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	account = applyBuiltInDriverDefaults(account)
+
+	payload, err := json.Marshal(accountShareEnvelope{
+		Kind:          accountShareKind,
+		SchemaVersion: accountShareSchemaVersion,
+		ExportedAt:    time.Now().UTC().Format(time.RFC3339),
+		Account: accountSharePayload{
+			ProviderType:      account.ProviderType,
+			AccountName:       account.AccountName,
+			SourceIcon:        normalizeAccountSourceIcon(account.SourceIcon),
+			AuthMode:          account.AuthMode,
+			BaseURL:           account.BaseURL,
+			CredentialRef:     account.CredentialRef,
+			AccountDriver:     account.AccountDriver,
+			UsageDriver:       account.UsageDriver,
+			UsageConfigJSON:   account.UsageConfigJSON,
+			SupportsResponses: account.NativeResponsesCapable(),
+		},
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"payload": string(payload)})
+}
+
+func (h *AccountsHandler) importSharedAccount(w http.ResponseWriter, r *http.Request) {
+	var req importSharedAccountRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	envelope, err := parseSharedAccountPayload(req.Payload)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	account := applyBuiltInDriverDefaults(accounts.Account{
+		ProviderType:      envelope.Account.ProviderType,
+		AccountName:       envelope.Account.AccountName,
+		SourceIcon:        normalizeAccountSourceIcon(envelope.Account.SourceIcon),
+		AuthMode:          envelope.Account.AuthMode,
+		BaseURL:           strings.TrimSpace(envelope.Account.BaseURL),
+		CredentialRef:     envelope.Account.CredentialRef,
+		AccountDriver:     strings.TrimSpace(envelope.Account.AccountDriver),
+		UsageDriver:       strings.TrimSpace(envelope.Account.UsageDriver),
+		UsageConfigJSON:   strings.TrimSpace(envelope.Account.UsageConfigJSON),
+		Status:            accounts.StatusActive,
+		Priority:          0,
+		IsActive:          false,
+		SupportsResponses: envelope.Account.SupportsResponses,
+	})
+
+	if err := h.repo.Create(account); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	w.WriteHeader(http.StatusCreated)
 }
 
@@ -1055,12 +1161,96 @@ func accountIDFromPath(path string) (int64, error) {
 	trimmed := strings.TrimPrefix(path, "/accounts/")
 	trimmed = strings.TrimSuffix(trimmed, "/disable")
 	trimmed = strings.TrimSuffix(trimmed, "/duplicate")
+	trimmed = strings.TrimSuffix(trimmed, "/share")
 	trimmed = strings.TrimSuffix(trimmed, "/test")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		return 0, errors.New("missing account id")
 	}
 	return strconv.ParseInt(trimmed, 10, 64)
+}
+
+func parseSharedAccountPayload(raw string) (accountShareEnvelope, error) {
+	var envelope accountShareEnvelope
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &envelope); err != nil {
+		return accountShareEnvelope{}, fmt.Errorf("invalid shared account payload: %w", err)
+	}
+	if envelope.Kind != accountShareKind {
+		return accountShareEnvelope{}, fmt.Errorf("invalid shared account kind: %q", envelope.Kind)
+	}
+	if envelope.SchemaVersion != accountShareSchemaVersion {
+		return accountShareEnvelope{}, fmt.Errorf("unsupported shared account schema version: %d", envelope.SchemaVersion)
+	}
+	if err := validateSharedAccount(envelope.Account); err != nil {
+		return accountShareEnvelope{}, err
+	}
+	return envelope, nil
+}
+
+func validateSharedAccount(payload accountSharePayload) error {
+	if !isSupportedProviderType(payload.ProviderType) {
+		return fmt.Errorf("unsupported provider_type: %q", payload.ProviderType)
+	}
+	if strings.TrimSpace(payload.AccountName) == "" {
+		return errors.New("missing account_name")
+	}
+	if !isSupportedAuthMode(payload.AuthMode) {
+		return fmt.Errorf("unsupported auth_mode: %q", payload.AuthMode)
+	}
+	if strings.TrimSpace(payload.CredentialRef) == "" {
+		return errors.New("missing credential_ref")
+	}
+	if err := validateAbsoluteBaseURL(payload.BaseURL); err != nil {
+		return err
+	}
+	if err := validateUsageConfigJSON(payload.UsageConfigJSON); err != nil {
+		return err
+	}
+	return nil
+}
+
+func isSupportedProviderType(value accounts.ProviderType) bool {
+	switch value {
+	case accounts.ProviderOpenAIOfficial, accounts.ProviderOpenAICompatible:
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedAuthMode(value accounts.AuthMode) bool {
+	switch value {
+	case accounts.AuthModeOAuth, accounts.AuthModeAPIKey, accounts.AuthModeLocalImport:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateAbsoluteBaseURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("invalid base_url: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("invalid base_url scheme: %q", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return errors.New("invalid base_url: missing host")
+	}
+	return nil
+}
+
+func validateUsageConfigJSON(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return fmt.Errorf("invalid usage_config_json: %w", err)
+	}
+	return nil
 }
 
 func nextDuplicatedAccountName(baseName string, accountList []accounts.Account) string {
