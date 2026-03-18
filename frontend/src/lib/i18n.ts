@@ -133,6 +133,8 @@ const enUSMessages: Record<string, string> = {
   "检查更新失败": "Failed to check for updates",
   "下载进度": "Download progress",
   "下载并安装": "Download and install",
+  "终止下载": "Cancel download",
+  "下载已取消": "Download cancelled",
   "更新已安装，重启后生效": "The update is installed. Restart to finish applying it.",
   "安装更新失败": "Failed to install the update",
   "立即重启": "Restart now",

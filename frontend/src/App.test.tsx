@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mockedUpdateService = vi.hoisted(() => ({
+  getState: vi.fn(),
   check: vi.fn(),
   downloadAndInstall: vi.fn(),
+  cancelDownload: vi.fn(),
   relaunch: vi.fn(),
 }));
 
@@ -65,8 +67,10 @@ describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     MockEventSource.instances = [];
+    mockedUpdateService.getState.mockResolvedValue({ status: "idle", update: null, progress: null, error: null });
     mockedUpdateService.check.mockResolvedValue({ supported: true, update: null });
     mockedUpdateService.downloadAndInstall.mockResolvedValue(undefined);
+    mockedUpdateService.cancelDownload.mockResolvedValue(undefined);
     mockedUpdateService.relaunch.mockResolvedValue(undefined);
     vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
     vi.mocked(loadDesktopShellContext).mockResolvedValue({
