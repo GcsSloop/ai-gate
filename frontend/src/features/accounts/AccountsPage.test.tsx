@@ -67,6 +67,9 @@ describe("AccountsPage", () => {
       if (url === "/ai-router/api/accounts/import-current" && init?.method === "POST") {
         return Promise.resolve(new Response(null, { status: 201 }));
       }
+      if (url === "/ai-router/api/accounts/usage/refresh" && init?.method === "POST") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
       if (url === "/ai-router/api/accounts" && init?.method === "POST") {
         return Promise.resolve(new Response(null, { status: 201 }));
       }
@@ -139,6 +142,12 @@ describe("AccountsPage", () => {
           method: "POST",
           body: JSON.stringify({ account_name: "current-codex" }),
         }),
+      );
+    });
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/usage/refresh",
+        expect.objectContaining({ method: "POST" }),
       );
     });
 
@@ -937,6 +946,72 @@ describe("AccountsPage", () => {
     expect(screen.getByText("93%")).toBeInTheDocument();
     expect(document.querySelector(".account-usage-mini")).toHaveClass("account-usage-mini-single");
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/ai-router/api/accounts/1/ppchat-token-logs"))).toBe(false);
+  });
+
+  it("refreshes usage after shared account import so imported accounts do not stay at default progress", async () => {
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-official",
+        account_name: "shared-codex",
+        source_icon: "openai",
+        auth_mode: "codex_local_import",
+        base_url: "https://chatgpt.com/backend-api/codex",
+        status: "active",
+        is_active: false,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/import-shared" && init?.method === "POST") {
+        return Promise.resolve(new Response(null, { status: 201 }));
+      }
+      if (url === "/ai-router/api/accounts/usage/refresh" && init?.method === "POST") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+    expect(await screen.findByText("shared-codex")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /添加账户/ }));
+    fireEvent.click(await screen.findByText("导入账户"));
+
+    const importModal = await screen.findByRole("dialog", { name: "导入账户" });
+    fireEvent.change(within(importModal).getByLabelText("粘贴分享内容"), {
+      target: { value: "{\"kind\":\"aigate-account-share\",\"schema_version\":1}" },
+    });
+    fireEvent.click(within(importModal).getByRole("button", { name: "校验并导入" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/usage/refresh",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
   });
 
   it("reorders account cards during pointer drag before release", async () => {

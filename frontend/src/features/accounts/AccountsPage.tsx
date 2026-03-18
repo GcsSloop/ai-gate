@@ -65,6 +65,7 @@ import {
   fetchPPChatTokenLogs,
   listAccountUsage,
   listAccounts,
+  refreshAccountUsage,
   shareAccount,
   testAccount,
   updateAccount,
@@ -403,6 +404,11 @@ export function AccountsPage({
       credential_ref: values.credential_ref,
       supports_responses: true,
     });
+    try {
+      await refreshAccountUsage();
+    } catch {
+      // Keep account creation successful even if immediate usage refresh fails.
+    }
     setInternalAddModalMode(null);
     thirdPartyForm.resetFields();
     await refreshAll();
@@ -412,6 +418,11 @@ export function AccountsPage({
 
   async function handleCreateOfficial(values: { account_name: string }) {
     await importCurrentCodexAuth(values.account_name || "local-codex");
+    try {
+      await refreshAccountUsage();
+    } catch {
+      // Keep import successful even if immediate usage refresh fails.
+    }
     officialForm.resetFields();
     setInternalAddModalMode(null);
     await refreshAll();
@@ -423,6 +434,11 @@ export function AccountsPage({
     setSharedImportError("");
     try {
       await importSharedAccount(values.payload);
+      try {
+        await refreshAccountUsage();
+      } catch {
+        // Keep import successful even if immediate usage refresh fails.
+      }
       sharedImportForm.resetFields();
       setInternalAddModalMode(null);
       await refreshAll();

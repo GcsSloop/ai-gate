@@ -242,6 +242,16 @@ export async function listAccountUsage(): Promise<AccountUsageRecord[]> {
   return response.json();
 }
 
+export async function refreshAccountUsage(): Promise<void> {
+  const response = await fetch(apiPath("/accounts/usage/refresh"), {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to refresh account usage");
+  }
+}
+
 export function subscribeAccountRoutingStateChanged(handler: () => void): () => void {
   if (typeof window === "undefined" || typeof EventSource === "undefined") {
     return () => {};
