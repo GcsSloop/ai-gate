@@ -50,6 +50,8 @@ func (c *responsesUsageCollector) Observe(frame map[string]any) {
 	case "token_count":
 		c.observeTokenCount(payload)
 		c.applyPayloadRateLimits(payload)
+	case "thread/tokenUsage/updated", "thread.token_usage.updated":
+		c.observeThreadTokenUsageUpdated(payload)
 	case "response.completed":
 		c.observeCompletedResponse(payload)
 		c.applyPayloadRateLimits(payload)
@@ -117,15 +119,32 @@ func (c *responsesUsageCollector) observeTokenCount(payload map[string]any) {
 
 	if info, ok := payload["info"].(map[string]any); ok {
 		if total, ok := info["total_token_usage"].(map[string]any); ok {
-			c.snapshot.LastTotalTokens = asFloat(total["total_tokens"])
-			c.snapshot.LastInputTokens = asFloat(total["input_tokens"])
-			c.snapshot.LastOutputTokens = asFloat(total["output_tokens"])
+			c.applyTokenUsageBreakdown(total)
 		}
 		if contextWindow := asFloat(info["model_context_window"]); contextWindow > 0 {
 			c.snapshot.ModelContextWindow = contextWindow
 			if c.snapshot.LastTotalTokens > 0 {
 				c.snapshot.QuotaRemaining = math.Max(contextWindow-c.snapshot.LastTotalTokens, 0)
 			}
+		}
+	}
+}
+
+func (c *responsesUsageCollector) observeThreadTokenUsageUpdated(payload map[string]any) {
+	tokenUsage, ok := payload["token_usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	total, ok := tokenUsage["total"].(map[string]any)
+	if !ok {
+		return
+	}
+	c.hasData = true
+	c.applyTokenUsageBreakdown(total)
+	if contextWindow := asFloat(tokenUsage["model_context_window"]); contextWindow > 0 {
+		c.snapshot.ModelContextWindow = contextWindow
+		if c.snapshot.LastTotalTokens > 0 {
+			c.snapshot.QuotaRemaining = math.Max(contextWindow-c.snapshot.LastTotalTokens, 0)
 		}
 	}
 }
@@ -158,6 +177,23 @@ func (c *responsesUsageCollector) observeCompletedResponse(payload map[string]an
 			c.outputs = append(c.outputs, cloneJSONMap(item))
 		}
 	}
+}
+
+func (c *responsesUsageCollector) applyTokenUsageBreakdown(total map[string]any) {
+	if total == nil {
+		return
+	}
+	inputTokens := asFloat(total["input_tokens"])
+	cachedInputTokens := asFloat(total["cached_input_tokens"])
+	outputTokens := asFloat(total["output_tokens"])
+	totalTokens := asFloat(total["total_tokens"])
+	c.snapshot.LastInputTokens = inputTokens + cachedInputTokens
+	c.snapshot.LastOutputTokens = outputTokens
+	if totalTokens > 0 {
+		c.snapshot.LastTotalTokens = totalTokens
+		return
+	}
+	c.snapshot.LastTotalTokens = c.snapshot.LastInputTokens + c.snapshot.LastOutputTokens
 }
 
 func (c *responsesUsageCollector) applyPayloadRateLimits(payload map[string]any) {
@@ -201,6 +237,11 @@ func unwrapResponsesFrame(frame map[string]any) map[string]any {
 	if payload, ok := frame["payload"].(map[string]any); ok {
 		if payloadType, _ := payload["type"].(string); payloadType != "" {
 			return payload
+		}
+	}
+	if msg, ok := frame["msg"].(map[string]any); ok {
+		if msgType, _ := msg["type"].(string); msgType != "" {
+			return msg
 		}
 	}
 	return frame
