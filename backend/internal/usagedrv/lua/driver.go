@@ -17,7 +17,8 @@ import (
 )
 
 type Driver struct {
-	runtime *Runtime
+	runtime      *Runtime
+	managedStore *ManagedScriptStore
 }
 
 type DriverConfig struct {
@@ -26,10 +27,38 @@ type DriverConfig struct {
 	Raw       map[string]any `json:"-"`
 }
 
-func NewDriver(client *http.Client, baseDir string) *Driver {
-	return &Driver{
+type DriverOption func(*Driver)
+
+func WithManagedScriptRoot(root string) DriverOption {
+	return func(driver *Driver) {
+		if driver == nil || strings.TrimSpace(root) == "" {
+			return
+		}
+		store, err := NewManagedScriptStore(root)
+		if err == nil {
+			driver.managedStore = store
+		}
+	}
+}
+
+func WithManagedScriptStore(store *ManagedScriptStore) DriverOption {
+	return func(driver *Driver) {
+		if driver != nil {
+			driver.managedStore = store
+		}
+	}
+}
+
+func NewDriver(client *http.Client, baseDir string, opts ...DriverOption) *Driver {
+	driver := &Driver{
 		runtime: NewRuntime(client, baseDir),
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(driver)
+		}
+	}
+	return driver
 }
 
 func NewDriverWithRuntime(runtime *Runtime) *Driver {
@@ -45,7 +74,7 @@ func (d *Driver) Supports(account accounts.Account) bool {
 }
 
 func (d *Driver) Fetch(ctx context.Context, account accounts.Account, credential accountdrv.ResolvedCredential) (usagedrv.RawUsageResult, error) {
-	config, err := parseDriverConfig(account.UsageConfigJSON)
+	config, err := ParseDriverConfig(account.UsageConfigJSON)
 	if err != nil {
 		return usagedrv.RawUsageResult{}, err
 	}
@@ -61,10 +90,21 @@ func (d *Driver) Fetch(ctx context.Context, account accounts.Account, credential
 		d.runtime = NewRuntime(nil, "")
 	}
 
+	if key, ok := ParseManagedScriptKey(config.Script); ok {
+		if d.managedStore == nil {
+			return usagedrv.RawUsageResult{}, fmt.Errorf("managed script store is not configured")
+		}
+		source, err := d.managedStore.Load(key)
+		if err != nil {
+			return usagedrv.RawUsageResult{}, err
+		}
+		return d.runtime.ExecuteSource(callCtx, source, "managed:"+key, account, credential, config.Raw)
+	}
+
 	return d.runtime.Execute(callCtx, config.Script, account, credential, config.Raw)
 }
 
-func parseDriverConfig(raw string) (DriverConfig, error) {
+func ParseDriverConfig(raw string) (DriverConfig, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return DriverConfig{}, fmt.Errorf("lua usage config is empty")
