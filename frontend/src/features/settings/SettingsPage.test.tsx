@@ -251,6 +251,7 @@ describe("SettingsPage", () => {
     });
     await waitFor(() => {
       expect(confirmSpy).toHaveBeenCalled();
+      expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({ centered: true }));
       expect(fetchMock).toHaveBeenCalledWith(
         "/ai-router/api/settings/database/backups/20260309-101500.000",
         expect.objectContaining({ method: "DELETE" }),

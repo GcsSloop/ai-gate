@@ -130,6 +130,7 @@ describe("AccountsPage", () => {
     fireEvent.click(await screen.findByText("官方账户"));
 
     const officialModal = await screen.findByRole("dialog", { name: "添加官方账户" });
+    expect(officialModal.closest(".ant-modal-wrap")).toHaveClass("ant-modal-centered");
     fireEvent.change(within(officialModal).getByLabelText("账户名称"), {
       target: { value: "current-codex" },
     });
@@ -420,6 +421,58 @@ describe("AccountsPage", () => {
 
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "导入账户" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("centers the delete confirmation modal vertically", async () => {
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "mirror-east",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://api.example/v1",
+        status: "active",
+        is_active: false,
+        priority: 2,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 100,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("mirror-east")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除-mirror-east" }));
+    await waitFor(() => {
+      const confirmWrap = document.querySelector(".ant-modal-confirm")?.closest(".ant-modal-wrap");
+      expect(confirmWrap).not.toBeNull();
+      expect(confirmWrap).toHaveClass("ant-modal-centered");
     });
   });
 
