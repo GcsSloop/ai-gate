@@ -76,7 +76,30 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	authConnector := auth.NewOAuthConnector(auth.Config{})
 	stateStore := auth.NewStateStore(5 * time.Minute)
 	stateEvents := api.NewStateEventBus()
-	accountsHandler := api.NewAccountsHandler(accountRepo, usageRepo, authConnector, stateStore, api.WithAccountsStateEvents(stateEvents))
+	driverRegistry, err := registry.New(
+		[]accountdrv.AccountDriver{
+			accountdrv.NewOfficialDriver(http.DefaultClient, accountRepo),
+			accountdrv.NewAPIKeyDriver(),
+		},
+		[]usagedrv.UsageDriver{
+			builtin.NewOpenAIOfficialDriver(http.DefaultClient),
+			builtin.NewPPChatDriver(http.DefaultClient),
+			luadrv.NewDriver(http.DefaultClient, ""),
+		},
+	)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	refreshOrchestrator := refresh.NewOrchestrator(accountRepo, usageRepo, driverRegistry)
+	accountsHandler := api.NewAccountsHandler(
+		accountRepo,
+		usageRepo,
+		authConnector,
+		stateStore,
+		api.WithAccountsStateEvents(stateEvents),
+		api.WithAccountsUsageRefresher(refreshOrchestrator),
+	)
 	conversationsHandler := api.NewConversationsHandler(conversationRepo)
 
 	apiMux := http.NewServeMux()
@@ -152,22 +175,6 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	compactionJob := scheduler.NewUsageCompactionJob(func(_ context.Context, now time.Time) error {
 		return usageRepo.CompactEvents(now.UTC())
 	})
-	driverRegistry, err := registry.New(
-		[]accountdrv.AccountDriver{
-			accountdrv.NewOfficialDriver(http.DefaultClient, accountRepo),
-			accountdrv.NewAPIKeyDriver(),
-		},
-		[]usagedrv.UsageDriver{
-			builtin.NewOpenAIOfficialDriver(http.DefaultClient),
-			builtin.NewPPChatDriver(http.DefaultClient),
-			luadrv.NewDriver(http.DefaultClient, ""),
-		},
-	)
-	if err != nil {
-		_ = store.Close()
-		return nil, err
-	}
-	refreshOrchestrator := refresh.NewOrchestrator(accountRepo, usageRepo, driverRegistry)
 	app.background.Add(1)
 	go func() {
 		defer app.background.Done()

@@ -16,15 +16,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/auth"
 	"github.com/gcssloop/codex-router/backend/internal/providers"
 	providercodex "github.com/gcssloop/codex-router/backend/internal/providers/codex"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
-	"github.com/gcssloop/codex-router/backend/internal/usage/normalize"
-	"github.com/gcssloop/codex-router/backend/internal/usagedrv/builtin"
 )
 
 const officialOpenAIBaseURL = "https://api.openai.com/v1"
@@ -36,6 +33,8 @@ type AccountsHandler struct {
 	stateStore  *auth.StateStore
 	client      *http.Client
 	stateEvents *StateEventBus
+	refresher   AccountsUsageRefresher
+	refreshTTL  time.Duration
 }
 
 type AccountsHandlerOption func(*AccountsHandler)
@@ -46,13 +45,30 @@ func WithAccountsStateEvents(bus *StateEventBus) AccountsHandlerOption {
 	}
 }
 
+func WithAccountsUsageRefresher(refresher AccountsUsageRefresher) AccountsHandlerOption {
+	return func(handler *AccountsHandler) {
+		handler.refresher = refresher
+	}
+}
+
 type AccountsUsage interface {
 	ListLatest() ([]usage.Snapshot, error)
 	Save(snapshot usage.Snapshot) error
 }
 
+type AccountsUsageRefresher interface {
+	Run(ctx context.Context, runAt time.Time) error
+}
+
 func NewAccountsHandler(repo accounts.Repository, usage AccountsUsage, connector *auth.OAuthConnector, stateStore *auth.StateStore, opts ...AccountsHandlerOption) *AccountsHandler {
-	handler := &AccountsHandler{repo: repo, usage: usage, connector: connector, stateStore: stateStore, client: http.DefaultClient}
+	handler := &AccountsHandler{
+		repo:       repo,
+		usage:      usage,
+		connector:  connector,
+		stateStore: stateStore,
+		client:     http.DefaultClient,
+		refreshTTL: 5 * time.Second,
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(handler)
@@ -65,6 +81,8 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts":
 		h.createAccount(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/accounts/usage/refresh":
+		h.refreshAccountsUsage(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/accounts/usage":
 		h.listAccountsUsage(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/accounts":
@@ -267,7 +285,6 @@ func (h *AccountsHandler) listAccountsUsage(w http.ResponseWriter, _ *http.Reque
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	h.refreshOfficialUsage(context.Background(), accountList)
 
 	type responseItem struct {
 		AccountID            int64      `json:"account_id"`
@@ -321,42 +338,23 @@ func (h *AccountsHandler) listAccountsUsage(w http.ResponseWriter, _ *http.Reque
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (h *AccountsHandler) refreshOfficialUsage(ctx context.Context, accountList []accounts.Account) {
-	if h.usage == nil {
+func (h *AccountsHandler) refreshAccountsUsage(w http.ResponseWriter, r *http.Request) {
+	if h.refresher == nil {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	officialUsageDriver := builtin.NewOpenAIOfficialDriver(h.client)
-	for i := range accountList {
-		account := &accountList[i]
-		if !usesOfficialCodexAdapter(*account) {
-			continue
-		}
-		if err := ensureOfficialAccountSession(ctx, h.client, h.repo, account); err != nil {
-			continue
-		}
-		credential, err := resolveCredential(*account)
-		if err != nil {
-			continue
-		}
-		accountID, err := resolveLocalAccountID(*account)
-		if err != nil {
-			continue
-		}
-		usageAccount := *account
-		usageAccount.BaseURL = resolveAccountBaseURL(*account)
-		result, err := officialUsageDriver.Fetch(ctx, usageAccount, accountdrv.ResolvedCredential{
-			Kind:        "bearer",
-			AccessToken: credential,
-			Metadata: map[string]any{
-				"account_id": accountID,
-			},
-		})
-		if err != nil {
-			continue
-		}
-		snapshot := normalize.FromRaw(account.ID, result, time.Now().UTC())
-		_ = h.usage.Save(snapshot)
+	timeout := h.refreshTTL
+	if timeout <= 0 {
+		timeout = 5 * time.Second
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	if err := h.refresher.Run(ctx, time.Now().UTC()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *AccountsHandler) createAuthSession(w http.ResponseWriter, _ *http.Request) {
