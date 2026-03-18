@@ -312,6 +312,88 @@ func TestResponsesHandlerThinModeOfficialStreamCapturesWrappedTokenCount(t *test
 	}
 }
 
+func TestResponsesHandlerThinModeOfficialStreamWithoutContentTypeStillCapturesUsage(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, ""+
+			"event: response.created\n"+
+			"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_missing_header_1\",\"usage\":null}}\n\n"+
+			"event: response.completed\n"+
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_missing_header_1\",\"output\":[],\"usage\":{\"input_tokens\":17,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":5,\"total_tokens\":22}}}\n\n")
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official-stream-no-header",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:            accounts.StatusActive,
+		Priority:          100,
+		SupportsResponses: true,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:      1,
+		Balance:        100,
+		QuotaRemaining: 100000,
+		RPMRemaining:   100,
+		TPMRemaining:   100000,
+		HealthScore:    0.9,
+	}); err != nil {
+		t.Fatalf("Save(snapshot) returned error: %v", err)
+	}
+
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithResponsesSettings(settingsRepo),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	events, err := usageRepo.ListRecentEvents(usage.EventFilter{Limit: 5})
+	if err != nil {
+		t.Fatalf("ListRecentEvents returned error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(events))
+	}
+	if events[0].InputTokens != 17 || events[0].OutputTokens != 5 || events[0].TotalTokens != 22 {
+		t.Fatalf("event tokens = in:%d out:%d total:%d, want in:17 out:5 total:22", events[0].InputTokens, events[0].OutputTokens, events[0].TotalTokens)
+	}
+}
+
 func TestResponsesHandlerThinModeRejectsUnsupportedActiveAccount(t *testing.T) {
 	t.Parallel()
 

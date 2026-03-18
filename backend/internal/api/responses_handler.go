@@ -259,7 +259,11 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		runStatus := "completed"
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.Header().Set("OpenAI-Model", req.Model)
-		if isEventStreamResponse(resp.Header) {
+		// Some upstream official /responses streams arrive as SSE payloads without a
+		// reliable text/event-stream content type. When the caller requested
+		// stream=true, prefer the SSE path so response.completed usage is not lost.
+		streamResponse := req.Stream || isEventStreamResponse(resp.Header)
+		if streamResponse {
 			collector := newResponsesUsageCollector(account.ID)
 			w.WriteHeader(resp.StatusCode)
 			if err := copyResponseStreamWithObserver(w, resp.Body, collector.Observe); err != nil {
