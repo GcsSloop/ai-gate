@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -13,11 +14,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/api"
 	"github.com/gcssloop/codex-router/backend/internal/auth"
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
+	"github.com/gcssloop/codex-router/backend/internal/usage/refresh"
+	"github.com/gcssloop/codex-router/backend/internal/usagedrv"
+	"github.com/gcssloop/codex-router/backend/internal/usagedrv/builtin"
+	"github.com/gcssloop/codex-router/backend/internal/usagedrv/registry"
 )
 
 func TestAccountsHandler(t *testing.T) {
@@ -587,30 +593,11 @@ func TestAccountsHandlerDuplicateAccountCreatesInactiveCopyWithIncrementedName(t
 	}
 }
 
-func TestAccountsHandlerListAccountsFetchesOfficialWhamUsage(t *testing.T) {
+func TestAccountsHandlerListUsageReadsCachedSnapshotsOnly(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/backend-api/wham/usage" {
-			t.Fatalf("path = %q, want /backend-api/wham/usage", r.URL.Path)
-		}
-		if got := r.Header.Get("Authorization"); got != "Bearer token-1" {
-			t.Fatalf("authorization = %q, want Bearer token-1", got)
-		}
-		if got := r.Header.Get("ChatGPT-Account-Id"); got != "acct-1" {
-			t.Fatalf("ChatGPT-Account-Id = %q, want acct-1", got)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{
-			"plan_type":"plus",
-			"rate_limit":{
-				"allowed":true,
-				"limit_reached":false,
-				"primary_window":{"used_percent":34,"limit_window_seconds":18000,"reset_after_seconds":1200,"reset_at":1772895924},
-				"secondary_window":{"used_percent":58,"limit_window_seconds":604800,"reset_after_seconds":86400,"reset_at":1773332429}
-			},
-			"credits":{"has_credits":true,"unlimited":false,"balance":"5.39"}
-		}`)
+		t.Fatalf("unexpected outbound usage refresh: %s", r.URL.Path)
 	}))
 	defer upstream.Close()
 
@@ -636,6 +623,20 @@ func TestAccountsHandlerListAccountsFetchesOfficialWhamUsage(t *testing.T) {
 		Status: accounts.StatusActive,
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
+	}
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:            1,
+		Balance:              5.39,
+		PrimaryUsedPercent:   34,
+		SecondaryUsedPercent: 58,
+		RPMRemaining:         66,
+		TPMRemaining:         42,
+		CheckedAt:            time.Now().UTC(),
+		Source:               "remote",
+		Confidence:           "high",
+		ProviderSnapshotJSON: `{"cached":true}`,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/accounts/usage", nil)
@@ -666,7 +667,7 @@ func TestAccountsHandlerListAccountsFetchesOfficialWhamUsage(t *testing.T) {
 	}
 }
 
-func TestAccountsHandlerListAccountsKeepsOfficialSnapshotWhenAllowedWithZeroUsage(t *testing.T) {
+func TestAccountsHandlerRefreshUsage(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -694,7 +695,27 @@ func TestAccountsHandlerListAccountsKeepsOfficialSnapshotWhenAllowedWithZeroUsag
 
 	repo := accounts.NewSQLiteRepository(store.DB())
 	usageRepo := usage.NewSQLiteRepository(store.DB())
-	handler := api.NewAccountsHandler(repo, usageRepo, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+	client := upstream.Client()
+	driverRegistry, err := registry.New(
+		[]accountdrv.AccountDriver{
+			accountdrv.NewOfficialDriver(client, repo),
+			accountdrv.NewAPIKeyDriver(),
+		},
+		[]usagedrv.UsageDriver{
+			builtin.NewOpenAIOfficialDriver(client),
+		},
+	)
+	if err != nil {
+		t.Fatalf("registry.New returned error: %v", err)
+	}
+	refresher := refresh.NewOrchestrator(repo, usageRepo, driverRegistry)
+	handler := api.NewAccountsHandler(
+		repo,
+		usageRepo,
+		auth.NewOAuthConnector(auth.Config{}),
+		auth.NewStateStore(5*time.Minute),
+		api.WithAccountsUsageRefresher(refresher),
+	)
 
 	if err := repo.Create(accounts.Account{
 		ProviderType: accounts.ProviderOpenAIOfficial,
@@ -710,6 +731,14 @@ func TestAccountsHandlerListAccountsKeepsOfficialSnapshotWhenAllowedWithZeroUsag
 		t.Fatalf("Create returned error: %v", err)
 	}
 
+	refreshReq := httptest.NewRequest(http.MethodPost, "/accounts/usage/refresh", nil)
+	refreshReq = refreshReq.WithContext(context.Background())
+	refreshRec := httptest.NewRecorder()
+	handler.ServeHTTP(refreshRec, refreshReq)
+	if refreshRec.Code != http.StatusNoContent {
+		t.Fatalf("POST /accounts/usage/refresh status = %d, want %d", refreshRec.Code, http.StatusNoContent)
+	}
+
 	listReq := httptest.NewRequest(http.MethodGet, "/accounts/usage", nil)
 	listRec := httptest.NewRecorder()
 	handler.ServeHTTP(listRec, listReq)
@@ -717,12 +746,18 @@ func TestAccountsHandlerListAccountsKeepsOfficialSnapshotWhenAllowedWithZeroUsag
 		t.Fatalf("GET /accounts/usage status = %d, want %d", listRec.Code, http.StatusOK)
 	}
 
-	var snapshotRows int
-	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM account_usage_snapshots`).Scan(&snapshotRows); err != nil {
-		t.Fatalf("count snapshots returned error: %v", err)
+	var listed []map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
 	}
-	if snapshotRows != 1 {
-		t.Fatalf("snapshot rows = %d, want 1", snapshotRows)
+	if listed[0]["balance"].(float64) != 0 {
+		t.Fatalf("balance = %v, want 0", listed[0]["balance"])
+	}
+	if listed[0]["rpm_remaining"].(float64) != 100 {
+		t.Fatalf("rpm_remaining = %v, want 100", listed[0]["rpm_remaining"])
+	}
+	if listed[0]["tpm_remaining"].(float64) != 100 {
+		t.Fatalf("tpm_remaining = %v, want 100", listed[0]["tpm_remaining"])
 	}
 }
 
