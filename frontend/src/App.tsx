@@ -229,6 +229,7 @@ export function App() {
         content: `${details} ${translate("是否强制退出？")}`,
         okText: translate("强制退出"),
         cancelText: translate("取消"),
+        centered: true,
         onOk: async () => {
           try {
             await disableProxy({ force: true });
@@ -261,6 +262,7 @@ export function App() {
           content: t("当前 config.toml 已被外部修改。请选择关闭方式：覆盖恢复后关闭，或不覆盖直接关闭代理。"),
           okText: t("覆盖并关闭"),
           cancelText: t("不覆盖直接关闭"),
+          centered: true,
           onOk: async () => {
             setProxyLoading(true);
             try {
@@ -438,6 +440,7 @@ export function App() {
                 footer={null}
                 onCancel={() => setHomeUpdateModalOpen(false)}
                 destroyOnHidden
+                centered
                 width={720}
               >
                 <HomeUpdatePanel

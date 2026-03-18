@@ -796,6 +796,7 @@ export function AccountsPage({
                       title: formatDeleteAccountTitle(language, record.account_name),
                       okText: t("删除"),
                       cancelText: t("取消"),
+                      centered: true,
                       okButtonProps: { danger: true },
                       onOk: () => handleDelete(record),
                     })
@@ -876,7 +877,7 @@ export function AccountsPage({
         </DndContext>
       )}
 
-      <Modal open={!!detailAccount} title={t("账户详情")} onCancel={() => setDetailAccount(null)} footer={null} destroyOnHidden width={880}>
+      <Modal open={!!detailAccount} title={t("账户详情")} onCancel={() => setDetailAccount(null)} footer={null} destroyOnHidden centered width={880}>
         {detailAccount ? (
           normalizeSourceIcon(detailAccount.source_icon) === "ppchat" ? (
             <div className="account-detail-layout">
@@ -997,6 +998,7 @@ export function AccountsPage({
         onCancel={() => setInternalAddModalMode(null)}
         footer={null}
         destroyOnHidden
+        centered
       >
         <Form
           form={thirdPartyForm}
@@ -1028,6 +1030,7 @@ export function AccountsPage({
         onCancel={() => setInternalAddModalMode(null)}
         footer={null}
         destroyOnHidden
+        centered
       >
         <Form form={officialForm} layout="vertical" onFinish={(values) => void handleCreateOfficial(values)}>
           <Form.Item label={t("账户名称")} name="account_name" initialValue="local-codex">
@@ -1056,6 +1059,7 @@ export function AccountsPage({
         }}
         footer={null}
         destroyOnHidden
+        centered
       >
         <Form form={sharedImportForm} layout="vertical" onFinish={(values) => void handleImportShared(values)}>
           <Form.Item label={t("粘贴分享内容")} name="payload" rules={[{ required: true, message: t("请粘贴分享内容") }]}>
@@ -1084,6 +1088,7 @@ export function AccountsPage({
         onCancel={() => setEditingAccount(null)}
         footer={null}
         destroyOnHidden
+        centered
       >
         <Form form={editForm} layout="vertical" onFinish={(values) => void handleEdit(values)}>
           <Form.Item label={t("账户名称")} name="account_name" rules={[{ required: true, message: t("请输入账户名称") }]}>

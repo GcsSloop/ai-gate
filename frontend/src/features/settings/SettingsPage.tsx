@@ -413,6 +413,7 @@ export function SettingsPage({
       content: `${t("确认删除此备份")} ${item.backup_id}？`,
       okText: t("确认删除"),
       cancelText: t("取消"),
+      centered: true,
       okButtonProps: { danger: true },
       onOk: async () => {
         setBackupBusy(`delete:${item.backup_id}`);
@@ -884,6 +885,7 @@ export function SettingsPage({
         open={importModalOpen}
         okText={t("验证并导入")}
         confirmLoading={importingSQL}
+        centered
         onOk={() => void handleImportSQL()}
         onCancel={() => {
           if (importingSQL) {
