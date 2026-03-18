@@ -12,10 +12,20 @@ type usageSaver interface {
 	Save(snapshot usage.Snapshot) error
 }
 
+type usageSnapshotReader interface {
+	GetLatest(accountID int64) (usage.Snapshot, error)
+}
+
 type responsesUsageCollector struct {
-	snapshot usage.Snapshot
-	hasData  bool
-	outputs  []map[string]any
+	snapshot                  usage.Snapshot
+	hasData                   bool
+	outputs                   []map[string]any
+	observedBalance           bool
+	observedQuotaRemaining    bool
+	observedModelContext      bool
+	observedPrimaryWindow     bool
+	observedSecondaryWindow   bool
+	observedProviderSnapshot  bool
 }
 
 type chatCompletionsUsageCollector struct {
@@ -65,10 +75,52 @@ func (c *responsesUsageCollector) Save(repo usageSaver) {
 	if c.snapshot.CheckedAt.IsZero() {
 		c.snapshot.CheckedAt = time.Now().UTC()
 	}
-	if c.snapshot.HealthScore == 0 {
+	if reader, ok := repo.(usageSnapshotReader); ok {
+		c.mergeLatestSnapshot(reader)
+	}
+	if c.snapshot.HealthScore == 0 && (c.observedPrimaryWindow || c.observedSecondaryWindow) {
 		c.snapshot.HealthScore = 1
 	}
 	_ = repo.Save(c.snapshot)
+}
+
+func (c *responsesUsageCollector) mergeLatestSnapshot(reader usageSnapshotReader) {
+	latest, err := reader.GetLatest(c.snapshot.AccountID)
+	if err != nil {
+		return
+	}
+	if c.snapshot.Source == "" {
+		c.snapshot.Source = latest.Source
+	}
+	if c.snapshot.Confidence == "" {
+		c.snapshot.Confidence = latest.Confidence
+	}
+	if c.snapshot.ProviderSnapshotJSON == "" {
+		c.snapshot.ProviderSnapshotJSON = latest.ProviderSnapshotJSON
+	}
+	if !c.observedBalance {
+		c.snapshot.Balance = latest.Balance
+	}
+	if !c.observedQuotaRemaining {
+		c.snapshot.QuotaRemaining = latest.QuotaRemaining
+	}
+	if !c.observedModelContext {
+		c.snapshot.ModelContextWindow = latest.ModelContextWindow
+	}
+	if !c.observedPrimaryWindow {
+		c.snapshot.PrimaryUsedPercent = latest.PrimaryUsedPercent
+		c.snapshot.RPMRemaining = latest.RPMRemaining
+		c.snapshot.PrimaryResetsAt = latest.PrimaryResetsAt
+	}
+	if !c.observedSecondaryWindow {
+		c.snapshot.SecondaryUsedPercent = latest.SecondaryUsedPercent
+		c.snapshot.TPMRemaining = latest.TPMRemaining
+		c.snapshot.SecondaryResetsAt = latest.SecondaryResetsAt
+	}
+	if !c.observedPrimaryWindow && !c.observedSecondaryWindow {
+		c.snapshot.HealthScore = latest.HealthScore
+		c.snapshot.ThrottledRecently = latest.ThrottledRecently
+	}
 }
 
 func (c *chatCompletionsUsageCollector) snapshotOrDefault() usage.Snapshot {
@@ -122,8 +174,10 @@ func (c *responsesUsageCollector) observeTokenCount(payload map[string]any) {
 			c.applyTokenUsageBreakdown(total)
 		}
 		if contextWindow := asFloat(info["model_context_window"]); contextWindow > 0 {
+			c.observedModelContext = true
 			c.snapshot.ModelContextWindow = contextWindow
 			if c.snapshot.LastTotalTokens > 0 {
+				c.observedQuotaRemaining = true
 				c.snapshot.QuotaRemaining = math.Max(contextWindow-c.snapshot.LastTotalTokens, 0)
 			}
 		}
@@ -142,8 +196,10 @@ func (c *responsesUsageCollector) observeThreadTokenUsageUpdated(payload map[str
 	c.hasData = true
 	c.applyTokenUsageBreakdown(total)
 	if contextWindow := asFloat(tokenUsage["model_context_window"]); contextWindow > 0 {
+		c.observedModelContext = true
 		c.snapshot.ModelContextWindow = contextWindow
 		if c.snapshot.LastTotalTokens > 0 {
+			c.observedQuotaRemaining = true
 			c.snapshot.QuotaRemaining = math.Max(contextWindow-c.snapshot.LastTotalTokens, 0)
 		}
 	}
@@ -212,14 +268,19 @@ func (c *responsesUsageCollector) applyRateLimits(limits map[string]any) {
 		return
 	}
 	if credits, ok := limits["credits"].(map[string]any); ok {
+		if _, exists := credits["balance"]; exists {
+			c.observedBalance = true
+		}
 		c.snapshot.Balance = asFloat(credits["balance"])
 	}
 	if primary, ok := limits["primary"].(map[string]any); ok {
+		c.observedPrimaryWindow = true
 		c.snapshot.PrimaryUsedPercent = asFloat(primary["used_percent"])
 		c.snapshot.RPMRemaining = math.Max(100-c.snapshot.PrimaryUsedPercent, 0)
 		c.snapshot.PrimaryResetsAt = asUnixTimePtr(primary["resets_at"])
 	}
 	if secondary, ok := limits["secondary"].(map[string]any); ok {
+		c.observedSecondaryWindow = true
 		c.snapshot.SecondaryUsedPercent = asFloat(secondary["used_percent"])
 		c.snapshot.TPMRemaining = math.Max(100-c.snapshot.SecondaryUsedPercent, 0)
 		c.snapshot.SecondaryResetsAt = asUnixTimePtr(secondary["resets_at"])

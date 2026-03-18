@@ -312,6 +312,113 @@ func TestResponsesHandlerThinModeOfficialStreamCapturesWrappedTokenCount(t *test
 	}
 }
 
+func TestResponsesHandlerPreservesExistingWindowUsageWhenResponseLacksRateLimits(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, ""+
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"official-pong\"}\n\n"+
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_preserve_usage_1\",\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":20},\"output_tokens\":30,\"total_tokens\":130},\"output\":[]}}\n\n"+
+			"data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "official-preserve",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/backend-api/codex",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status:            accounts.StatusActive,
+		Priority:          100,
+		SupportsResponses: true,
+		IsActive:          true,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	primaryReset := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second)
+	secondaryReset := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:            1,
+		Source:               "remote",
+		Confidence:           "high",
+		ProviderSnapshotJSON: `{"capacity_model":"official_window","has_rpm":true,"has_tpm":true}`,
+		Balance:              0,
+		RPMRemaining:         70,
+		TPMRemaining:         3,
+		HealthScore:          0.365,
+		PrimaryUsedPercent:   30,
+		SecondaryUsedPercent: 97,
+		PrimaryResetsAt:      &primaryReset,
+		SecondaryResetsAt:    &secondaryReset,
+		CheckedAt:            time.Now().UTC().Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithResponsesSettings(settingsRepo),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping","stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	snapshot, err := usageRepo.GetLatest(1)
+	if err != nil {
+		t.Fatalf("GetLatest returned error: %v", err)
+	}
+	if snapshot.LastInputTokens != 120 || snapshot.LastOutputTokens != 30 || snapshot.LastTotalTokens != 130 {
+		t.Fatalf("latest usage tokens = in:%v out:%v total:%v, want in:120 out:30 total:130", snapshot.LastInputTokens, snapshot.LastOutputTokens, snapshot.LastTotalTokens)
+	}
+	if snapshot.PrimaryUsedPercent != 30 {
+		t.Fatalf("PrimaryUsedPercent = %v, want 30", snapshot.PrimaryUsedPercent)
+	}
+	if snapshot.SecondaryUsedPercent != 97 {
+		t.Fatalf("SecondaryUsedPercent = %v, want 97", snapshot.SecondaryUsedPercent)
+	}
+	if snapshot.RPMRemaining != 70 {
+		t.Fatalf("RPMRemaining = %v, want 70", snapshot.RPMRemaining)
+	}
+	if snapshot.TPMRemaining != 3 {
+		t.Fatalf("TPMRemaining = %v, want 3", snapshot.TPMRemaining)
+	}
+	if snapshot.PrimaryResetsAt == nil || !snapshot.PrimaryResetsAt.Equal(primaryReset) {
+		t.Fatalf("PrimaryResetsAt = %v, want %v", snapshot.PrimaryResetsAt, primaryReset)
+	}
+	if snapshot.SecondaryResetsAt == nil || !snapshot.SecondaryResetsAt.Equal(secondaryReset) {
+		t.Fatalf("SecondaryResetsAt = %v, want %v", snapshot.SecondaryResetsAt, secondaryReset)
+	}
+}
+
 func TestResponsesHandlerThinModeOfficialStreamWithoutContentTypeStillCapturesUsage(t *testing.T) {
 	t.Parallel()
 
