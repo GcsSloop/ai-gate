@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -590,6 +591,207 @@ func TestAccountsHandlerDuplicateAccountCreatesInactiveCopyWithIncrementedName(t
 	}
 	if duplicate.SourceIcon != "ppchat" {
 		t.Fatalf("duplicate source_icon = %q, want ppchat", duplicate.SourceIcon)
+	}
+}
+
+func TestAccountsHandlerShareExportsPortablePayload(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	if err := repo.Create(accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AccountName:       "mirror-east",
+		SourceIcon:        "ppchat",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           "https://code.ppchat.vip/v1",
+		CredentialRef:     "sk-share-me",
+		AccountDriver:     "builtin_api_key",
+		UsageDriver:       "lua",
+		UsageConfigJSON:   `{"script":"adapters/vendor.lua"}`,
+		Status:            accounts.StatusCooldown,
+		Priority:          9,
+		IsActive:          true,
+		SupportsResponses: true,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/1/share", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /accounts/1/share status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var response struct {
+		Payload string `json:"payload"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if strings.TrimSpace(response.Payload) == "" {
+		t.Fatal("payload is empty")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(response.Payload), &payload); err != nil {
+		t.Fatalf("Unmarshal payload returned error: %v", err)
+	}
+	if payload["kind"] != "aigate-account-share" {
+		t.Fatalf("kind = %v, want aigate-account-share", payload["kind"])
+	}
+	if payload["schema_version"].(float64) != 1 {
+		t.Fatalf("schema_version = %v, want 1", payload["schema_version"])
+	}
+	if strings.TrimSpace(payload["exported_at"].(string)) == "" {
+		t.Fatal("exported_at is empty")
+	}
+
+	accountPayload, ok := payload["account"].(map[string]any)
+	if !ok {
+		t.Fatalf("account = %#v, want object", payload["account"])
+	}
+	if accountPayload["provider_type"] != "openai-compatible" {
+		t.Fatalf("provider_type = %v, want openai-compatible", accountPayload["provider_type"])
+	}
+	if accountPayload["account_name"] != "mirror-east" {
+		t.Fatalf("account_name = %v, want mirror-east", accountPayload["account_name"])
+	}
+	if accountPayload["credential_ref"] != "sk-share-me" {
+		t.Fatalf("credential_ref = %v, want sk-share-me", accountPayload["credential_ref"])
+	}
+	if accountPayload["usage_driver"] != "lua" {
+		t.Fatalf("usage_driver = %v, want lua", accountPayload["usage_driver"])
+	}
+	if accountPayload["usage_config_json"] != `{"script":"adapters/vendor.lua"}` {
+		t.Fatalf("usage_config_json = %v, want serialized config", accountPayload["usage_config_json"])
+	}
+	if _, exists := accountPayload["priority"]; exists {
+		t.Fatalf("portable payload unexpectedly contains priority: %#v", accountPayload)
+	}
+	if _, exists := accountPayload["is_active"]; exists {
+		t.Fatalf("portable payload unexpectedly contains is_active: %#v", accountPayload)
+	}
+	if _, exists := accountPayload["status"]; exists {
+		t.Fatalf("portable payload unexpectedly contains status: %#v", accountPayload)
+	}
+}
+
+func TestAccountsHandlerImportSharedCreatesFreshAccount(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/import-shared", bytes.NewBufferString(`{
+		"payload":"{\"kind\":\"aigate-account-share\",\"schema_version\":1,\"exported_at\":\"2026-03-18T15:20:00Z\",\"account\":{\"provider_type\":\"openai-compatible\",\"account_name\":\"shared-mirror\",\"source_icon\":\"ppchat\",\"auth_mode\":\"api_key\",\"base_url\":\"https://code.ppchat.vip/v1\",\"credential_ref\":\"sk-imported\",\"account_driver\":\"builtin_api_key\",\"usage_driver\":\"lua\",\"usage_config_json\":\"{\\\"script\\\":\\\"adapters/vendor.lua\\\"}\",\"supports_responses\":true}}"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /accounts/import-shared status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	listed, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("List returned %d accounts, want 1", len(listed))
+	}
+	if listed[0].AccountName != "shared-mirror" {
+		t.Fatalf("AccountName = %q, want shared-mirror", listed[0].AccountName)
+	}
+	if listed[0].CredentialRef != "sk-imported" {
+		t.Fatalf("CredentialRef = %q, want sk-imported", listed[0].CredentialRef)
+	}
+	if listed[0].Priority != 0 {
+		t.Fatalf("Priority = %d, want 0", listed[0].Priority)
+	}
+	if listed[0].IsActive {
+		t.Fatal("IsActive = true, want false")
+	}
+	if listed[0].Status != accounts.StatusActive {
+		t.Fatalf("Status = %q, want active", listed[0].Status)
+	}
+	if listed[0].UsageDriver != "lua" {
+		t.Fatalf("UsageDriver = %q, want lua", listed[0].UsageDriver)
+	}
+}
+
+func TestAccountsHandlerImportSharedRejectsInvalidPayload(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "invalid kind",
+			payload: `{"kind":"wrong-kind","schema_version":1,"exported_at":"2026-03-18T15:20:00Z","account":{"provider_type":"openai-compatible","account_name":"shared-mirror","source_icon":"ppchat","auth_mode":"api_key","base_url":"https://code.ppchat.vip/v1","credential_ref":"sk-imported","usage_config_json":"{}"}}`,
+		},
+		{
+			name:    "invalid schema version",
+			payload: `{"kind":"aigate-account-share","schema_version":2,"exported_at":"2026-03-18T15:20:00Z","account":{"provider_type":"openai-compatible","account_name":"shared-mirror","source_icon":"ppchat","auth_mode":"api_key","base_url":"https://code.ppchat.vip/v1","credential_ref":"sk-imported","usage_config_json":"{}"}}`,
+		},
+		{
+			name:    "invalid base url",
+			payload: `{"kind":"aigate-account-share","schema_version":1,"exported_at":"2026-03-18T15:20:00Z","account":{"provider_type":"openai-compatible","account_name":"shared-mirror","source_icon":"ppchat","auth_mode":"api_key","base_url":"not-a-url","credential_ref":"sk-imported","usage_config_json":"{}"}}`,
+		},
+		{
+			name:    "invalid usage config json",
+			payload: `{"kind":"aigate-account-share","schema_version":1,"exported_at":"2026-03-18T15:20:00Z","account":{"provider_type":"openai-compatible","account_name":"shared-mirror","source_icon":"ppchat","auth_mode":"api_key","base_url":"https://code.ppchat.vip/v1","credential_ref":"sk-imported","usage_config_json":"{"}}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+			if err != nil {
+				t.Fatalf("Open returned error: %v", err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+
+			repo := accounts.NewSQLiteRepository(store.DB())
+			handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+			req := httptest.NewRequest(http.MethodPost, "/accounts/import-shared", bytes.NewBufferString(`{"payload":`+strconv.Quote(tc.payload)+`}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("POST /accounts/import-shared status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			listed, err := repo.List()
+			if err != nil {
+				t.Fatalf("List returned error: %v", err)
+			}
+			if len(listed) != 0 {
+				t.Fatalf("List returned %d accounts, want 0", len(listed))
+			}
+		})
 	}
 }
 
