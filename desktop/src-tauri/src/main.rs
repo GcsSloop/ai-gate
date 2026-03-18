@@ -12,8 +12,8 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -28,6 +28,9 @@ use std::os::windows::process::CommandExt;
 
 static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
 static SIDECAR_HEARTBEAT: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
+static SIDECAR_EXIT_WATCHER: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
+static SIDECAR_EXIT_REASON: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+static SIDECAR_EXIT_WATCHER_STOP: AtomicBool = AtomicBool::new(false);
 static RESUME_RECOVERY_WATCHER: Lazy<Mutex<Option<JoinHandle<()>>>> =
     Lazy::new(|| Mutex::new(None));
 static RESUME_RECOVERY_WATCHER_STOP: AtomicBool = AtomicBool::new(false);
@@ -260,10 +263,7 @@ impl UpdateManagerState {
         self.snapshot = snapshot;
     }
 
-    fn begin_download(
-        &mut self,
-        update: UpdateInfoPayload,
-    ) -> Result<Arc<AtomicBool>, String> {
+    fn begin_download(&mut self, update: UpdateInfoPayload) -> Result<Arc<AtomicBool>, String> {
         if self.snapshot.status == UpdateStatus::Downloading {
             if self.active_version.as_deref() == Some(update.version.as_str()) {
                 if let Some(flag) = &self.cancel_flag {
@@ -290,7 +290,12 @@ impl UpdateManagerState {
         }
     }
 
-    fn finish_terminal(&mut self, status: UpdateStatus, update: Option<UpdateInfoPayload>, error: Option<String>) {
+    fn finish_terminal(
+        &mut self,
+        status: UpdateStatus,
+        update: Option<UpdateInfoPayload>,
+        error: Option<String>,
+    ) {
         self.active_version = None;
         self.cancel_flag = None;
         self.snapshot = UpdateStatePayload {
@@ -342,6 +347,7 @@ fn main() {
                 &cache.backend_addr(),
                 Duration::from_millis(SIDECAR_READY_WAIT_TIMEOUT_MS),
             )?;
+            start_sidecar_exit_watcher()?;
             start_resume_recovery_watcher(app.handle().clone())?;
             setup_tray(app.handle())?;
             if cache.silent_start {
@@ -366,6 +372,7 @@ fn main() {
                             }
                             WindowCloseAction::ExitApp => {
                                 api.prevent_close();
+                                stop_sidecar_exit_watcher();
                                 stop_resume_recovery_watcher();
                                 shutdown_sidecar();
                                 app_handle.exit(0);
@@ -380,6 +387,7 @@ fn main() {
                 show_main_window(app_handle);
             }
             tauri::RunEvent::Exit => {
+                stop_sidecar_exit_watcher();
                 stop_resume_recovery_watcher();
                 shutdown_sidecar();
             }
@@ -397,6 +405,7 @@ fn window_close_action(close_to_tray: bool) -> WindowCloseAction {
 
 #[tauri::command]
 fn force_exit_app<R: Runtime>(app: AppHandle<R>) {
+    stop_sidecar_exit_watcher();
     stop_resume_recovery_watcher();
     shutdown_sidecar();
     app.exit(0);
@@ -591,7 +600,10 @@ async fn fetch_update<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Update>, 
         .map_err(|err| format!("check update failed: {err}"))
 }
 
-fn to_update_info_payload(current_version: &str, update: &Update) -> Result<UpdateInfoPayload, String> {
+fn to_update_info_payload(
+    current_version: &str,
+    update: &Update,
+) -> Result<UpdateInfoPayload, String> {
     Ok(UpdateInfoPayload {
         body: update.body.clone(),
         current_version: current_version.to_string(),
@@ -619,10 +631,7 @@ async fn download_update_bytes(
 ) -> Result<Vec<u8>, String> {
     let mut headers = update.headers.clone();
     if !headers.contains_key(ACCEPT) {
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static("application/octet-stream"),
-        );
+        headers.insert(ACCEPT, HeaderValue::from_static("application/octet-stream"));
     }
 
     let mut request = reqwest::ClientBuilder::new().user_agent("aigate-desktop-updater");
@@ -851,6 +860,14 @@ fn configure_sidecar_command(command: &mut Command) {
 fn configure_sidecar_command(_command: &mut Command) {}
 
 fn spawn_sidecar() -> Result<(), String> {
+    {
+        let guard = SIDECAR_CHILD
+            .lock()
+            .map_err(|_| "sidecar child lock poisoned".to_string())?;
+        if guard.is_some() {
+            return Err("sidecar already running".to_string());
+        }
+    }
     let runtime = DESKTOP_RUNTIME
         .lock()
         .map_err(|_| "desktop runtime lock poisoned".to_string())?
@@ -902,6 +919,7 @@ fn spawn_sidecar() -> Result<(), String> {
         .lock()
         .map_err(|_| "sidecar child lock poisoned".to_string())?;
     *guard = Some(child);
+    set_sidecar_exit_reason(None);
     log_desktop_event("info", "sidecar", "spawn success");
     Ok(())
 }
@@ -1298,6 +1316,16 @@ fn should_retry_sidecar_request(restart_worthy: bool, attempted_recovery: bool) 
     restart_worthy && !attempted_recovery
 }
 
+fn should_restart_sidecar_after_exit(reason: Option<&str>, exited: bool) -> bool {
+    if !exited {
+        return false;
+    }
+    !matches!(
+        reason.map(str::trim).filter(|value| !value.is_empty()),
+        Some("shutdown" | "restart" | "quit")
+    )
+}
+
 fn sidecar_request_with_recovery<FRequest, FRestart>(
     mut request: FRequest,
     mut restart: FRestart,
@@ -1636,6 +1664,7 @@ fn shutdown_sidecar() {
 }
 
 fn shutdown_sidecar_with_reason(reason: &str) {
+    set_sidecar_exit_reason(Some(reason));
     let mut guard = match SIDECAR_CHILD.lock() {
         Ok(guard) => guard,
         Err(_) => return,
@@ -1662,11 +1691,7 @@ fn shutdown_sidecar_with_reason(reason: &str) {
     }
     *guard = None;
 
-    if let Ok(mut heartbeat_guard) = SIDECAR_HEARTBEAT.lock() {
-        if let Some(handle) = heartbeat_guard.take() {
-            let _ = handle.join();
-        }
-    }
+    stop_sidecar_heartbeat();
 }
 
 fn should_trigger_resume_recovery(elapsed: Duration, threshold: Duration) -> bool {
@@ -1732,28 +1757,135 @@ fn start_sidecar_heartbeat(mut stdin: ChildStdin) -> Result<(), String> {
     Ok(())
 }
 
+fn stop_sidecar_heartbeat() {
+    if let Ok(mut heartbeat_guard) = SIDECAR_HEARTBEAT.lock() {
+        if let Some(handle) = heartbeat_guard.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn set_sidecar_exit_reason(reason: Option<&str>) {
+    if let Ok(mut guard) = SIDECAR_EXIT_REASON.lock() {
+        *guard = reason.map(str::to_string);
+    }
+}
+
+fn take_sidecar_exit_reason() -> Option<String> {
+    SIDECAR_EXIT_REASON
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
+}
+
+fn start_sidecar_exit_watcher() -> Result<(), String> {
+    SIDECAR_EXIT_WATCHER_STOP.store(false, Ordering::SeqCst);
+    let handle = std::thread::Builder::new()
+        .name("sidecar-exit-watcher".to_string())
+        .spawn(move || {
+            while !SIDECAR_EXIT_WATCHER_STOP.load(Ordering::SeqCst) {
+                let mut exited = false;
+                let mut status_text = String::new();
+                if let Ok(mut guard) = SIDECAR_CHILD.lock() {
+                    if let Some(child) = guard.as_mut() {
+                        match child.try_wait() {
+                            Ok(Some(status)) => {
+                                exited = true;
+                                status_text = status.to_string();
+                                *guard = None;
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                log_desktop_event(
+                                    "warn",
+                                    "sidecar",
+                                    format!("try_wait failed: {err}"),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                if exited {
+                    stop_sidecar_heartbeat();
+                    let reason = take_sidecar_exit_reason();
+                    log_desktop_event(
+                        "warn",
+                        "sidecar",
+                        format!(
+                            "sidecar exited unexpectedly status={} reason={}",
+                            status_text,
+                            reason.as_deref().unwrap_or("unexpected")
+                        ),
+                    );
+                    if should_restart_sidecar_after_exit(reason.as_deref(), true) {
+                        log_desktop_event("warn", "recovery", "auto restarting sidecar after exit");
+                        match spawn_sidecar() {
+                            Ok(()) => {
+                                if let Err(err) = wait_for_backend_ready(
+                                    &current_backend_addr(),
+                                    Duration::from_millis(SIDECAR_READY_WAIT_TIMEOUT_MS),
+                                ) {
+                                    log_desktop_event(
+                                        "error",
+                                        "recovery",
+                                        format!("sidecar auto restart readiness failed: {err}"),
+                                    );
+                                }
+                            }
+                            Err(err) => log_desktop_event(
+                                "error",
+                                "recovery",
+                                format!("sidecar auto restart failed: {err}"),
+                            ),
+                        }
+                    }
+                }
+
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        })
+        .map_err(|e| format!("start sidecar exit watcher failed: {e}"))?;
+    let mut guard = SIDECAR_EXIT_WATCHER
+        .lock()
+        .map_err(|_| "sidecar exit watcher lock poisoned".to_string())?;
+    if let Some(previous) = guard.replace(handle) {
+        let _ = previous.join();
+    }
+    Ok(())
+}
+
+fn stop_sidecar_exit_watcher() {
+    SIDECAR_EXIT_WATCHER_STOP.store(true, Ordering::SeqCst);
+    if let Ok(mut guard) = SIDECAR_EXIT_WATCHER.lock() {
+        if let Some(handle) = guard.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         append_recent_desktop_log, build_launch_agent_plist, clamp_recent_log_limit,
         decode_chunked_body, format_timeout_error, format_tray_title, map_backend_io_error,
         parse_account_menu_id, parse_accounts_response, parse_proxy_status_response,
-        proxy_menu_enabled_states,
-        should_attempt_sidecar_recovery, should_refresh_tray_after_action,
+        proxy_menu_enabled_states, should_attempt_sidecar_recovery,
+        should_refresh_tray_after_action, should_restart_sidecar_after_exit,
         should_retry_sidecar_request, should_trigger_resume_recovery, sidecar_candidate_paths,
         sidecar_creation_flags, sidecar_request_with_recovery, sidecar_request_with_recovery_hooks,
         sidecar_resource_name, tray_icon_bytes_for_platform, tray_icon_is_template_for_platform,
         update_download_progress, wait_for_backend_ready_with_probe, window_close_action,
-        AppSettingsPayload, DesktopLogEntry, DesktopSettingsCache, HttpResponse,
-        UpdateInfoPayload, UpdateManagerState, UpdateProgressPayload, UpdateStatePayload,
-        UpdateStatus, WindowCloseAction, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
-        TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
+        AppSettingsPayload, DesktopLogEntry, DesktopSettingsCache, HttpResponse, UpdateInfoPayload,
+        UpdateManagerState, UpdateProgressPayload, UpdateStatePayload, UpdateStatus,
+        WindowCloseAction, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME, TRAY_ICON_COLOR_BYTES,
+        TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
     };
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
     use std::sync::atomic::Ordering;
+    use std::sync::Arc;
     use std::time::Duration;
 
     #[test]
@@ -2020,6 +2152,20 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_exit_restart_policy_skips_intentional_shutdowns() {
+        assert!(!should_restart_sidecar_after_exit(Some("shutdown"), true));
+        assert!(!should_restart_sidecar_after_exit(Some("restart"), true));
+        assert!(!should_restart_sidecar_after_exit(Some("quit"), true));
+    }
+
+    #[test]
+    fn sidecar_exit_restart_policy_recovers_unexpected_exit() {
+        assert!(should_restart_sidecar_after_exit(None, true));
+        assert!(should_restart_sidecar_after_exit(Some(""), true));
+        assert!(!should_restart_sidecar_after_exit(None, false));
+    }
+
+    #[test]
     fn sidecar_request_restarts_then_retries_once() {
         let mut request_calls = 0;
         let mut restart_calls = 0;
@@ -2241,17 +2387,20 @@ mod tests {
 
     #[test]
     fn update_manager_progress_uses_expected_percentages() {
-        UPDATE_MANAGER.lock().expect("update manager").set_snapshot(UpdateStatePayload {
-            status: UpdateStatus::Downloading,
-            update: Some(UpdateInfoPayload {
-                body: None,
-                current_version: "1.1.7".to_string(),
-                date: None,
-                version: "1.1.9".to_string(),
-            }),
-            progress: Some(UpdateProgressPayload::default()),
-            error: None,
-        });
+        UPDATE_MANAGER
+            .lock()
+            .expect("update manager")
+            .set_snapshot(UpdateStatePayload {
+                status: UpdateStatus::Downloading,
+                update: Some(UpdateInfoPayload {
+                    body: None,
+                    current_version: "1.1.7".to_string(),
+                    date: None,
+                    version: "1.1.9".to_string(),
+                }),
+                progress: Some(UpdateProgressPayload::default()),
+                error: None,
+            });
 
         update_download_progress(25, 100, None).expect("progress update");
         let snapshot = UPDATE_MANAGER.lock().expect("update manager").snapshot();

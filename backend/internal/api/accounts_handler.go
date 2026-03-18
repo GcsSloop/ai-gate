@@ -142,10 +142,10 @@ type importSharedAccountRequest struct {
 }
 
 type accountShareEnvelope struct {
-	Kind          string               `json:"kind"`
-	SchemaVersion int                  `json:"schema_version"`
-	ExportedAt    string               `json:"exported_at"`
-	Account       accountSharePayload  `json:"account"`
+	Kind          string              `json:"kind"`
+	SchemaVersion int                 `json:"schema_version"`
+	ExportedAt    string              `json:"exported_at"`
+	Account       accountSharePayload `json:"account"`
 }
 
 type accountSharePayload struct {
@@ -318,21 +318,24 @@ func (h *AccountsHandler) listAccountsUsage(w http.ResponseWriter, _ *http.Reque
 	}
 
 	type responseItem struct {
-		AccountID            int64      `json:"account_id"`
-		Balance              float64    `json:"balance"`
-		QuotaRemaining       float64    `json:"quota_remaining"`
-		RPMRemaining         float64    `json:"rpm_remaining"`
-		TPMRemaining         float64    `json:"tpm_remaining"`
-		HealthScore          float64    `json:"health_score"`
-		RecentErrorRate      float64    `json:"recent_error_rate"`
-		LastTotalTokens      float64    `json:"last_total_tokens"`
-		LastInputTokens      float64    `json:"last_input_tokens"`
-		LastOutputTokens     float64    `json:"last_output_tokens"`
-		ModelContextWindow   float64    `json:"model_context_window"`
-		PrimaryUsedPercent   float64    `json:"primary_used_percent"`
-		SecondaryUsedPercent float64    `json:"secondary_used_percent"`
-		PrimaryResetsAt      *time.Time `json:"primary_resets_at,omitempty"`
-		SecondaryResetsAt    *time.Time `json:"secondary_resets_at,omitempty"`
+		AccountID                 int64      `json:"account_id"`
+		Balance                   float64    `json:"balance"`
+		QuotaRemaining            float64    `json:"quota_remaining"`
+		RPMRemaining              float64    `json:"rpm_remaining"`
+		TPMRemaining              float64    `json:"tpm_remaining"`
+		HealthScore               float64    `json:"health_score"`
+		RecentErrorRate           float64    `json:"recent_error_rate"`
+		LastTotalTokens           float64    `json:"last_total_tokens"`
+		LastInputTokens           float64    `json:"last_input_tokens"`
+		LastOutputTokens          float64    `json:"last_output_tokens"`
+		ModelContextWindow        float64    `json:"model_context_window"`
+		PrimaryUsedPercent        float64    `json:"primary_used_percent"`
+		SecondaryUsedPercent      float64    `json:"secondary_used_percent"`
+		PrimaryResetsAt           *time.Time `json:"primary_resets_at,omitempty"`
+		SecondaryResetsAt         *time.Time `json:"secondary_resets_at,omitempty"`
+		PPChatTodayUsedQuota      float64    `json:"ppchat_today_used_quota,omitempty"`
+		PPChatTodayAddedQuota     float64    `json:"ppchat_today_added_quota,omitempty"`
+		PPChatTodayRemainingQuota float64    `json:"ppchat_today_remaining_quota,omitempty"`
 	}
 
 	usageByAccount := map[int64]usage.Snapshot{}
@@ -347,26 +350,61 @@ func (h *AccountsHandler) listAccountsUsage(w http.ResponseWriter, _ *http.Reque
 	response := make([]responseItem, 0, len(accountList))
 	for _, account := range accountList {
 		snapshot := usageByAccount[account.ID]
+		ppchatSummary := parsePPChatUsageSummary(snapshot.ProviderSnapshotJSON)
 		response = append(response, responseItem{
-			AccountID:            account.ID,
-			Balance:              snapshot.Balance,
-			QuotaRemaining:       snapshot.QuotaRemaining,
-			RPMRemaining:         snapshot.RPMRemaining,
-			TPMRemaining:         snapshot.TPMRemaining,
-			HealthScore:          snapshot.HealthScore,
-			RecentErrorRate:      snapshot.RecentErrorRate,
-			LastTotalTokens:      snapshot.LastTotalTokens,
-			LastInputTokens:      snapshot.LastInputTokens,
-			LastOutputTokens:     snapshot.LastOutputTokens,
-			ModelContextWindow:   snapshot.ModelContextWindow,
-			PrimaryUsedPercent:   snapshot.PrimaryUsedPercent,
-			SecondaryUsedPercent: snapshot.SecondaryUsedPercent,
-			PrimaryResetsAt:      snapshot.PrimaryResetsAt,
-			SecondaryResetsAt:    snapshot.SecondaryResetsAt,
+			AccountID:                 account.ID,
+			Balance:                   snapshot.Balance,
+			QuotaRemaining:            snapshot.QuotaRemaining,
+			RPMRemaining:              snapshot.RPMRemaining,
+			TPMRemaining:              snapshot.TPMRemaining,
+			HealthScore:               snapshot.HealthScore,
+			RecentErrorRate:           snapshot.RecentErrorRate,
+			LastTotalTokens:           snapshot.LastTotalTokens,
+			LastInputTokens:           snapshot.LastInputTokens,
+			LastOutputTokens:          snapshot.LastOutputTokens,
+			ModelContextWindow:        snapshot.ModelContextWindow,
+			PrimaryUsedPercent:        snapshot.PrimaryUsedPercent,
+			SecondaryUsedPercent:      snapshot.SecondaryUsedPercent,
+			PrimaryResetsAt:           snapshot.PrimaryResetsAt,
+			SecondaryResetsAt:         snapshot.SecondaryResetsAt,
+			PPChatTodayUsedQuota:      ppchatSummary.TodayUsedQuota,
+			PPChatTodayAddedQuota:     ppchatSummary.TodayAddedQuota,
+			PPChatTodayRemainingQuota: ppchatSummary.TodayRemainingQuota,
 		})
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+type ppchatUsageSummary struct {
+	TodayUsedQuota      float64
+	TodayAddedQuota     float64
+	TodayRemainingQuota float64
+}
+
+func parsePPChatUsageSummary(raw string) ppchatUsageSummary {
+	if strings.TrimSpace(raw) == "" {
+		return ppchatUsageSummary{}
+	}
+	var decoded struct {
+		Payload struct {
+			Data struct {
+				TokenInfo struct {
+					TodayUsedQuota     float64 `json:"today_used_quota"`
+					TodayAddedQuota    float64 `json:"today_added_quota"`
+					RemainQuotaDisplay float64 `json:"remain_quota_display"`
+				} `json:"token_info"`
+			} `json:"data"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return ppchatUsageSummary{}
+	}
+	return ppchatUsageSummary{
+		TodayUsedQuota:      decoded.Payload.Data.TokenInfo.TodayUsedQuota,
+		TodayAddedQuota:     decoded.Payload.Data.TokenInfo.TodayAddedQuota,
+		TodayRemainingQuota: decoded.Payload.Data.TokenInfo.RemainQuotaDisplay,
+	}
 }
 
 func (h *AccountsHandler) refreshAccountsUsage(w http.ResponseWriter, r *http.Request) {

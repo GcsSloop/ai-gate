@@ -31,7 +31,7 @@ export function App() {
   const [messageApi, contextHolder] = message.useMessage();
   const [view, setView] = useState<AppView>("accounts");
   const [settingsInitialTab, setSettingsInitialTab] = useState<"general" | "proxy" | "advanced" | "about">("general");
-  const [addModalMode, setAddModalMode] = useState<"official" | "third_party" | null>(null);
+  const [addModalMode, setAddModalMode] = useState<"official" | "third_party" | "shared_import" | null>(null);
   const [proxyEnabled, setProxyEnabled] = useState(false);
   const [proxyLoading, setProxyLoading] = useState(false);
   const [accountsSyncToken, setAccountsSyncToken] = useState(0);
@@ -398,8 +398,9 @@ export function App() {
                       items: [
                         { key: "official", label: t("官方账户") },
                         { key: "third_party", label: t("第三方账户") },
+                        { key: "shared_import", label: t("导入账户") },
                       ],
-                      onClick: ({ key }) => setAddModalMode(key as "official" | "third_party"),
+                      onClick: ({ key }) => setAddModalMode(key as "official" | "third_party" | "shared_import"),
                     }}
                   >
                     <Button type="primary" shape="circle" icon={<PlusOutlined />} aria-label={t("添加账户")} className="global-add-button" />

@@ -223,28 +223,6 @@ function isPPChatAccount(record: AccountRecord): boolean {
   return normalizeSourceIcon(record.source_icon) === "ppchat" || /ppchat\.vip/i.test(record.base_url);
 }
 
-function buildPPChatUsageSummary(data: PPChatTokenLogsPayload["data"] | null | undefined): Pick<
-  AccountRecord,
-  "ppchat_today_added_quota" | "ppchat_today_used_quota" | "ppchat_today_remaining_quota"
-> | null {
-  const info = data?.token_info;
-  if (!info) {
-    return null;
-  }
-  const added = Math.max(info.today_added_quota ?? 0, 0);
-  const used = Math.max(info.today_used_quota ?? 0, 0);
-  const remaining = Math.max(info.remain_quota_display ?? 0, 0);
-  const total = Math.max(added, used+ remaining, 0);
-  if (total <= 0 && used <= 0 && remaining <= 0) {
-    return null;
-  }
-  return {
-    ppchat_today_added_quota: total,
-    ppchat_today_used_quota: used,
-    ppchat_today_remaining_quota: remaining,
-  };
-}
-
 type AccountsPageProps = {
   language?: AppLanguage;
   t?: Translator;
@@ -396,34 +374,17 @@ export function AccountsPage({
 
   async function refreshUsage() {
     try {
-      const currentAccounts = accountsRef.current;
-      const ppchatAccounts = currentAccounts.filter((item) => isPPChatAccount(item));
-      const [usageItems, ppchatSummaries] = await Promise.all([
-        listAccountUsage(),
-        Promise.all(
-          ppchatAccounts.map(async (item) => {
-            try {
-              const payload = await fetchPPChatTokenLogs(item.id);
-              return [item.id, buildPPChatUsageSummary(payload.data)] as const;
-            } catch {
-              return [item.id, null] as const;
-            }
-          }),
-        ),
-      ]);
+      const usageItems = await listAccountUsage();
       const usageByAccount = new Map(usageItems.map((item) => [item.account_id, item]));
-      const ppchatByAccount = new Map(ppchatSummaries.filter((entry): entry is readonly [number, NonNullable<typeof entry[1]>] => entry[1] !== null));
       setAccountsState((items) =>
         items.map((item) => {
           const usage = usageByAccount.get(item.id);
-          const ppchatUsage = ppchatByAccount.get(item.id);
           if (!usage) {
-            return ppchatUsage ? { ...item, ...ppchatUsage } : item;
+            return item;
           }
           return {
             ...item,
             ...usage,
-            ...(ppchatUsage ?? {}),
           };
         }),
       { preserveOrder: true });
