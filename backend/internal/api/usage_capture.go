@@ -154,7 +154,6 @@ func (c *responsesUsageCollector) observeCompletedResponse(payload map[string]an
 	if !ok {
 		return
 	}
-
 	usagePayload, ok := response["usage"].(map[string]any)
 	if ok {
 		c.hasData = true
