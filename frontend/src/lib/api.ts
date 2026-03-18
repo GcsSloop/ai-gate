@@ -69,6 +69,10 @@ export type CreateAccountPayload = {
   supports_responses?: boolean;
 };
 
+export type ShareAccountResponse = {
+  payload: string;
+};
+
 export type UsageDashboardSummary = {
   request_count: number;
   success_count: number;
@@ -287,6 +291,29 @@ export async function duplicateAccount(id: number): Promise<void> {
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to duplicate account");
+  }
+}
+
+export async function shareAccount(id: number): Promise<ShareAccountResponse> {
+  const response = await fetch(apiPath(`/accounts/${id}/share`), {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to share account");
+  }
+  return response.json();
+}
+
+export async function importSharedAccount(payload: string): Promise<void> {
+  const response = await fetch(apiPath("/accounts/import-shared"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ payload }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to import shared account");
   }
 }
 

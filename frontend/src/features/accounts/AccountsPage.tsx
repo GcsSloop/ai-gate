@@ -4,6 +4,7 @@ import {
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
+  ExportOutlined,
   HolderOutlined,
   InfoCircleOutlined,
   PlusOutlined,
@@ -60,9 +61,11 @@ import {
   deleteAccount,
   duplicateAccount,
   importCurrentCodexAuth,
+  importSharedAccount,
   fetchPPChatTokenLogs,
   listAccountUsage,
   listAccounts,
+  shareAccount,
   testAccount,
   updateAccount,
   type AccountRecord,
@@ -78,7 +81,7 @@ import sourcePPChatIcon from "../../assets/providers/ppchat.png";
 const { Title, Text } = Typography;
 
 const defaultBaseURL = "https://code.ppchat.vip/v1";
-type AddModalMode = "official" | "third_party" | null;
+type AddModalMode = "official" | "third_party" | "shared_import" | null;
 
 const statusColorMap: Record<string, string> = {
   active: "green",
@@ -300,6 +303,7 @@ export function AccountsPage({
   const [internalAddModalMode, setInternalAddModalMode] = useState<AddModalMode>(null);
   const [editingAccount, setEditingAccount] = useState<AccountRecord | null>(null);
   const [detailAccount, setDetailAccount] = useState<AccountRecord | null>(null);
+  const [sharedImportError, setSharedImportError] = useState<string>("");
   const [testResult, setTestResult] = useState<AccountTestResult | null>(null);
   const [detailLogsLoading, setDetailLogsLoading] = useState(false);
   const [detailLogs, setDetailLogs] = useState<PPChatTokenLogsPayload["data"] | null>(null);
@@ -307,6 +311,7 @@ export function AccountsPage({
 
   const [thirdPartyForm] = Form.useForm();
   const [officialForm] = Form.useForm();
+  const [sharedImportForm] = Form.useForm();
   const [editForm] = Form.useForm();
   const [testForm] = Form.useForm();
   const accountsRef = useRef<AccountRecord[]>([]);
@@ -453,6 +458,20 @@ export function AccountsPage({
     void messageApi.success(t("官方账户已导入"));
   }
 
+  async function handleImportShared(values: { payload: string }) {
+    setSharedImportError("");
+    try {
+      await importSharedAccount(values.payload);
+      sharedImportForm.resetFields();
+      setInternalAddModalMode(null);
+      await refreshAll();
+      void refreshDesktopTrayState();
+      void messageApi.success(t("导入成功"));
+    } catch (error) {
+      setSharedImportError(error instanceof Error ? t(error.message) : t("分享内容无效"));
+    }
+  }
+
   function openEditModal(account: AccountRecord) {
     setEditingAccount(account);
     setTestResult(null);
@@ -536,6 +555,24 @@ export function AccountsPage({
     } catch (error) {
       void messageApi.warning(error instanceof Error ? t(error.message) : t("复制失败，请稍后重试"));
     }
+  }
+
+  async function handleShareAccount(record: AccountRecord) {
+    await modal.confirm({
+      title: t("分享账户"),
+      content: t("即将复制可导入的账户信息，请注意保管，不要泄露。"),
+      okText: t("确认分享"),
+      cancelText: t("取消"),
+      centered: true,
+      onOk: async () => {
+        if (!navigator.clipboard?.writeText) {
+          throw new Error(t("当前环境不支持剪切板写入"));
+        }
+        const response = await shareAccount(record.id);
+        await navigator.clipboard.writeText(response.payload);
+        void messageApi.success(t("已复制账户分享信息"));
+      },
+    });
   }
 
   function handleDragStart(event: DragStartEvent) {
@@ -757,6 +794,14 @@ export function AccountsPage({
                 <Button
                   type="text"
                   className="account-action-button"
+                  aria-label={`${t("分享")}-${record.account_name}`}
+                  icon={<ExportOutlined />}
+                  disabled={options.actionsDisabled}
+                  onClick={() => void handleShareAccount(record)}
+                />
+                <Button
+                  type="text"
+                  className="account-action-button"
                   aria-label={`${t("详情")}-${record.account_name}`}
                   icon={<InfoCircleOutlined />}
                   disabled={options.actionsDisabled}
@@ -803,8 +848,12 @@ export function AccountsPage({
               items: [
                 { key: "official", label: t("官方账户") },
                 { key: "third_party", label: t("第三方账户") },
+                { key: "shared_import", label: t("导入账户") },
               ],
-              onClick: ({ key }) => setInternalAddModalMode(key as AddModalMode),
+              onClick: ({ key }) => {
+                setSharedImportError("");
+                setInternalAddModalMode(key as AddModalMode);
+              },
             }}
             trigger={["click"]}
           >
@@ -1016,6 +1065,37 @@ export function AccountsPage({
             <Button onClick={() => setInternalAddModalMode(null)}>{t("取消")}</Button>
             <Button type="primary" htmlType="submit">
               {t("导入")}
+            </Button>
+          </div>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={internalAddModalMode === "shared_import"}
+        title={t("导入账户")}
+        onCancel={() => {
+          setSharedImportError("");
+          setInternalAddModalMode(null);
+        }}
+        footer={null}
+        destroyOnHidden
+      >
+        <Form form={sharedImportForm} layout="vertical" onFinish={(values) => void handleImportShared(values)}>
+          <Form.Item label={t("粘贴分享内容")} name="payload" rules={[{ required: true, message: t("请粘贴分享内容") }]}>
+            <Input.TextArea rows={8} spellCheck={false} />
+          </Form.Item>
+          {sharedImportError ? <Text type="danger">{sharedImportError}</Text> : null}
+          <div className="modal-footer">
+            <Button
+              onClick={() => {
+                setSharedImportError("");
+                setInternalAddModalMode(null);
+              }}
+            >
+              {t("取消")}
+            </Button>
+            <Button type="primary" htmlType="submit">
+              {t("校验并导入")}
             </Button>
           </div>
         </Form>

@@ -233,6 +233,187 @@ describe("AccountsPage", () => {
     expect(within(editTestModal).getByText("pong")).toBeInTheDocument();
   });
 
+  it("confirms before sharing and only copies after explicit approval", async () => {
+    const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: { writeText: clipboardWriteText },
+      configurable: true,
+    });
+
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "mirror-east",
+        source_icon: "ppchat",
+        auth_mode: "api_key",
+        base_url: "https://code.ppchat.vip/v1",
+        account_driver: "builtin_api_key",
+        usage_driver: "lua",
+        usage_config_json: "{\"script\":\"adapters/vendor.lua\"}",
+        status: "active",
+        is_active: false,
+        priority: 2,
+        supports_responses: true,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/1/share" && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ payload: "{\"kind\":\"aigate-account-share\"}" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("mirror-east")).toBeInTheDocument();
+    fetchMock.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "分享-mirror-east" }));
+    const confirmModal = await screen.findByRole("dialog", { name: "分享账户" });
+    fireEvent.click(within(confirmModal).getByRole("button", { name: /取\s*消/ }));
+
+    await waitFor(() => {
+      expect(clipboardWriteText).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "分享-mirror-east" }));
+    const approvedModal = await screen.findByRole("dialog", { name: "分享账户" });
+    fireEvent.click(within(approvedModal).getByRole("button", { name: "确认分享" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1/share",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(clipboardWriteText).toHaveBeenCalledWith("{\"kind\":\"aigate-account-share\"}");
+    });
+  });
+
+  it("imports shared payload and keeps the modal open on validation failure", async () => {
+    const validPayload = "{\"kind\":\"aigate-account-share\",\"schema_version\":1}";
+
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "mirror-east",
+        source_icon: "ppchat",
+        auth_mode: "api_key",
+        base_url: "https://code.ppchat.vip/v1",
+        account_driver: "builtin_api_key",
+        usage_driver: "lua",
+        usage_config_json: "{\"script\":\"adapters/vendor.lua\"}",
+        status: "active",
+        is_active: false,
+        priority: 2,
+        supports_responses: true,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    let importAttempt = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/accounts/import-shared" && init?.method === "POST") {
+        importAttempt += 1;
+        if (importAttempt === 1) {
+          return Promise.resolve(new Response("分享内容无效", { status: 400 }));
+        }
+        return Promise.resolve(new Response(null, { status: 201 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("mirror-east")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /添加账户/ }));
+    fireEvent.click(await screen.findByText("导入账户"));
+
+    const importModal = await screen.findByRole("dialog", { name: "导入账户" });
+    fireEvent.change(within(importModal).getByLabelText("粘贴分享内容"), {
+      target: { value: validPayload },
+    });
+    fireEvent.click(within(importModal).getByRole("button", { name: "校验并导入" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/import-shared",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ payload: validPayload }),
+        }),
+      );
+    });
+    expect(await within(importModal).findByText("分享内容无效")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "导入账户" })).toBeInTheDocument();
+
+    fireEvent.click(within(importModal).getByRole("button", { name: "校验并导入" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/import-shared",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ payload: validPayload }),
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "导入账户" })).not.toBeInTheDocument();
+    });
+  });
+
   it("highlights active account and allows manual activation", async () => {
     const accountList = [
       {
