@@ -3,8 +3,10 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -18,14 +20,19 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("create sqlite directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
 
 	store := &Store{db: db}
 	if err := store.migrate(); err != nil {
 		_ = db.Close()
+		if isSQLiteBusy(err) {
+			return nil, fmt.Errorf("run migration: %w; database path %s is busy, another AI Gate instance may be using the same database", err, path)
+		}
 		return nil, err
 	}
 
@@ -51,6 +58,23 @@ func (s *Store) HasTable(name string) (bool, error) {
 	}
 
 	return exists, nil
+}
+
+func sqliteDSN(path string) string {
+	values := url.Values{}
+	values.Add("_pragma", "journal_mode(WAL)")
+	values.Add("_pragma", "busy_timeout(5000)")
+	values.Add("_pragma", "synchronous(NORMAL)")
+	values.Add("_pragma", "foreign_keys(ON)")
+	return fmt.Sprintf("file:%s?%s", path, values.Encode())
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "database is locked") || strings.Contains(text, "sqlite_busy")
 }
 
 func (s *Store) migrate() error {

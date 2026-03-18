@@ -5,8 +5,11 @@ endif
 
 .PHONY: backend frontend test smoke-third-party package-desktop
 
+BACKEND_DATABASE_PATH ?= $(CURDIR)/backend/data/dev.sqlite
+
 backend:
-	cd backend && go run ./cmd/routerd
+	mkdir -p backend/data
+	cd backend && CODEX_ROUTER_DATABASE_PATH="$(BACKEND_DATABASE_PATH)" go run ./cmd/routerd
 
 frontend:
 	npm --prefix frontend run dev
