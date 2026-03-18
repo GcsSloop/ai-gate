@@ -400,11 +400,22 @@ func parsePPChatUsageSummary(raw string) ppchatUsageSummary {
 	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
 		return ppchatUsageSummary{}
 	}
+	addedQuota := decoded.Payload.Data.TokenInfo.TodayAddedQuota
+	if addedQuota <= 0 {
+		addedQuota = decoded.Payload.Data.TokenInfo.TodayUsedQuota + maxFloat64(decoded.Payload.Data.TokenInfo.RemainQuotaDisplay, 0)
+	}
 	return ppchatUsageSummary{
 		TodayUsedQuota:      decoded.Payload.Data.TokenInfo.TodayUsedQuota,
-		TodayAddedQuota:     decoded.Payload.Data.TokenInfo.TodayAddedQuota,
+		TodayAddedQuota:     addedQuota,
 		TodayRemainingQuota: decoded.Payload.Data.TokenInfo.RemainQuotaDisplay,
 	}
+}
+
+func maxFloat64(left, right float64) float64 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func (h *AccountsHandler) refreshAccountsUsage(w http.ResponseWriter, r *http.Request) {
