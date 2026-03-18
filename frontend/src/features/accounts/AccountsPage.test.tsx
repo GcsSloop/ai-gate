@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { App as AntApp, ConfigProvider } from "antd";
 
 import { refreshDesktopTrayState } from "../../lib/desktop-shell";
@@ -58,16 +64,33 @@ describe("AccountsPage", () => {
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
         return Promise.resolve(listResponse());
       }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/import-current" && init?.method === "POST") {
+      if (
+        url === "/ai-router/api/accounts/import-current" &&
+        init?.method === "POST"
+      ) {
         return Promise.resolve(new Response(null, { status: 201 }));
       }
-      if (url === "/ai-router/api/accounts/usage/refresh" && init?.method === "POST") {
+      if (
+        url === "/ai-router/api/accounts/usage/refresh" &&
+        init?.method === "POST"
+      ) {
         return Promise.resolve(new Response(null, { status: 204 }));
       }
       if (url === "/ai-router/api/accounts" && init?.method === "POST") {
@@ -92,14 +115,22 @@ describe("AccountsPage", () => {
           ),
         );
       }
-      if (url.startsWith("/ai-router/api/accounts/1/ppchat-token-logs") && (!init?.method || init.method === "GET")) {
+      if (
+        url.startsWith("/ai-router/api/accounts/1/ppchat-token-logs") &&
+        (!init?.method || init.method === "GET")
+      ) {
         return Promise.resolve(
           new Response(
             JSON.stringify({
               success: true,
               data: {
                 logs: [],
-                pagination: { page: 1, page_size: 10, total: 0, total_pages: 0 },
+                pagination: {
+                  page: 1,
+                  page_size: 10,
+                  total: 0,
+                  total_pages: 0,
+                },
                 token_info: {
                   name: "edwardtoday-xmax",
                   today_usage_count: 172,
@@ -124,17 +155,25 @@ describe("AccountsPage", () => {
     renderAccountsPage();
 
     expect(await screen.findByText("mirror-east")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "账户列表" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "账户列表" }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /添加账户/ }));
     fireEvent.click(await screen.findByText("官方账户"));
 
-    const officialModal = await screen.findByRole("dialog", { name: "添加官方账户" });
-    expect(officialModal.closest(".ant-modal-wrap")).toHaveClass("ant-modal-centered");
+    const officialModal = await screen.findByRole("dialog", {
+      name: "添加官方账户",
+    });
+    expect(officialModal.closest(".ant-modal-wrap")).toHaveClass(
+      "ant-modal-centered",
+    );
     fireEvent.change(within(officialModal).getByLabelText("账户名称"), {
       target: { value: "current-codex" },
     });
-    fireEvent.click(within(officialModal).getByRole("button", { name: /导\s*入/ }));
+    fireEvent.click(
+      within(officialModal).getByRole("button", { name: /导\s*入/ }),
+    );
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -155,8 +194,12 @@ describe("AccountsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /添加账户/ }));
     fireEvent.click(await screen.findByText("第三方账户"));
 
-    const thirdPartyModal = await screen.findByRole("dialog", { name: "添加第三方账户" });
-    expect(within(thirdPartyModal).queryByLabelText("原生 /responses")).not.toBeInTheDocument();
+    const thirdPartyModal = await screen.findByRole("dialog", {
+      name: "添加第三方账户",
+    });
+    expect(
+      within(thirdPartyModal).queryByLabelText("原生 /responses"),
+    ).not.toBeInTheDocument();
     fireEvent.change(within(thirdPartyModal).getByLabelText("账户名称"), {
       target: { value: "ppchat-main" },
     });
@@ -166,7 +209,9 @@ describe("AccountsPage", () => {
     fireEvent.change(within(thirdPartyModal).getByLabelText("API Key"), {
       target: { value: "sk-test" },
     });
-    fireEvent.click(within(thirdPartyModal).getByRole("button", { name: /保\s*存/ }));
+    fireEvent.click(
+      within(thirdPartyModal).getByRole("button", { name: /保\s*存/ }),
+    );
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -188,7 +233,9 @@ describe("AccountsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "编辑-mirror-east" }));
     const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
-    expect(within(editModal).queryByLabelText("原生 /responses")).not.toBeInTheDocument();
+    expect(
+      within(editModal).queryByLabelText("原生 /responses"),
+    ).not.toBeInTheDocument();
     expect(within(editModal).queryByText("回退配置")).not.toBeInTheDocument();
     fireEvent.click(within(editModal).getByRole("button", { name: /保\s*存/ }));
 
@@ -201,6 +248,8 @@ describe("AccountsPage", () => {
             account_name: "mirror-east",
             source_icon: "ppchat",
             base_url: "https://code.ppchat.vip/v1",
+            usage_driver: "",
+            usage_config_json: "",
             supports_responses: true,
           }),
         }),
@@ -209,25 +258,41 @@ describe("AccountsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "详情-mirror-east" }));
     const detailModal = await screen.findByRole("dialog", { name: "账户详情" });
-    expect(await within(detailModal).findByText("今日配额进度")).toBeInTheDocument();
+    expect(
+      await within(detailModal).findByText("今日配额进度"),
+    ).toBeInTheDocument();
     expect(within(detailModal).getByText("当天增加配额")).toBeInTheDocument();
     expect(within(detailModal).getByText("今日已用次数")).toBeInTheDocument();
     expect(within(detailModal).getByText("剩余 13,931")).toBeInTheDocument();
-    expect(within(detailModal).getByText("已用 1,068 / 新增 14,999")).toBeInTheDocument();
-    expect(within(detailModal).queryByText("TOKEN 名称")).not.toBeInTheDocument();
+    expect(
+      within(detailModal).getByText("已用 1,068 / 新增 14,999"),
+    ).toBeInTheDocument();
+    expect(
+      within(detailModal).queryByText("TOKEN 名称"),
+    ).not.toBeInTheDocument();
     expect(within(detailModal).queryByText("套餐类型")).not.toBeInTheDocument();
     expect(within(detailModal).queryByText("到期时间")).not.toBeInTheDocument();
-    expect(within(detailModal).queryByText("今日 OPUS 使用次数")).not.toBeInTheDocument();
-    expect(within(detailModal).queryByText("今日大TOKEN请求数")).not.toBeInTheDocument();
-    expect(await within(detailModal).findByText("PPChat Token 日志")).toBeInTheDocument();
+    expect(
+      within(detailModal).queryByText("今日 OPUS 使用次数"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(detailModal).queryByText("今日大TOKEN请求数"),
+    ).not.toBeInTheDocument();
+    expect(
+      await within(detailModal).findByText("PPChat Token 日志"),
+    ).toBeInTheDocument();
     fireEvent.click(within(detailModal).getByRole("button", { name: "Close" }));
 
     fireEvent.click(screen.getByRole("button", { name: "编辑-mirror-east" }));
-    const editTestModal = await screen.findByRole("dialog", { name: "编辑账户" });
+    const editTestModal = await screen.findByRole("dialog", {
+      name: "编辑账户",
+    });
     fireEvent.change(within(editTestModal).getByLabelText("输入内容"), {
       target: { value: "ping" },
     });
-    fireEvent.click(within(editTestModal).getByRole("button", { name: /测\s*试/ }));
+    fireEvent.click(
+      within(editTestModal).getByRole("button", { name: /测\s*试/ }),
+    );
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -239,7 +304,9 @@ describe("AccountsPage", () => {
       );
     });
 
-    expect(await within(editTestModal).findByText("远端连通性测试成功")).toBeInTheDocument();
+    expect(
+      await within(editTestModal).findByText("远端连通性测试成功"),
+    ).toBeInTheDocument();
     expect(within(editTestModal).getByText("pong")).toBeInTheDocument();
   });
 
@@ -260,7 +327,7 @@ describe("AccountsPage", () => {
         base_url: "https://code.ppchat.vip/v1",
         account_driver: "builtin_api_key",
         usage_driver: "lua",
-        usage_config_json: "{\"script\":\"adapters/vendor.lua\"}",
+        usage_config_json: '{"script":"adapters/vendor.lua"}',
         status: "active",
         is_active: false,
         priority: 2,
@@ -282,18 +349,40 @@ describe("AccountsPage", () => {
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url === "/ai-router/api/accounts/1/share" && init?.method === "POST") {
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
         return Promise.resolve(
-          new Response(JSON.stringify({ payload: "{\"kind\":\"aigate-account-share\"}" }), {
+          new Response(JSON.stringify(accountList), {
             status: 200,
             headers: { "Content-Type": "application/json" },
           }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/1/share" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ payload: '{"kind":"aigate-account-share"}' }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
         );
       }
       return Promise.resolve(new Response(null, { status: 404 }));
@@ -307,8 +396,12 @@ describe("AccountsPage", () => {
     fetchMock.mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: "分享-mirror-east" }));
-    const confirmModal = await screen.findByRole("dialog", { name: "分享账户" });
-    fireEvent.click(within(confirmModal).getByRole("button", { name: /取\s*消/ }));
+    const confirmModal = await screen.findByRole("dialog", {
+      name: "分享账户",
+    });
+    fireEvent.click(
+      within(confirmModal).getByRole("button", { name: /取\s*消/ }),
+    );
 
     await waitFor(() => {
       expect(clipboardWriteText).not.toHaveBeenCalled();
@@ -316,20 +409,245 @@ describe("AccountsPage", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "分享-mirror-east" }));
-    const approvedModal = await screen.findByRole("dialog", { name: "分享账户" });
-    fireEvent.click(within(approvedModal).getByRole("button", { name: "确认分享" }));
+    const approvedModal = await screen.findByRole("dialog", {
+      name: "分享账户",
+    });
+    fireEvent.click(
+      within(approvedModal).getByRole("button", { name: "确认分享" }),
+    );
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/ai-router/api/accounts/1/share",
         expect.objectContaining({ method: "POST" }),
       );
-      expect(clipboardWriteText).toHaveBeenCalledWith("{\"kind\":\"aigate-account-share\"}");
+      expect(clipboardWriteText).toHaveBeenCalledWith(
+        '{"kind":"aigate-account-share"}',
+      );
+    });
+  });
+
+  it("supports editing lua usage config, copying AI skill context, and testing lua output", async () => {
+    const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: { writeText: clipboardWriteText },
+      configurable: true,
+    });
+
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "vendor-lua",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://mirror.example.test/v1",
+        account_driver: "builtin_api_key",
+        usage_driver: "lua",
+        usage_config_json:
+          '{"script":"managed:vendor_shared","endpoint":"https://usage.example.test/v1/usage"}',
+        status: "active",
+        is_active: false,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage-scripts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ items: ["vendor_shared"] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage-scripts/vendor_shared" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              key: "vendor_shared",
+              content:
+                "function fetch_usage(ctx)\n  return { ok = true, source = 'remote', confidence = 'high', limits = { quota_remaining = 123 } }\nend\n",
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage-scripts/vendor_shared" &&
+        init?.method === "PUT"
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ key: "vendor_shared" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/1/usage-lua-test" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              ok: true,
+              message: "Lua usage 测试成功",
+              details: "脚本已返回标准化 usage 结果",
+              content:
+                '{\n  "quota_remaining": 4321,\n  "meta": {\n    "account_name": "vendor-lua"\n  }\n}',
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url === "/ai-router/api/accounts/1" && init?.method === "PUT") {
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("vendor-lua")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "编辑-vendor-lua" }));
+
+    const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
+    expect(
+      await within(editModal).findByText("Lua Usage 配置"),
+    ).toBeInTheDocument();
+    expect(
+      within(editModal).queryByLabelText("Usage 配置 JSON"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(editModal).getByText("当前脚本标识: vendor_shared"),
+    ).toBeInTheDocument();
+    expect(
+      (within(editModal).getByLabelText("Lua 脚本") as HTMLTextAreaElement)
+        .value,
+    ).toContain("fetch_usage");
+
+    fireEvent.click(
+      within(editModal).getByRole("button", { name: "复制 AI Skill" }),
+    );
+    await waitFor(() => {
+      expect(clipboardWriteText).toHaveBeenCalledTimes(1);
+    });
+    expect(clipboardWriteText.mock.calls[0][0]).toContain("账户上下文");
+    expect(clipboardWriteText.mock.calls[0][0]).toContain(
+      '"account_name": "vendor-lua"',
+    );
+    expect(clipboardWriteText.mock.calls[0][0]).toContain(
+      '"script_key": "vendor_shared"',
+    );
+    expect(clipboardWriteText.mock.calls[0][0]).toContain(
+      "http://127.0.0.1:6789",
+    );
+
+    fireEvent.click(
+      within(editModal).getByRole("button", { name: "高级配置" }),
+    );
+    expect(
+      await within(editModal).findByLabelText("Usage 配置 JSON"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      within(editModal).getByRole("button", { name: "测试 Lua 脚本" }),
+    );
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1/usage-lua-test",
+        expect.objectContaining({
+          method: "POST",
+        }),
+      );
+    });
+
+    expect(
+      await within(editModal).findByText("Lua usage 测试成功"),
+    ).toBeInTheDocument();
+    expect(
+      within(editModal)
+        .getAllByText(/quota_remaining/)
+        .some((node) => node.classList.contains("test-output")),
+    ).toBe(true);
+
+    fireEvent.click(within(editModal).getByRole("button", { name: /保\s*存/ }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/usage-scripts/vendor_shared",
+        expect.objectContaining({
+          method: "PUT",
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({
+            account_name: "vendor-lua",
+            source_icon: "openai",
+            base_url: "https://mirror.example.test/v1",
+            usage_driver: "lua",
+            usage_config_json:
+              '{"script":"managed:vendor_shared","endpoint":"https://usage.example.test/v1/usage"}',
+            supports_responses: true,
+          }),
+        }),
+      );
     });
   });
 
   it("imports shared payload and keeps the modal open on validation failure", async () => {
-    const validPayload = "{\"kind\":\"aigate-account-share\",\"schema_version\":1}";
+    const validPayload = '{"kind":"aigate-account-share","schema_version":1}';
 
     const accountList = [
       {
@@ -341,7 +659,7 @@ describe("AccountsPage", () => {
         base_url: "https://code.ppchat.vip/v1",
         account_driver: "builtin_api_key",
         usage_driver: "lua",
-        usage_config_json: "{\"script\":\"adapters/vendor.lua\"}",
+        usage_config_json: '{"script":"adapters/vendor.lua"}',
         status: "active",
         is_active: false,
         priority: 2,
@@ -364,13 +682,32 @@ describe("AccountsPage", () => {
     let importAttempt = 0;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/import-shared" && init?.method === "POST") {
+      if (
+        url === "/ai-router/api/accounts/import-shared" &&
+        init?.method === "POST"
+      ) {
         importAttempt += 1;
         if (importAttempt === 1) {
           return Promise.resolve(new Response("分享内容无效", { status: 400 }));
@@ -393,7 +730,9 @@ describe("AccountsPage", () => {
     fireEvent.change(within(importModal).getByLabelText("粘贴分享内容"), {
       target: { value: validPayload },
     });
-    fireEvent.click(within(importModal).getByRole("button", { name: "校验并导入" }));
+    fireEvent.click(
+      within(importModal).getByRole("button", { name: "校验并导入" }),
+    );
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -404,10 +743,16 @@ describe("AccountsPage", () => {
         }),
       );
     });
-    expect(await within(importModal).findByText("分享内容无效")).toBeInTheDocument();
-    expect(screen.getByRole("dialog", { name: "导入账户" })).toBeInTheDocument();
+    expect(
+      await within(importModal).findByText("分享内容无效"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("dialog", { name: "导入账户" }),
+    ).toBeInTheDocument();
 
-    fireEvent.click(within(importModal).getByRole("button", { name: "校验并导入" }));
+    fireEvent.click(
+      within(importModal).getByRole("button", { name: "校验并导入" }),
+    );
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -420,7 +765,9 @@ describe("AccountsPage", () => {
     });
 
     await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: "导入账户" })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("dialog", { name: "导入账户" }),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -453,11 +800,27 @@ describe("AccountsPage", () => {
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
       return Promise.resolve(new Response(null, { status: 404 }));
     });
@@ -470,7 +833,9 @@ describe("AccountsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "删除-mirror-east" }));
     await waitFor(() => {
-      const confirmWrap = document.querySelector(".ant-modal-confirm")?.closest(".ant-modal-wrap");
+      const confirmWrap = document
+        .querySelector(".ant-modal-confirm")
+        ?.closest(".ant-modal-wrap");
       expect(confirmWrap).not.toBeNull();
       expect(confirmWrap).toHaveClass("ant-modal-centered");
     });
@@ -528,11 +893,27 @@ describe("AccountsPage", () => {
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
       if (url === "/ai-router/api/accounts/1" && init?.method === "PUT") {
         return Promise.resolve(new Response(null, { status: 200 }));
@@ -545,7 +926,9 @@ describe("AccountsPage", () => {
     renderAccountsPage();
 
     expect(await screen.findByText("account-a")).toBeInTheDocument();
-    const activeRow = screen.getByText("account-b").closest(".account-card-item");
+    const activeRow = screen
+      .getByText("account-b")
+      .closest(".account-card-item");
     expect(activeRow).toHaveClass("active-account-card");
 
     fireEvent.click(screen.getByRole("button", { name: "设为激活-account-a" }));
@@ -638,11 +1021,27 @@ describe("AccountsPage", () => {
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
       return Promise.resolve(new Response(null, { status: 404 }));
     });
@@ -653,7 +1052,9 @@ describe("AccountsPage", () => {
 
     expect(await screen.findByText("high-priority")).toBeInTheDocument();
 
-    const order = Array.from(container.querySelectorAll(".account-cards .account-card-item strong")).map((node) => node.textContent);
+    const order = Array.from(
+      container.querySelectorAll(".account-cards .account-card-item strong"),
+    ).map((node) => node.textContent);
     expect(order).toEqual(["high-priority", "mid-priority", "low-priority"]);
   });
 
@@ -696,15 +1097,34 @@ describe("AccountsPage", () => {
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
         const payload = listCallCount === 0 ? initialList : duplicatedList;
         listCallCount += 1;
-        return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }));
+        return Promise.resolve(
+          new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/1/duplicate" && init?.method === "POST") {
+      if (
+        url === "/ai-router/api/accounts/1/duplicate" &&
+        init?.method === "POST"
+      ) {
         return Promise.resolve(new Response(null, { status: 201 }));
       }
       return Promise.resolve(new Response(null, { status: 404 }));
@@ -760,10 +1180,21 @@ describe("AccountsPage", () => {
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
         return Promise.resolve(
           new Response(
             JSON.stringify([
@@ -799,8 +1230,16 @@ describe("AccountsPage", () => {
     expect(screen.getByText("7D")).toBeInTheDocument();
     expect(screen.getByText("25%")).toBeInTheDocument();
     expect(screen.getByText("5%")).toBeInTheDocument();
-    expect(document.querySelector('[aria-label="official-main-5H"] .account-usage-mini-fill')).toHaveClass("is-warning");
-    expect(document.querySelector('[aria-label="official-main-7D"] .account-usage-mini-fill')).toHaveClass("is-danger");
+    expect(
+      document.querySelector(
+        '[aria-label="official-main-5H"] .account-usage-mini-fill',
+      ),
+    ).toHaveClass("is-warning");
+    expect(
+      document.querySelector(
+        '[aria-label="official-main-7D"] .account-usage-mini-fill',
+      ),
+    ).toHaveClass("is-danger");
   });
 
   it("keeps previous usage visible while a refresh is pending", async () => {
@@ -835,10 +1274,21 @@ describe("AccountsPage", () => {
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
         usageCallCount += 1;
         if (usageCallCount === 1) {
           return Promise.resolve(
@@ -957,10 +1407,21 @@ describe("AccountsPage", () => {
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
         return Promise.resolve(
           new Response(
             JSON.stringify([
@@ -997,8 +1458,14 @@ describe("AccountsPage", () => {
     expect(await screen.findByText("ppchat-main")).toBeInTheDocument();
     expect(await screen.findByText("1D")).toBeInTheDocument();
     expect(screen.getByText("93%")).toBeInTheDocument();
-    expect(document.querySelector(".account-usage-mini")).toHaveClass("account-usage-mini-single");
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/ai-router/api/accounts/1/ppchat-token-logs"))).toBe(false);
+    expect(document.querySelector(".account-usage-mini")).toHaveClass(
+      "account-usage-mini-single",
+    );
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).includes("/ai-router/api/accounts/1/ppchat-token-logs"),
+      ),
+    ).toBe(false);
   });
 
   it("refreshes usage after shared account import so imported accounts do not stay at default progress", async () => {
@@ -1030,16 +1497,38 @@ describe("AccountsPage", () => {
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/import-shared" && init?.method === "POST") {
+      if (
+        url === "/ai-router/api/accounts/import-shared" &&
+        init?.method === "POST"
+      ) {
         return Promise.resolve(new Response(null, { status: 201 }));
       }
-      if (url === "/ai-router/api/accounts/usage/refresh" && init?.method === "POST") {
+      if (
+        url === "/ai-router/api/accounts/usage/refresh" &&
+        init?.method === "POST"
+      ) {
         return Promise.resolve(new Response(null, { status: 204 }));
       }
       return Promise.resolve(new Response(null, { status: 404 }));
@@ -1055,9 +1544,11 @@ describe("AccountsPage", () => {
 
     const importModal = await screen.findByRole("dialog", { name: "导入账户" });
     fireEvent.change(within(importModal).getByLabelText("粘贴分享内容"), {
-      target: { value: "{\"kind\":\"aigate-account-share\",\"schema_version\":1}" },
+      target: { value: '{"kind":"aigate-account-share","schema_version":1}' },
     });
-    fireEvent.click(within(importModal).getByRole("button", { name: "校验并导入" }));
+    fireEvent.click(
+      within(importModal).getByRole("button", { name: "校验并导入" }),
+    );
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -1142,13 +1633,32 @@ describe("AccountsPage", () => {
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify(accountList), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (url === "/ai-router/api/accounts/usage" && (!init?.method || init.method === "GET")) {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
       }
-      if (/^\/ai-router\/api\/accounts\/\d+$/.test(url) && init?.method === "PUT") {
+      if (
+        /^\/ai-router\/api\/accounts\/\d+$/.test(url) &&
+        init?.method === "PUT"
+      ) {
         return Promise.resolve(new Response(null, { status: 200 }));
       }
       return Promise.resolve(new Response(null, { status: 404 }));
@@ -1160,7 +1670,9 @@ describe("AccountsPage", () => {
 
     expect(await screen.findByText("account-a")).toBeInTheDocument();
 
-    const cards = Array.from(container.querySelectorAll(".account-card-item")) as HTMLElement[];
+    const cards = Array.from(
+      container.querySelectorAll(".account-card-item"),
+    ) as HTMLElement[];
     cards.forEach((card, index) => {
       Object.defineProperty(card, "getBoundingClientRect", {
         configurable: true,
@@ -1180,16 +1692,28 @@ describe("AccountsPage", () => {
 
     const handles = screen.getAllByLabelText(/拖拽排序-/);
     fireEvent.mouseDown(handles[0], { button: 0, clientX: 24, clientY: 40 });
-    fireEvent.mouseMove(document.body, { buttons: 1, clientX: 24, clientY: 56 });
-    fireEvent.mouseMove(document.body, { buttons: 1, clientX: 24, clientY: 175 });
+    fireEvent.mouseMove(document.body, {
+      buttons: 1,
+      clientX: 24,
+      clientY: 56,
+    });
+    fireEvent.mouseMove(document.body, {
+      buttons: 1,
+      clientX: 24,
+      clientY: 175,
+    });
 
     await waitFor(() => {
-      expect(container.querySelector(".account-card-item-placeholder")).toBeTruthy();
+      expect(
+        container.querySelector(".account-card-item-placeholder"),
+      ).toBeTruthy();
       expect(document.body.querySelector(".account-drag-overlay")).toBeTruthy();
     });
 
     await waitFor(() => {
-      const liveOrder = Array.from(container.querySelectorAll(".account-cards .account-card-item strong")).map((node) => node.textContent);
+      const liveOrder = Array.from(
+        container.querySelectorAll(".account-cards .account-card-item strong"),
+      ).map((node) => node.textContent);
       expect(liveOrder).toEqual(["account-b", "account-a", "account-c"]);
     });
     expect(fetchMock).not.toHaveBeenCalledWith(

@@ -22,6 +22,8 @@ import (
 	providercodex "github.com/gcssloop/codex-router/backend/internal/providers/codex"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
+	luadrv "github.com/gcssloop/codex-router/backend/internal/usagedrv/lua"
+	driverregistry "github.com/gcssloop/codex-router/backend/internal/usagedrv/registry"
 )
 
 const officialOpenAIBaseURL = "https://api.openai.com/v1"
@@ -35,6 +37,9 @@ type AccountsHandler struct {
 	stateEvents *StateEventBus
 	refresher   AccountsUsageRefresher
 	refreshTTL  time.Duration
+	drivers     *driverregistry.Registry
+	luaScripts  *luadrv.ManagedScriptStore
+	luaRuntime  *luadrv.Runtime
 }
 
 type AccountsHandlerOption func(*AccountsHandler)
@@ -48,6 +53,28 @@ func WithAccountsStateEvents(bus *StateEventBus) AccountsHandlerOption {
 func WithAccountsUsageRefresher(refresher AccountsUsageRefresher) AccountsHandlerOption {
 	return func(handler *AccountsHandler) {
 		handler.refresher = refresher
+	}
+}
+
+func WithAccountsDriverRegistry(reg *driverregistry.Registry) AccountsHandlerOption {
+	return func(handler *AccountsHandler) {
+		handler.drivers = reg
+	}
+}
+
+func WithAccountsLuaScriptRoot(root string) AccountsHandlerOption {
+	return func(handler *AccountsHandler) {
+		if strings.TrimSpace(root) == "" {
+			return
+		}
+		store, err := luadrv.NewManagedScriptStore(root)
+		if err != nil {
+			return
+		}
+		handler.luaScripts = store
+		if handler.luaRuntime == nil {
+			handler.luaRuntime = luadrv.NewRuntime(handler.client, "")
+		}
 	}
 }
 
@@ -95,6 +122,12 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.importCurrentAuth(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts/import-shared":
 		h.importSharedAccount(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/accounts/usage-scripts":
+		h.listLuaUsageScripts(w)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/accounts/usage-scripts/"):
+		h.getLuaUsageScript(w, r)
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/accounts/usage-scripts/"):
+		h.putLuaUsageScript(w, r)
 	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/accounts/") && countPathSegments(r.URL.Path) == 2:
 		h.updateAccount(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/accounts/") && countPathSegments(r.URL.Path) == 2:
@@ -105,6 +138,8 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.shareAccount(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/test"):
 		h.testAccount(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/usage-lua-test"):
+		h.testLuaUsage(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/ppchat-token-logs"):
 		h.getPPChatTokenLogs(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/disable"):
@@ -185,6 +220,24 @@ type accountTestResponse struct {
 type accountChatTestRequest struct {
 	Model string `json:"model"`
 	Input string `json:"input"`
+}
+
+type luaUsageScriptRequest struct {
+	Content string `json:"content"`
+}
+
+type luaUsageScriptResponse struct {
+	Key     string `json:"key"`
+	Content string `json:"content,omitempty"`
+}
+
+type luaUsageScriptListResponse struct {
+	Items []string `json:"items"`
+}
+
+type luaUsageTestRequest struct {
+	UsageConfigJSON string `json:"usage_config_json"`
+	ScriptContent   string `json:"script_content"`
 }
 
 const accountShareKind = "aigate-account-share"
@@ -743,6 +796,153 @@ func (h *AccountsHandler) testAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, h.runAccountTest(r.Context(), account, credential, reqBody.Model, reqBody.Input))
+}
+
+func (h *AccountsHandler) getLuaUsageScript(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/accounts/usage-scripts/"))
+	if h.luaScripts == nil {
+		http.Error(w, "lua script storage is not configured", http.StatusNotFound)
+		return
+	}
+	content, err := h.luaScripts.Load(key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, luaUsageScriptResponse{Key: key, Content: content})
+}
+
+func (h *AccountsHandler) listLuaUsageScripts(w http.ResponseWriter) {
+	if h.luaScripts == nil {
+		http.Error(w, "lua script storage is not configured", http.StatusNotFound)
+		return
+	}
+	items, err := h.luaScripts.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, luaUsageScriptListResponse{Items: items})
+}
+
+func (h *AccountsHandler) putLuaUsageScript(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/accounts/usage-scripts/"))
+	if h.luaScripts == nil {
+		http.Error(w, "lua script storage is not configured", http.StatusNotFound)
+		return
+	}
+	var req luaUsageScriptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		http.Error(w, "script content is required", http.StatusBadRequest)
+		return
+	}
+	if err := h.luaScripts.Save(key, req.Content); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, luaUsageScriptResponse{Key: key})
+}
+
+func (h *AccountsHandler) testLuaUsage(w http.ResponseWriter, r *http.Request) {
+	id, err := accountIDFromPath(strings.TrimSuffix(strings.TrimSuffix(r.URL.Path, "/usage-lua-test"), "/"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if h.drivers == nil {
+		http.Error(w, "driver registry is not configured", http.StatusInternalServerError)
+		return
+	}
+	account, err := h.repo.GetByID(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	var req luaUsageTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	configJSON := strings.TrimSpace(req.UsageConfigJSON)
+	if configJSON == "" {
+		configJSON = account.UsageConfigJSON
+	}
+	cfg, err := luadrv.ParseDriverConfig(configJSON)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	account.UsageDriver = "lua"
+	account.UsageConfigJSON = configJSON
+
+	accountDriver, err := h.drivers.AccountDriverFor(account)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	credential, err := accountDriver.Resolve(r.Context(), account)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	scriptContent := strings.TrimSpace(req.ScriptContent)
+	if scriptContent == "" {
+		if key, ok := luadrv.ParseManagedScriptKey(cfg.Script); ok && h.luaScripts != nil {
+			scriptContent, err = h.luaScripts.Load(key)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		} else {
+			http.Error(w, "script_content is required for non-managed lua test", http.StatusBadRequest)
+			return
+		}
+	}
+
+	if h.luaRuntime == nil {
+		h.luaRuntime = luadrv.NewRuntime(h.client, "")
+	}
+	result, err := h.luaRuntime.ExecuteSource(r.Context(), scriptContent, cfg.Script, account, credential, cfg.Raw)
+	if err != nil {
+		writeJSON(w, http.StatusOK, accountTestResponse{
+			OK:      false,
+			Message: "Lua usage 测试失败",
+			Details: err.Error(),
+		})
+		return
+	}
+	pretty, err := json.MarshalIndent(map[string]any{
+		"source":                 result.Source,
+		"confidence":             result.Confidence,
+		"balance":                result.Limits.Balance,
+		"quota_remaining":        result.Limits.QuotaRemaining,
+		"rpm_remaining":          result.Limits.RPMRemaining,
+		"tpm_remaining":          result.Limits.TPMRemaining,
+		"daily_remaining":        result.Limits.DailyRemaining,
+		"monthly_remaining":      result.Limits.MonthlyRemaining,
+		"primary_used_percent":   result.Limits.PrimaryUsedPercent,
+		"secondary_used_percent": result.Limits.SecondaryUsedPercent,
+		"primary_resets_at":      result.Limits.PrimaryResetsAt,
+		"secondary_resets_at":    result.Limits.SecondaryResetsAt,
+		"meta":                   result.Meta,
+		"payload":                result.Payload,
+	}, "", "  ")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, accountTestResponse{
+		OK:      true,
+		Message: "Lua usage 测试成功",
+		Details: "脚本已返回标准化 usage 结果",
+		Content: string(pretty),
+	})
 }
 
 func (h *AccountsHandler) getPPChatTokenLogs(w http.ResponseWriter, r *http.Request) {

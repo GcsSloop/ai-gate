@@ -35,7 +35,14 @@ func (r *Runtime) Execute(ctx context.Context, script string, account accounts.A
 	if err != nil {
 		return usagedrv.RawUsageResult{}, err
 	}
+	rawScript, err := os.ReadFile(resolvedScript)
+	if err != nil {
+		return usagedrv.RawUsageResult{}, fmt.Errorf("lua read script: %w", err)
+	}
+	return r.ExecuteSource(ctx, string(rawScript), resolvedScript, account, credential, config)
+}
 
+func (r *Runtime) ExecuteSource(ctx context.Context, source string, sourceName string, account accounts.Account, credential accountdrv.ResolvedCredential, config map[string]any) (usagedrv.RawUsageResult, error) {
 	L := golua.NewState(golua.Options{
 		SkipOpenLibs: true,
 	})
@@ -46,11 +53,14 @@ func (r *Runtime) Execute(ctx context.Context, script string, account accounts.A
 		return usagedrv.RawUsageResult{}, err
 	}
 
-	if err := L.DoFile(resolvedScript); err != nil {
+	if strings.TrimSpace(sourceName) == "" {
+		sourceName = "inline.lua"
+	}
+	if err := L.DoString(source); err != nil {
 		if ctx.Err() != nil {
 			return usagedrv.RawUsageResult{}, fmt.Errorf("lua runtime timeout: %w", ctx.Err())
 		}
-		return usagedrv.RawUsageResult{}, fmt.Errorf("lua load script: %w", err)
+		return usagedrv.RawUsageResult{}, fmt.Errorf("lua load script %s: %w", sourceName, err)
 	}
 
 	fn := L.GetGlobal("fetch_usage")

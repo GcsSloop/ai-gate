@@ -132,6 +132,20 @@ export type AccountTestResult = {
   content?: string;
 };
 
+export type LuaUsageScriptRecord = {
+  key: string;
+  content: string;
+};
+
+export type LuaUsageScriptList = {
+  items: string[];
+};
+
+export type LuaUsageTestPayload = {
+  usage_config_json: string;
+  script_content: string;
+};
+
 export type PPChatTokenLogsPayload = {
   data: {
     logs: Array<{
@@ -252,7 +266,9 @@ export async function refreshAccountUsage(): Promise<void> {
   }
 }
 
-export function subscribeAccountRoutingStateChanged(handler: () => void): () => void {
+export function subscribeAccountRoutingStateChanged(
+  handler: () => void,
+): () => void {
   if (typeof window === "undefined" || typeof EventSource === "undefined") {
     return () => {};
   }
@@ -268,7 +284,9 @@ export function subscribeAccountRoutingStateChanged(handler: () => void): () => 
   };
 }
 
-export async function createAccount(payload: CreateAccountPayload): Promise<void> {
+export async function createAccount(
+  payload: CreateAccountPayload,
+): Promise<void> {
   const response = await fetch(apiPath("/accounts"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -281,7 +299,13 @@ export async function createAccount(payload: CreateAccountPayload): Promise<void
 
 export async function updateAccount(
   id: number,
-  payload: Partial<CreateAccountPayload> & { account_name?: string; status?: string; priority?: number; is_active?: boolean; supports_responses?: boolean },
+  payload: Partial<CreateAccountPayload> & {
+    account_name?: string;
+    status?: string;
+    priority?: number;
+    is_active?: boolean;
+    supports_responses?: boolean;
+  },
 ): Promise<void> {
   const response = await fetch(apiPath(`/accounts/${id}`), {
     method: "PUT",
@@ -329,7 +353,12 @@ export async function importSharedAccount(payload: string): Promise<void> {
 
 export type DashboardRangeKey = "24h" | "7d" | "30d";
 
-function dashboardQuery(range: DashboardRangeKey = "24h", accountID?: number, model?: string, limit?: number): string {
+function dashboardQuery(
+  range: DashboardRangeKey = "24h",
+  accountID?: number,
+  model?: string,
+  limit?: number,
+): string {
   const params = new URLSearchParams();
   params.set("range", range);
   if (accountID && accountID > 0) {
@@ -344,39 +373,71 @@ function dashboardQuery(range: DashboardRangeKey = "24h", accountID?: number, mo
   return params.toString();
 }
 
-export async function getDashboardSummary(range: DashboardRangeKey = "24h", accountID?: number, model?: string): Promise<UsageDashboardSummary> {
-  const response = await fetch(apiPath(`/dashboard/summary?${dashboardQuery(range, accountID, model)}`));
+export async function getDashboardSummary(
+  range: DashboardRangeKey = "24h",
+  accountID?: number,
+  model?: string,
+): Promise<UsageDashboardSummary> {
+  const response = await fetch(
+    apiPath(`/dashboard/summary?${dashboardQuery(range, accountID, model)}`),
+  );
   if (!response.ok) {
     throw new Error("failed to load dashboard summary");
   }
   return response.json();
 }
 
-export async function getDashboardTrends(range: DashboardRangeKey = "24h", accountID?: number, model?: string): Promise<UsageTrendPoint[]> {
-  const response = await fetch(apiPath(`/dashboard/trends?${dashboardQuery(range, accountID, model)}`));
+export async function getDashboardTrends(
+  range: DashboardRangeKey = "24h",
+  accountID?: number,
+  model?: string,
+): Promise<UsageTrendPoint[]> {
+  const response = await fetch(
+    apiPath(`/dashboard/trends?${dashboardQuery(range, accountID, model)}`),
+  );
   if (!response.ok) {
     throw new Error("failed to load dashboard trends");
   }
   return response.json();
 }
 
-export async function getDashboardRecentEvents(range: DashboardRangeKey = "24h", accountID?: number, model?: string, limit = 20): Promise<UsageEventRecord[]> {
-  const response = await fetch(apiPath(`/dashboard/recent-events?${dashboardQuery(range, accountID, model, limit)}`));
+export async function getDashboardRecentEvents(
+  range: DashboardRangeKey = "24h",
+  accountID?: number,
+  model?: string,
+  limit = 20,
+): Promise<UsageEventRecord[]> {
+  const response = await fetch(
+    apiPath(
+      `/dashboard/recent-events?${dashboardQuery(range, accountID, model, limit)}`,
+    ),
+  );
   if (!response.ok) {
     throw new Error("failed to load recent usage events");
   }
   return response.json();
 }
 
-export async function getDashboardModelDistribution(range: DashboardRangeKey = "24h", accountID?: number, model?: string): Promise<UsageModelDistributionPoint[]> {
-  const response = await fetch(apiPath(`/dashboard/model-distribution?${dashboardQuery(range, accountID, model)}`));
+export async function getDashboardModelDistribution(
+  range: DashboardRangeKey = "24h",
+  accountID?: number,
+  model?: string,
+): Promise<UsageModelDistributionPoint[]> {
+  const response = await fetch(
+    apiPath(
+      `/dashboard/model-distribution?${dashboardQuery(range, accountID, model)}`,
+    ),
+  );
   if (!response.ok) {
     throw new Error("failed to load model distribution");
   }
   return response.json();
 }
 
-export async function testAccount(id: number, payload: AccountChatTestPayload): Promise<AccountTestResult> {
+export async function testAccount(
+  id: number,
+  payload: AccountChatTestPayload,
+): Promise<AccountTestResult> {
   const response = await fetch(apiPath(`/accounts/${id}/test`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -394,8 +455,77 @@ export async function testAccount(id: number, payload: AccountChatTestPayload): 
   return data;
 }
 
-export async function fetchPPChatTokenLogs(accountID: number, page = 1, pageSize = 10): Promise<PPChatTokenLogsPayload> {
-  const response = await fetch(apiPath(`/accounts/${accountID}/ppchat-token-logs?page=${page}&page_size=${pageSize}`));
+export async function getLuaUsageScript(
+  key: string,
+): Promise<LuaUsageScriptRecord> {
+  const response = await fetch(
+    apiPath(`/accounts/usage-scripts/${encodeURIComponent(key)}`),
+  );
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to load lua usage script");
+  }
+  return response.json();
+}
+
+export async function listLuaUsageScripts(): Promise<LuaUsageScriptList> {
+  const response = await fetch(apiPath("/accounts/usage-scripts"));
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to list lua usage scripts");
+  }
+  return response.json();
+}
+
+export async function saveLuaUsageScript(
+  key: string,
+  content: string,
+): Promise<void> {
+  const response = await fetch(
+    apiPath(`/accounts/usage-scripts/${encodeURIComponent(key)}`),
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+  );
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to save lua usage script");
+  }
+}
+
+export async function testLuaUsage(
+  id: number,
+  payload: LuaUsageTestPayload,
+): Promise<AccountTestResult> {
+  const response = await fetch(apiPath(`/accounts/${id}/usage-lua-test`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = (await response.json()) as AccountTestResult;
+  if (!response.ok) {
+    return {
+      ok: false,
+      message: data.message || runtimeTranslate("测试失败"),
+      details: data.details || runtimeTranslate("请求 Lua 测试接口失败"),
+      content: data.content,
+    };
+  }
+  return data;
+}
+
+export async function fetchPPChatTokenLogs(
+  accountID: number,
+  page = 1,
+  pageSize = 10,
+): Promise<PPChatTokenLogsPayload> {
+  const response = await fetch(
+    apiPath(
+      `/accounts/${accountID}/ppchat-token-logs?page=${page}&page_size=${pageSize}`,
+    ),
+  );
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to fetch ppchat token logs");
@@ -423,7 +553,10 @@ export async function startOfficialAuth(): Promise<void> {
   }
 }
 
-export async function importLocalCodexAuth(file: File, accountName = "local-codex"): Promise<void> {
+export async function importLocalCodexAuth(
+  file: File,
+  accountName = "local-codex",
+): Promise<void> {
   const formData = new FormData();
   formData.append("account_name", accountName);
   formData.append("auth_file", file);
@@ -436,7 +569,9 @@ export async function importLocalCodexAuth(file: File, accountName = "local-code
   }
 }
 
-export async function importCurrentCodexAuth(accountName = "local-codex"): Promise<void> {
+export async function importCurrentCodexAuth(
+  accountName = "local-codex",
+): Promise<void> {
   const response = await fetch(apiPath("/accounts/import-current"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -478,8 +613,12 @@ export async function restoreCodexBackup(backupID: string): Promise<void> {
   }
 }
 
-export async function getCodexBackupFiles(backupID: string): Promise<CodexBackupFiles> {
-  const response = await fetch(apiPath(`/settings/codex/backups/${backupID}/files`));
+export async function getCodexBackupFiles(
+  backupID: string,
+): Promise<CodexBackupFiles> {
+  const response = await fetch(
+    apiPath(`/settings/codex/backups/${backupID}/files`),
+  );
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to fetch backup files");
@@ -503,7 +642,9 @@ export async function getAppSettings(): Promise<AppSettings> {
   return response.json();
 }
 
-export async function saveAppSettings(payload: AppSettings): Promise<AppSettings> {
+export async function saveAppSettings(
+  payload: AppSettings,
+): Promise<AppSettings> {
   const response = await fetch(apiPath("/settings/app"), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -571,9 +712,12 @@ export async function importDatabaseSQL(raw: string): Promise<void> {
   }
 
   const trimmed = raw.trimStart();
-  const isAIGateJSONExchange = trimmed.startsWith("{") && raw.includes('"format":"aigate-db-exchange"');
+  const isAIGateJSONExchange =
+    trimmed.startsWith("{") && raw.includes('"format":"aigate-db-exchange"');
   if (isAIGateJSONExchange) {
-    throw new Error(runtimeTranslate("当前后端版本不支持 JSON 导入，请升级到最新版本后重试"));
+    throw new Error(
+      runtimeTranslate("当前后端版本不支持 JSON 导入，请升级到最新版本后重试"),
+    );
   }
 
   // Backward compatibility for legacy SQL import route.
@@ -620,9 +764,12 @@ export async function restoreDatabaseBackup(backupID: string): Promise<void> {
 }
 
 export async function deleteDatabaseBackup(backupID: string): Promise<void> {
-  const response = await fetch(apiPath(`/settings/database/backups/${encodeURIComponent(backupID)}`), {
-    method: "DELETE",
-  });
+  const response = await fetch(
+    apiPath(`/settings/database/backups/${encodeURIComponent(backupID)}`),
+    {
+      method: "DELETE",
+    },
+  );
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to delete database backup");
@@ -630,7 +777,9 @@ export async function deleteDatabaseBackup(backupID: string): Promise<void> {
 }
 
 export async function enableProxy(): Promise<ProxyStatus> {
-  const response = await fetch(apiPath("/settings/proxy/enable"), { method: "POST" });
+  const response = await fetch(apiPath("/settings/proxy/enable"), {
+    method: "POST",
+  });
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to enable proxy");
@@ -638,7 +787,10 @@ export async function enableProxy(): Promise<ProxyStatus> {
   return response.json();
 }
 
-export async function disableProxy(options?: { force?: boolean; skipRestore?: boolean }): Promise<ProxyStatus> {
+export async function disableProxy(options?: {
+  force?: boolean;
+  skipRestore?: boolean;
+}): Promise<ProxyStatus> {
   const params = new URLSearchParams();
   if (options?.force) {
     params.set("force", "1");
@@ -647,7 +799,9 @@ export async function disableProxy(options?: { force?: boolean; skipRestore?: bo
     params.set("skip_restore", "1");
   }
   const suffix = params.toString() ? `?${params.toString()}` : "";
-  const response = await fetch(apiPath(`/settings/proxy/disable${suffix}`), { method: "POST" });
+  const response = await fetch(apiPath(`/settings/proxy/disable${suffix}`), {
+    method: "POST",
+  });
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to disable proxy");

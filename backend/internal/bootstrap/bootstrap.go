@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -53,6 +54,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	if cfg.DatabasePath == "" {
 		return nil, errors.New("database path is required")
 	}
+	luaScriptRoot := filepath.Join(filepath.Dir(cfg.DatabasePath), "usage-scripts")
 
 	store, err := sqlite.Open(cfg.DatabasePath)
 	if err != nil {
@@ -88,7 +90,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		[]usagedrv.UsageDriver{
 			builtin.NewOpenAIOfficialDriver(http.DefaultClient),
 			builtin.NewPPChatDriver(http.DefaultClient),
-			luadrv.NewDriver(http.DefaultClient, ""),
+			luadrv.NewDriver(http.DefaultClient, "", luadrv.WithManagedScriptRoot(luaScriptRoot)),
 		},
 	)
 	if err != nil {
@@ -103,6 +105,8 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		stateStore,
 		api.WithAccountsStateEvents(stateEvents),
 		api.WithAccountsUsageRefresher(refreshOrchestrator),
+		api.WithAccountsDriverRegistry(driverRegistry),
+		api.WithAccountsLuaScriptRoot(luaScriptRoot),
 	)
 	conversationsHandler := api.NewConversationsHandler(conversationRepo)
 

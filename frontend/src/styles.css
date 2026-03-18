@@ -1326,6 +1326,38 @@ html[data-theme-mode="dark"] .stats-chart-shell {
   border-top: 1px dashed #e5e7eb;
 }
 
+.lua-usage-panel {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  background: var(--panel-soft);
+}
+
+.lua-usage-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.lua-usage-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lua-script-select-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lua-script-select {
+  flex: 1 1 auto;
+}
+
 .account-detail-layout {
   display: grid;
   gap: 16px;
