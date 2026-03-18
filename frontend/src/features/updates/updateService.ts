@@ -1,5 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
 import { relaunch as tauriRelaunch } from "@tauri-apps/plugin-process";
-import { check as tauriCheck } from "@tauri-apps/plugin-updater";
 
 export type DesktopUpdateInfo = {
   body?: string | null;
@@ -14,28 +14,49 @@ export type DownloadProgress = {
   transferred: number;
 };
 
-type DownloadEvent =
-  | { event: "Started"; data: { contentLength?: number } }
-  | { event: "Progress"; data: { chunkLength?: number } }
-  | { event: "Finished" };
+export type DesktopUpdateStatus =
+  | "idle"
+  | "checking"
+  | "up-to-date"
+  | "available"
+  | "downloading"
+  | "ready"
+  | "unsupported"
+  | "cancelled"
+  | "error";
 
-type TauriUpdateResult = DesktopUpdateInfo & {
-  downloadAndInstall: (handler?: (event: DownloadEvent) => void) => Promise<void>;
+export type DesktopUpdateState = {
+  status: DesktopUpdateStatus;
+  update: DesktopUpdateInfo | null;
+  progress: DownloadProgress | null;
+  error: string | null;
 };
-
-export type DesktopUpdateCheckResult = TauriUpdateResult | null;
 
 export type DesktopUpdateAdapter = {
   isSupported: () => boolean;
-  check: () => Promise<DesktopUpdateCheckResult>;
+  getState: () => Promise<DesktopUpdateState>;
+  check: () => Promise<DesktopUpdateState>;
+  startDownload: (version: string) => Promise<DesktopUpdateState>;
+  cancelDownload: () => Promise<DesktopUpdateState>;
   relaunch: () => Promise<void>;
 };
 
 export type DesktopUpdateService = {
+  getState: () => Promise<DesktopUpdateState>;
   check: (currentVersion?: string) => Promise<{ supported: boolean; update: DesktopUpdateInfo | null }>;
-  downloadAndInstall: (update: DesktopUpdateInfo, onProgress?: (progress: DownloadProgress) => void) => Promise<void>;
+  downloadAndInstall: (update: DesktopUpdateInfo) => Promise<void>;
+  cancelDownload: () => Promise<void>;
   relaunch: () => Promise<void>;
 };
+
+export function emptyUpdateState(status: DesktopUpdateStatus = "idle"): DesktopUpdateState {
+  return {
+    status,
+    update: null,
+    progress: null,
+    error: null,
+  };
+}
 
 function isDesktopShell() {
   if (typeof window === "undefined") {
@@ -52,86 +73,50 @@ function isDesktopShell() {
   return protocol === "tauri:" || protocol === "file:";
 }
 
-export function mapDownloadProgress(
-  event?: { contentLength?: number; chunkLength?: number },
-  previous: DownloadProgress = { percent: 0, total: 0, transferred: 0 },
-): DownloadProgress {
-  if (!event) {
-    return previous;
-  }
-  if (typeof event.contentLength === "number") {
-    return {
-      percent: 0,
-      total: event.contentLength,
-      transferred: 0,
-    };
-  }
-  const transferred = previous.transferred + (event.chunkLength ?? 0);
-  const total = previous.total;
-  const percent = total > 0 ? Math.min(100, (transferred / total) * 100) : previous.percent;
-  return {
-    percent,
-    total,
-    transferred,
-  };
-}
-
 function createDefaultAdapter(): DesktopUpdateAdapter {
   return {
     isSupported: isDesktopShell,
-    check: () => tauriCheck() as Promise<DesktopUpdateCheckResult>,
+    getState: () => invoke<DesktopUpdateState>("get_update_state"),
+    check: () => invoke<DesktopUpdateState>("check_for_app_update"),
+    startDownload: (version) => invoke<DesktopUpdateState>("start_update_download", { version }),
+    cancelDownload: () => invoke<DesktopUpdateState>("cancel_update_download"),
     relaunch: () => tauriRelaunch(),
   };
 }
 
-export function createDesktopUpdateService(
-  adapter: DesktopUpdateAdapter = createDefaultAdapter(),
-  _fetchImpl: typeof fetch = ((...args) => {
-    if (typeof globalThis.fetch !== "function") {
-      throw new Error("Fetch API is unavailable");
-    }
-    return globalThis.fetch(...args);
-  }) as typeof fetch,
-): DesktopUpdateService {
-  let currentUpdate: TauriUpdateResult | null = null;
-
+export function createDesktopUpdateService(adapter: DesktopUpdateAdapter = createDefaultAdapter()): DesktopUpdateService {
   return {
+    async getState() {
+      if (!adapter.isSupported()) {
+        return {
+          ...emptyUpdateState("unsupported"),
+          error: null,
+        };
+      }
+      return adapter.getState();
+    },
     async check(currentVersion) {
       if (!adapter.isSupported()) {
-        currentUpdate = null;
         void currentVersion;
         return { supported: false, update: null };
       }
-      currentUpdate = await adapter.check();
-      if (!currentUpdate) {
-        return { supported: true, update: null };
-      }
-      const { body, currentVersion: latestCurrentVersion, date, version } = currentUpdate;
+      const state = await adapter.check();
       return {
-        supported: true,
-        update: {
-          body,
-          currentVersion: latestCurrentVersion,
-          date,
-          version,
-        },
+        supported: state.status !== "unsupported",
+        update: state.update,
       };
     },
-    async downloadAndInstall(update, onProgress) {
-      if (!currentUpdate || currentUpdate.version !== update.version) {
-        throw new Error("Update is no longer available. Check again and retry.");
+    async downloadAndInstall(update) {
+      if (!adapter.isSupported()) {
+        throw new Error("Automatic updates are only available in the desktop app.");
       }
-      let progress: DownloadProgress = { percent: 0, total: 0, transferred: 0 };
-      await currentUpdate.downloadAndInstall((event) => {
-        if (event.event === "Started") {
-          progress = mapDownloadProgress({ contentLength: event.data.contentLength }, progress);
-        } else if (event.event === "Progress") {
-          progress = mapDownloadProgress({ chunkLength: event.data.chunkLength }, progress);
-        } else {
-          progress = { ...progress, percent: 100 };
-        }
-        onProgress?.(progress);
-      });
+      await adapter.startDownload(update.version);
+    },
+    async cancelDownload() {
+      if (!adapter.isSupported()) {
+        return;
+      }
+      await adapter.cancelDownload();
     },
     relaunch: () => adapter.relaunch(),
   };

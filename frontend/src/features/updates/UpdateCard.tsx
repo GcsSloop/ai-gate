@@ -1,11 +1,18 @@
-import { CloudDownloadOutlined, ReloadOutlined, SyncOutlined } from "@ant-design/icons";
+import { CloudDownloadOutlined, CloseOutlined, ReloadOutlined, SyncOutlined } from "@ant-design/icons";
 import { Button, Card, Progress, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
 import type { AppLanguage, Translator } from "../../lib/i18n";
-import { createDesktopUpdateService, type DesktopUpdateInfo, type DesktopUpdateService, type DownloadProgress } from "./updateService";
+import {
+  createDesktopUpdateService,
+  emptyUpdateState,
+  type DesktopUpdateInfo,
+  type DesktopUpdateService,
+  type DesktopUpdateState,
+} from "./updateService";
 
 const { Paragraph, Text } = Typography;
+const ACTIVE_POLL_MS = 1000;
 
 type UpdateCardProps = {
   autoCheckOnMount?: boolean;
@@ -14,16 +21,6 @@ type UpdateCardProps = {
   t: Translator;
   service?: DesktopUpdateService;
 };
-
-type UpdateViewState =
-  | { status: "idle"; message: string }
-  | { status: "checking"; message: string }
-  | { status: "up-to-date"; message: string }
-  | { status: "available"; message: string; update: DesktopUpdateInfo }
-  | { status: "downloading"; message: string; update: DesktopUpdateInfo; progress: DownloadProgress }
-  | { status: "ready"; message: string; update: DesktopUpdateInfo }
-  | { status: "unsupported"; message: string; update?: DesktopUpdateInfo }
-  | { status: "error"; message: string };
 
 function formatDate(value: string | null | undefined, language: AppLanguage) {
   if (!value) {
@@ -36,71 +33,116 @@ function formatDate(value: string | null | undefined, language: AppLanguage) {
   return date.toLocaleString(language, { hour12: false });
 }
 
+function describeState(state: DesktopUpdateState, t: Translator) {
+  switch (state.status) {
+    case "checking":
+      return t("正在检查更新…");
+    case "up-to-date":
+      return t("已是最新版本");
+    case "available":
+      return state.update ? `${t("发现新版本")} ${state.update.version}` : t("发现新版本");
+    case "downloading":
+      return `${t("下载进度")} ${Math.round(state.progress?.percent ?? 0)}%`;
+    case "ready":
+      return t("更新已安装，重启后生效");
+    case "unsupported":
+      return state.update ? t("当前环境不支持自动安装，但已检查到最新版本。") : t("当前仅桌面版支持自动更新。");
+    case "cancelled":
+      return t("下载已取消");
+    case "error":
+      return state.error || t("安装更新失败");
+    case "idle":
+    default:
+      return t("检查 GitHub Release 中的最新版本。");
+  }
+}
+
+function shouldPoll(state: DesktopUpdateState) {
+  return state.status === "checking" || state.status === "downloading";
+}
+
 export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, t, service }: UpdateCardProps) {
   const updateService = useMemo(() => service ?? createDesktopUpdateService(), [service]);
-  const [state, setState] = useState<UpdateViewState>({ status: "idle", message: t("检查 GitHub Release 中的最新版本。") });
+  const [state, setState] = useState<DesktopUpdateState>(() => emptyUpdateState());
 
-  async function runCheck(silent = false) {
-    setState({ status: "checking", message: t("正在检查更新…") });
+  async function hydrate() {
+    const snapshot = await updateService.getState();
+    setState(snapshot);
+    return snapshot;
+  }
+
+  async function runCheck() {
+    setState((current) => ({ ...current, status: "checking", error: null }));
     try {
-      const result = await updateService.check(currentVersion);
-      if (!result.supported) {
-        setState({
-          status: "unsupported",
-          message: result.update ? t("当前环境不支持自动安装，但已检查到最新版本。") : t("当前仅桌面版支持自动更新。"),
-          update: result.update ?? undefined,
-        });
-        return;
-      }
-      if (!result.update) {
-        setState({ status: "up-to-date", message: t("已是最新版本") });
-        return;
-      }
-      setState({
-        status: "available",
-        message: `${t("发现新版本")} ${result.update.version}`,
-        update: result.update,
-      });
-      if (!silent) {
-        return;
-      }
+      await updateService.check(currentVersion);
+      await hydrate();
     } catch (error) {
-      setState({ status: "error", message: error instanceof Error ? t(error.message) : t("检查更新失败") });
+      setState({
+        ...emptyUpdateState("error"),
+        error: error instanceof Error ? t(error.message) : t("检查更新失败"),
+      });
     }
   }
 
   async function handleDownloadAndInstall(update: DesktopUpdateInfo) {
-    setState({
-      status: "downloading",
-      message: `${t("下载进度")} 0%`,
-      update,
-      progress: { percent: 0, total: 0, transferred: 0 },
-    });
     try {
-      await updateService.downloadAndInstall(update, (progress) => {
-        setState({
-          status: "downloading",
-          message: `${t("下载进度")} ${Math.round(progress.percent)}%`,
-          update,
-          progress,
-        });
-      });
-      setState({
-        status: "ready",
-        message: t("更新已安装，重启后生效"),
-        update,
-      });
+      await updateService.downloadAndInstall(update);
+      await hydrate();
     } catch (error) {
-      setState({ status: "error", message: error instanceof Error ? t(error.message) : t("安装更新失败") });
+      setState({
+        ...emptyUpdateState("error"),
+        update,
+        error: error instanceof Error ? t(error.message) : t("安装更新失败"),
+      });
+    }
+  }
+
+  async function handleCancel() {
+    try {
+      await updateService.cancelDownload();
+      await hydrate();
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        status: "error",
+        error: error instanceof Error ? t(error.message) : t("安装更新失败"),
+      }));
     }
   }
 
   useEffect(() => {
-    if (!autoCheckOnMount) {
+    let cancelled = false;
+
+    async function bootstrap() {
+      const snapshot = await updateService.getState();
+      if (cancelled) {
+        return;
+      }
+      setState(snapshot);
+      if (autoCheckOnMount && (snapshot.status === "idle" || snapshot.status === "up-to-date")) {
+        await runCheck();
+      }
+    }
+
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, [autoCheckOnMount, currentVersion, updateService]);
+
+  useEffect(() => {
+    if (!shouldPoll(state)) {
       return;
     }
-    void runCheck(true);
-  }, [autoCheckOnMount]);
+    const timer = window.setInterval(() => {
+      void hydrate();
+    }, ACTIVE_POLL_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [state.status, state.progress?.percent]);
+
+  const message = describeState(state, t);
 
   return (
     <Card className="settings-card update-card" variant="borderless">
@@ -113,7 +155,7 @@ export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, 
           aria-label={t("检查更新")}
           icon={<SyncOutlined spin={state.status === "checking"} />}
           onClick={() => void runCheck()}
-          disabled={state.status === "checking"}
+          disabled={state.status === "checking" || state.status === "downloading"}
         >
           {t("检查更新")}
         </Button>
@@ -126,10 +168,10 @@ export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, 
         </div>
         <div className="about-meta-row">
           <span>{t("状态")}</span>
-          <strong className={`update-status-value${state.status === "checking" ? " is-checking" : ""}`}>{state.message}</strong>
+          <strong className={`update-status-value${state.status === "checking" || state.status === "downloading" ? " is-checking" : ""}`}>{message}</strong>
         </div>
 
-        {"update" in state && state.update ? (
+        {state.update ? (
           <>
             <div className="about-meta-row">
               <span>{state.status === "unsupported" ? t("最新版本") : t("目标版本")}</span>
@@ -145,17 +187,22 @@ export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, 
           </>
         ) : null}
 
-        {state.status === "downloading" ? <Progress percent={Math.round(state.progress.percent)} showInfo={false} /> : null}
+        {state.status === "downloading" && state.progress ? <Progress percent={Math.round(state.progress.percent)} showInfo={false} /> : null}
 
         <div className="update-card-actions">
-          {state.status === "available" ? (
+          {state.status === "available" && state.update ? (
             <Button
               aria-label={t("下载并安装")}
               type="primary"
               icon={<CloudDownloadOutlined />}
-              onClick={() => void handleDownloadAndInstall(state.update)}
+              onClick={() => void handleDownloadAndInstall(state.update!)}
             >
               {t("下载并安装")}
+            </Button>
+          ) : null}
+          {state.status === "downloading" ? (
+            <Button aria-label={t("终止下载")} icon={<CloseOutlined />} onClick={() => void handleCancel()}>
+              {t("终止下载")}
             </Button>
           ) : null}
           {state.status === "ready" ? (
@@ -163,7 +210,7 @@ export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, 
               {t("立即重启")}
             </Button>
           ) : null}
-          {state.status === "unsupported" && !state.update ? <Text type="secondary">{state.message}</Text> : null}
+          {state.status === "unsupported" && !state.update ? <Text type="secondary">{message}</Text> : null}
         </div>
       </div>
     </Card>

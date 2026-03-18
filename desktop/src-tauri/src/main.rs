@@ -1,6 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use base64::Engine;
+use futures_util::StreamExt;
+use minisign_verify::{PublicKey, Signature};
 use once_cell::sync::Lazy;
+use reqwest::header::{HeaderValue, ACCEPT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -8,6 +12,7 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread::JoinHandle;
@@ -16,6 +21,7 @@ use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -29,6 +35,8 @@ static DESKTOP_RUNTIME: Lazy<Mutex<DesktopRuntime>> =
     Lazy::new(|| Mutex::new(DesktopRuntime::default()));
 static DESKTOP_RECENT_LOGS: Lazy<Mutex<VecDeque<DesktopLogEntry>>> =
     Lazy::new(|| Mutex::new(VecDeque::new()));
+static UPDATE_MANAGER: Lazy<Mutex<UpdateManagerState>> =
+    Lazy::new(|| Mutex::new(UpdateManagerState::default()));
 
 const DEFAULT_PROXY_HOST: &str = "127.0.0.1";
 const DEFAULT_PROXY_PORT: u16 = 6789;
@@ -54,10 +62,12 @@ const RESUME_RECOVERY_GAP_THRESHOLD: Duration = Duration::from_secs(15);
 const DESKTOP_RECENT_LOG_CAPACITY: usize = 200;
 const DESKTOP_RECENT_LOG_DEFAULT_LIMIT: usize = 50;
 const DESKTOP_RECENT_LOG_MAX_LIMIT: usize = 50;
+const UPDATE_POLL_CHUNK_SIZE: usize = 64 * 1024;
 const SIDECAR_MACOS_NAME: &str = "routerd-universal-apple-darwin";
 const SIDECAR_WINDOWS_NAME: &str = "routerd-x86_64-pc-windows-msvc.exe";
 const TRAY_ICON_COLOR_BYTES: &[u8] = include_bytes!("../icons/tray-icon-color.png");
 const TRAY_ICON_TEMPLATE_BYTES: &[u8] = include_bytes!("../icons/tray-icon-template.png");
+const UPDATER_PUBKEY_BASE64: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERGRDUyRkY5NzAzRDJGQzYKUldUR0x6MXcrUy9WMzdDd1VacitqN0JHSUc4UlVkSzB5bncwdUVNOTdhNys2aTIrTy85NXFyd2oK";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -188,6 +198,110 @@ struct DesktopLogEntry {
     message: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInfoPayload {
+    body: Option<String>,
+    current_version: String,
+    date: Option<String>,
+    version: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProgressPayload {
+    percent: f64,
+    total: u64,
+    transferred: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum UpdateStatus {
+    Idle,
+    Checking,
+    UpToDate,
+    Available,
+    Downloading,
+    Ready,
+    Unsupported,
+    Cancelled,
+    Error,
+}
+
+impl Default for UpdateStatus {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct UpdateStatePayload {
+    status: UpdateStatus,
+    update: Option<UpdateInfoPayload>,
+    progress: Option<UpdateProgressPayload>,
+    error: Option<String>,
+}
+
+#[derive(Default)]
+struct UpdateManagerState {
+    snapshot: UpdateStatePayload,
+    active_version: Option<String>,
+    cancel_flag: Option<Arc<AtomicBool>>,
+}
+
+impl UpdateManagerState {
+    fn snapshot(&self) -> UpdateStatePayload {
+        self.snapshot.clone()
+    }
+
+    fn set_snapshot(&mut self, snapshot: UpdateStatePayload) {
+        self.snapshot = snapshot;
+    }
+
+    fn begin_download(
+        &mut self,
+        update: UpdateInfoPayload,
+    ) -> Result<Arc<AtomicBool>, String> {
+        if self.snapshot.status == UpdateStatus::Downloading {
+            if self.active_version.as_deref() == Some(update.version.as_str()) {
+                if let Some(flag) = &self.cancel_flag {
+                    return Ok(flag.clone());
+                }
+            }
+            return Err("Another update download is already in progress.".to_string());
+        }
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        self.active_version = Some(update.version.clone());
+        self.cancel_flag = Some(cancel_flag.clone());
+        self.snapshot = UpdateStatePayload {
+            status: UpdateStatus::Downloading,
+            update: Some(update),
+            progress: Some(UpdateProgressPayload::default()),
+            error: None,
+        };
+        Ok(cancel_flag)
+    }
+
+    fn request_cancel(&mut self) {
+        if let Some(flag) = &self.cancel_flag {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn finish_terminal(&mut self, status: UpdateStatus, update: Option<UpdateInfoPayload>, error: Option<String>) {
+        self.active_version = None;
+        self.cancel_flag = None;
+        self.snapshot = UpdateStatePayload {
+            status,
+            update,
+            progress: None,
+            error,
+        };
+    }
+}
+
 #[derive(Clone, Default)]
 struct DesktopRuntime {
     sidecar_path: PathBuf,
@@ -212,7 +326,11 @@ fn main() {
             get_desktop_shell_context,
             apply_app_settings,
             get_app_metadata,
-            get_recent_desktop_logs
+            get_recent_desktop_logs,
+            get_update_state,
+            check_for_app_update,
+            start_update_download,
+            cancel_update_download
         ])
         .setup(|app| {
             let cache = initialize_runtime(app.handle())?;
@@ -329,6 +447,285 @@ fn get_recent_desktop_logs(limit: Option<usize>) -> Vec<DesktopLogEntry> {
         .lock()
         .map(|entries| entries.iter().rev().take(count).cloned().collect())
         .unwrap_or_default()
+}
+
+#[tauri::command]
+fn get_update_state<R: Runtime>(app: AppHandle<R>) -> Result<UpdateStatePayload, String> {
+    let current_version = app.package_info().version.to_string();
+    Ok(current_update_snapshot(&current_version))
+}
+
+#[tauri::command]
+async fn check_for_app_update<R: Runtime>(app: AppHandle<R>) -> Result<UpdateStatePayload, String> {
+    let current_version = app.package_info().version.to_string();
+    {
+        let mut manager = lock_update_manager()?;
+        let existing_update = manager.snapshot.update.clone();
+        let existing_progress = manager.snapshot.progress.clone();
+        manager.set_snapshot(UpdateStatePayload {
+            status: UpdateStatus::Checking,
+            update: existing_update,
+            progress: existing_progress,
+            error: None,
+        });
+    }
+
+    match fetch_update(&app).await? {
+        Some(update) => {
+            let payload = to_update_info_payload(&current_version, &update)?;
+            let snapshot = UpdateStatePayload {
+                status: UpdateStatus::Available,
+                update: Some(payload),
+                progress: None,
+                error: None,
+            };
+            lock_update_manager()?.set_snapshot(snapshot.clone());
+            Ok(snapshot)
+        }
+        None => {
+            let snapshot = UpdateStatePayload {
+                status: UpdateStatus::UpToDate,
+                update: None,
+                progress: None,
+                error: None,
+            };
+            lock_update_manager()?.set_snapshot(snapshot.clone());
+            Ok(snapshot)
+        }
+    }
+}
+
+#[tauri::command]
+async fn start_update_download<R: Runtime>(
+    app: AppHandle<R>,
+    version: String,
+) -> Result<UpdateStatePayload, String> {
+    let current_version = app.package_info().version.to_string();
+    {
+        let manager = lock_update_manager()?;
+        if manager.snapshot.status == UpdateStatus::Downloading
+            && manager.active_version.as_deref() == Some(version.as_str())
+        {
+            return Ok(manager.snapshot());
+        }
+    }
+
+    let update = fetch_update(&app)
+        .await?
+        .ok_or_else(|| "Update is no longer available. Check again and retry.".to_string())?;
+    let payload = to_update_info_payload(&current_version, &update)?;
+    if payload.version != version {
+        return Err("Update version mismatch. Check again and retry.".to_string());
+    }
+
+    let cancel_flag = {
+        let mut manager = lock_update_manager()?;
+        manager.begin_download(payload.clone())?
+    };
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = download_and_install_update(update, cancel_flag.clone()).await;
+        if cancel_flag.load(Ordering::SeqCst) {
+            if let Ok(mut manager) = lock_update_manager() {
+                manager.finish_terminal(UpdateStatus::Cancelled, Some(payload), None);
+            }
+            return;
+        }
+        match result {
+            Ok(()) => {
+                if let Ok(mut manager) = lock_update_manager() {
+                    manager.finish_terminal(UpdateStatus::Ready, Some(payload), None);
+                }
+            }
+            Err(err) => {
+                if let Ok(mut manager) = lock_update_manager() {
+                    manager.finish_terminal(UpdateStatus::Error, Some(payload), Some(err));
+                }
+            }
+        }
+        let _ = app_handle.emit("aigate-update-state-changed", ());
+    });
+
+    Ok(current_update_snapshot(&current_version))
+}
+
+#[tauri::command]
+fn cancel_update_download<R: Runtime>(app: AppHandle<R>) -> Result<UpdateStatePayload, String> {
+    let _ = app;
+    let mut manager = lock_update_manager()?;
+    manager.request_cancel();
+    Ok(manager.snapshot())
+}
+
+fn lock_update_manager() -> Result<std::sync::MutexGuard<'static, UpdateManagerState>, String> {
+    UPDATE_MANAGER
+        .lock()
+        .map_err(|_| "update manager lock poisoned".to_string())
+}
+
+fn current_update_snapshot(current_version: &str) -> UpdateStatePayload {
+    let snapshot = lock_update_manager()
+        .map(|manager| manager.snapshot())
+        .unwrap_or_default();
+    normalize_update_snapshot(snapshot, current_version)
+}
+
+fn normalize_update_snapshot(
+    mut snapshot: UpdateStatePayload,
+    current_version: &str,
+) -> UpdateStatePayload {
+    if let Some(update) = snapshot.update.as_mut() {
+        if update.current_version.is_empty() {
+            update.current_version = current_version.to_string();
+        }
+    }
+    snapshot
+}
+
+async fn fetch_update<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Update>, String> {
+    app.updater()
+        .map_err(|err| format!("build updater failed: {err}"))?
+        .check()
+        .await
+        .map_err(|err| format!("check update failed: {err}"))
+}
+
+fn to_update_info_payload(current_version: &str, update: &Update) -> Result<UpdateInfoPayload, String> {
+    Ok(UpdateInfoPayload {
+        body: update.body.clone(),
+        current_version: current_version.to_string(),
+        date: update.date.map(|value| value.to_string()),
+        version: update.version.clone(),
+    })
+}
+
+async fn download_and_install_update(
+    update: Update,
+    cancel_flag: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let bytes = download_update_bytes(&update, cancel_flag.clone()).await?;
+    if cancel_flag.load(Ordering::SeqCst) {
+        return Err("download canceled".to_string());
+    }
+    update
+        .install(bytes)
+        .map_err(|err| format!("install update failed: {err}"))
+}
+
+async fn download_update_bytes(
+    update: &Update,
+    cancel_flag: Arc<AtomicBool>,
+) -> Result<Vec<u8>, String> {
+    let mut headers = update.headers.clone();
+    if !headers.contains_key(ACCEPT) {
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+    }
+
+    let mut request = reqwest::ClientBuilder::new().user_agent("aigate-desktop-updater");
+    if let Some(timeout) = update.timeout {
+        request = request.timeout(timeout);
+    }
+    if update.no_proxy {
+        request = request.no_proxy();
+    } else if let Some(ref proxy) = update.proxy {
+        let parsed = reqwest::Proxy::all(proxy.as_str())
+            .map_err(|err| format!("configure updater proxy failed: {err}"))?;
+        request = request.proxy(parsed);
+    }
+
+    let response = request
+        .build()
+        .map_err(|err| format!("build updater client failed: {err}"))?
+        .get(update.download_url.clone())
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|err| format!("download update failed: {err}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "download request failed with status: {}",
+            response.status()
+        ));
+    }
+
+    let total = response.content_length().unwrap_or(0);
+    let mut transferred = 0_u64;
+    let mut buffer = Vec::with_capacity(total.min(UPDATE_POLL_CHUNK_SIZE as u64) as usize);
+    let mut stream = response.bytes_stream();
+
+    while let Some(next) = stream.next().await {
+        if cancel_flag.load(Ordering::SeqCst) {
+            return Err("download canceled".to_string());
+        }
+        let chunk = next.map_err(|err| format!("read update chunk failed: {err}"))?;
+        transferred += chunk.len() as u64;
+        buffer.extend_from_slice(&chunk);
+        update_download_progress(
+            transferred,
+            total,
+            Some(UpdateInfoPayload {
+                body: update.body.clone(),
+                current_version: update.current_version.clone(),
+                date: update.date.map(|value| value.to_string()),
+                version: update.version.clone(),
+            }),
+        )?;
+    }
+
+    verify_update_signature(&buffer, &update.signature)?;
+    Ok(buffer)
+}
+
+fn update_download_progress(
+    transferred: u64,
+    total: u64,
+    update: Option<UpdateInfoPayload>,
+) -> Result<(), String> {
+    let percent = if total > 0 {
+        ((transferred as f64 / total as f64) * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let mut manager = lock_update_manager()?;
+    let existing_update = manager.snapshot.update.clone();
+    manager.set_snapshot(UpdateStatePayload {
+        status: UpdateStatus::Downloading,
+        update: update.or(existing_update),
+        progress: Some(UpdateProgressPayload {
+            percent,
+            total,
+            transferred,
+        }),
+        error: None,
+    });
+    Ok(())
+}
+
+fn verify_update_signature(data: &[u8], release_signature: &str) -> Result<(), String> {
+    let pub_key = decode_base64_to_string(UPDATER_PUBKEY_BASE64)?;
+    let public_key = PublicKey::decode(&pub_key)
+        .map_err(|err| format!("decode updater public key failed: {err}"))?;
+    let signature_text = decode_base64_to_string(release_signature)?;
+    let signature = Signature::decode(&signature_text)
+        .map_err(|err| format!("decode update signature failed: {err}"))?;
+    public_key
+        .verify(data, &signature, true)
+        .map_err(|err| format!("verify update signature failed: {err}"))?;
+    Ok(())
+}
+
+fn decode_base64_to_string(value: &str) -> Result<String, String> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|err| format!("decode base64 failed: {err}"))?;
+    std::str::from_utf8(&decoded)
+        .map_err(|_| "decode utf-8 failed".to_string())
+        .map(|text| text.to_string())
 }
 
 fn initialize_runtime(app: &tauri::AppHandle) -> Result<DesktopSettingsCache, String> {
@@ -1346,13 +1743,17 @@ mod tests {
         should_retry_sidecar_request, should_trigger_resume_recovery, sidecar_candidate_paths,
         sidecar_creation_flags, sidecar_request_with_recovery, sidecar_request_with_recovery_hooks,
         sidecar_resource_name, tray_icon_bytes_for_platform, tray_icon_is_template_for_platform,
-        wait_for_backend_ready_with_probe, window_close_action, AppSettingsPayload,
-        DesktopLogEntry, DesktopSettingsCache, HttpResponse, WindowCloseAction, SIDECAR_MACOS_NAME,
-        SIDECAR_WINDOWS_NAME, TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES,
+        update_download_progress, wait_for_backend_ready_with_probe, window_close_action,
+        AppSettingsPayload, DesktopLogEntry, DesktopSettingsCache, HttpResponse,
+        UpdateInfoPayload, UpdateManagerState, UpdateProgressPayload, UpdateStatePayload,
+        UpdateStatus, WindowCloseAction, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
+        TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
     };
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     #[test]
@@ -1827,5 +2228,93 @@ mod tests {
         let raw = "1d\r\n[{\"id\":1,\"account_name\":\"a\"}]\r\n0\r\n\r\n";
         let decoded = decode_chunked_body(raw).expect("decode chunked body");
         assert_eq!(decoded, "[{\"id\":1,\"account_name\":\"a\"}]");
+    }
+
+    #[test]
+    fn update_manager_initial_state_is_idle() {
+        let manager = UpdateManagerState::default();
+        assert_eq!(manager.snapshot.status, UpdateStatus::Idle);
+        assert!(manager.snapshot.update.is_none());
+        assert!(manager.snapshot.progress.is_none());
+        assert!(manager.active_version.is_none());
+    }
+
+    #[test]
+    fn update_manager_progress_uses_expected_percentages() {
+        UPDATE_MANAGER.lock().expect("update manager").set_snapshot(UpdateStatePayload {
+            status: UpdateStatus::Downloading,
+            update: Some(UpdateInfoPayload {
+                body: None,
+                current_version: "1.1.7".to_string(),
+                date: None,
+                version: "1.1.9".to_string(),
+            }),
+            progress: Some(UpdateProgressPayload::default()),
+            error: None,
+        });
+
+        update_download_progress(25, 100, None).expect("progress update");
+        let snapshot = UPDATE_MANAGER.lock().expect("update manager").snapshot();
+        let progress = snapshot.progress.expect("progress payload");
+        assert_eq!(snapshot.status, UpdateStatus::Downloading);
+        assert_eq!(progress.transferred, 25);
+        assert_eq!(progress.total, 100);
+        assert_eq!(progress.percent, 25.0);
+    }
+
+    #[test]
+    fn update_manager_reuses_existing_task_for_same_version() {
+        let mut manager = UpdateManagerState::default();
+        let first_flag = manager
+            .begin_download(UpdateInfoPayload {
+                body: None,
+                current_version: "1.1.7".to_string(),
+                date: None,
+                version: "1.1.9".to_string(),
+            })
+            .expect("first download");
+
+        let second_flag = manager
+            .begin_download(UpdateInfoPayload {
+                body: None,
+                current_version: "1.1.7".to_string(),
+                date: None,
+                version: "1.1.9".to_string(),
+            })
+            .expect("reuse same version");
+
+        assert!(Arc::ptr_eq(&first_flag, &second_flag));
+        assert_eq!(manager.snapshot.status, UpdateStatus::Downloading);
+    }
+
+    #[test]
+    fn update_manager_cancellation_marks_flag_and_finishes_cancelled() {
+        let mut manager = UpdateManagerState::default();
+        let cancel_flag = manager
+            .begin_download(UpdateInfoPayload {
+                body: None,
+                current_version: "1.1.7".to_string(),
+                date: None,
+                version: "1.1.9".to_string(),
+            })
+            .expect("begin download");
+
+        manager.request_cancel();
+        assert!(cancel_flag.load(Ordering::SeqCst));
+
+        manager.finish_terminal(
+            UpdateStatus::Cancelled,
+            Some(UpdateInfoPayload {
+                body: None,
+                current_version: "1.1.7".to_string(),
+                date: None,
+                version: "1.1.9".to_string(),
+            }),
+            None,
+        );
+
+        assert_eq!(manager.snapshot.status, UpdateStatus::Cancelled);
+        assert!(manager.cancel_flag.is_none());
+        assert!(manager.active_version.is_none());
     }
 }
