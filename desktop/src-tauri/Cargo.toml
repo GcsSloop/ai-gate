@@ -17,6 +17,7 @@ reqwest = { version = "0.12", default-features = false, features = ["stream", "r
 futures-util = "0.3"
 minisign-verify = "0.2"
 base64 = "0.22"
+arboard = "3"
 
 [features]
 default = []

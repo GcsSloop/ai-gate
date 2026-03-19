@@ -27,7 +27,7 @@ export type DesktopRecentLog = {
   message: string;
 };
 
-function isDesktopShell() {
+export function isDesktopShell() {
   if (typeof window === "undefined") {
     return false;
   }
@@ -80,6 +80,13 @@ export async function refreshDesktopTrayState(): Promise<void> {
     return;
   }
   await invoke("refresh_tray_state");
+}
+
+export async function writeDesktopClipboardText(text: string): Promise<void> {
+  if (!isDesktopShell()) {
+    throw new Error("desktop shell is not available");
+  }
+  await invoke("write_clipboard_text", { text });
 }
 
 export async function subscribeDesktopBackendStateChanged(handler: () => void): Promise<() => void> {

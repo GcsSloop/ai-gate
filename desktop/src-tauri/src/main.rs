@@ -332,6 +332,7 @@ fn main() {
             apply_app_settings,
             get_app_metadata,
             get_recent_desktop_logs,
+            write_clipboard_text,
             get_update_state,
             check_for_app_update,
             start_update_download,
@@ -456,6 +457,12 @@ fn get_recent_desktop_logs(limit: Option<usize>) -> Vec<DesktopLogEntry> {
         .lock()
         .map(|entries| entries.iter().rev().take(count).cloned().collect())
         .unwrap_or_default()
+}
+
+#[tauri::command]
+fn write_clipboard_text(text: String) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|err| err.to_string())?;
+    clipboard.set_text(text).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
