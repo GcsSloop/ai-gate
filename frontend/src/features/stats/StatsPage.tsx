@@ -39,16 +39,9 @@ function formatCurrency(language: AppLanguage, value: number): string {
   return new Intl.NumberFormat(language, {
     style: "currency",
     currency: "USD",
-    maximumFractionDigits: 4,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(value);
-}
-
-function formatSigned(language: AppLanguage, value: number): string {
-  const formatter = new Intl.NumberFormat(language, { maximumFractionDigits: 2 });
-  if (value > 0) {
-    return `+${formatter.format(value)}`;
-  }
-  return formatter.format(value);
 }
 
 function eventStatusColor(status: string): string {
@@ -149,20 +142,15 @@ export function StatsPage({ language, t }: StatsPageProps) {
       value: summary ? formatCurrency(language, summary.estimated_cost) : "--",
       hint: t("按模型费率估算"),
     },
-    {
-      label: t("余额变化"),
-      value: summary ? formatSigned(language, summary.balance_delta) : "--",
-      hint: t("与费用视角分开展示"),
-    },
   ];
 
   return (
     <div className="dashboard-page stats-page">
-      <div className="stats-header">
-        <div>
-          <div className="stats-title">{t("Token 与费用统计")}</div>
-          <div className="stats-subtitle">{t("聚焦请求量、输入输出 Token、预估费用与余额变化。")}</div>
-        </div>
+          <div className="stats-header">
+            <div>
+              <div className="stats-title">{t("Token 与费用统计")}</div>
+              <div className="stats-subtitle">{t("聚焦请求量、输入输出 Token 与预估费用。")}</div>
+            </div>
         <div className="stats-filters">
           <Segmented
             options={[
