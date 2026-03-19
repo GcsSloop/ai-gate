@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
@@ -26,7 +27,12 @@ type Orchestrator struct {
 	usage    snapshotRepository
 	registry *registry.Registry
 	now      func() time.Time
+	timeout  time.Duration
+	workers  int
 }
+
+const defaultPerAccountTimeout = 5 * time.Second
+const defaultRefreshWorkers = 4
 
 func NewOrchestrator(accountsRepo accountLister, usageRepo snapshotRepository, driverRegistry *registry.Registry) *Orchestrator {
 	return &Orchestrator{
@@ -34,7 +40,25 @@ func NewOrchestrator(accountsRepo accountLister, usageRepo snapshotRepository, d
 		usage:    usageRepo,
 		registry: driverRegistry,
 		now:      func() time.Time { return time.Now().UTC() },
+		timeout:  defaultPerAccountTimeout,
+		workers:  defaultRefreshWorkers,
 	}
+}
+
+func NewOrchestratorWithTimeout(accountsRepo accountLister, usageRepo snapshotRepository, driverRegistry *registry.Registry, timeout time.Duration) *Orchestrator {
+	orchestrator := NewOrchestrator(accountsRepo, usageRepo, driverRegistry)
+	if timeout > 0 {
+		orchestrator.timeout = timeout
+	}
+	return orchestrator
+}
+
+func NewOrchestratorWithOptions(accountsRepo accountLister, usageRepo snapshotRepository, driverRegistry *registry.Registry, timeout time.Duration, workers int) *Orchestrator {
+	orchestrator := NewOrchestratorWithTimeout(accountsRepo, usageRepo, driverRegistry, timeout)
+	if workers > 0 {
+		orchestrator.workers = workers
+	}
+	return orchestrator
 }
 
 func (o *Orchestrator) Run(ctx context.Context, runAt time.Time) error {
@@ -50,16 +74,72 @@ func (o *Orchestrator) Run(ctx context.Context, runAt time.Time) error {
 	}
 	runAt = runAt.UTC()
 
-	var errs []error
-	for _, account := range accountsList {
-		if err := o.refreshOne(ctx, account, runAt); err != nil {
-			errs = append(errs, fmt.Errorf("account %d (%s): %w", account.ID, account.AccountName, err))
+	if len(accountsList) == 0 {
+		return nil
+	}
+	workers := o.workers
+	if workers <= 0 {
+		workers = 1
+	}
+	if workers > len(accountsList) {
+		workers = len(accountsList)
+	}
+
+	type job struct {
+		index   int
+		account accounts.Account
+	}
+	type result struct {
+		index int
+		err   error
+	}
+
+	jobs := make(chan job)
+	results := make(chan result, len(accountsList))
+	var group sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for work := range jobs {
+				err := o.refreshOne(ctx, work.account, runAt)
+				if err != nil {
+					err = fmt.Errorf("account %d (%s): %w", work.account.ID, work.account.AccountName, err)
+				}
+				results <- result{index: work.index, err: err}
+			}
+		}()
+	}
+
+	go func() {
+		for index, account := range accountsList {
+			jobs <- job{index: index, account: account}
+		}
+		close(jobs)
+		group.Wait()
+		close(results)
+	}()
+
+	errs := make([]error, len(accountsList))
+	for result := range results {
+		errs[result.index] = result.err
+	}
+
+	ordered := make([]error, 0, len(errs))
+	for _, err := range errs {
+		if err != nil {
+			ordered = append(ordered, err)
 		}
 	}
-	return errors.Join(errs...)
+	return errors.Join(ordered...)
 }
 
 func (o *Orchestrator) refreshOne(ctx context.Context, account accounts.Account, runAt time.Time) error {
+	if o.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.timeout)
+		defer cancel()
+	}
 	accountDriver, err := o.registry.AccountDriverFor(account)
 	if err != nil {
 		return o.markFailure(account.ID, runAt, err)
