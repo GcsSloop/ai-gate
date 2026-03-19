@@ -1910,13 +1910,20 @@ describe("AccountsPage", () => {
     renderAccountsPage();
 
     expect(await screen.findByText("official-main")).toBeInTheDocument();
+    const primaryResetTime = primaryReset.toLocaleTimeString("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const primaryResetDateTime = `${primaryReset.toLocaleDateString("zh-CN", {
+      month: "numeric",
+      day: "numeric",
+    })} ${primaryResetTime}`;
     expect(
       screen.getByText(
-        primaryReset.toLocaleTimeString("zh-CN", {
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
-        }),
+        (_content, element) =>
+          element?.textContent === primaryResetTime ||
+          element?.textContent === primaryResetDateTime,
       ),
     ).toBeInTheDocument();
     expect(
@@ -1932,13 +1939,13 @@ describe("AccountsPage", () => {
     const detailModal = await screen.findByRole("dialog", {
       name: "账户详情",
     });
+    const detailPrimaryValue = `77% · ${primaryResetTime}`;
+    const detailPrimaryDateTimeValue = `77% · ${primaryResetDateTime}`;
     expect(
       within(detailModal).getByText(
-        `77% · ${primaryReset.toLocaleTimeString("zh-CN", {
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
-        })}`,
+        (_content, element) =>
+          element?.textContent === detailPrimaryValue ||
+          element?.textContent === detailPrimaryDateTimeValue,
       ),
     ).toBeInTheDocument();
     expect(
@@ -2015,7 +2022,8 @@ describe("AccountsPage", () => {
                 secondary_used_percent: 30,
                 checked_at: checkedAt.toISOString(),
                 stale: true,
-                last_error: "upstream timeout",
+                last_error:
+                  'do_usage_request: GET "https://his.ppchat.vip/api/token-logs?page=1&page_size=1&token_key=sk-abcdefghijklmnopqrstuvwxyz123456": context deadline exceeded',
               },
             ]),
             { status: 200, headers: { "Content-Type": "application/json" } },
@@ -2032,7 +2040,12 @@ describe("AccountsPage", () => {
     expect(await screen.findByText("official-main")).toBeInTheDocument();
     fireEvent.mouseEnter(screen.getByLabelText("official-main-usage-health"));
 
-    expect(await screen.findByText("upstream timeout")).toBeInTheDocument();
+    expect(
+      await screen.findByText((content) => content.includes("token_key=sk-***")),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/token_key=sk-abcdefghijklmnopqrstuvwxyz123456/),
+    ).not.toBeInTheDocument();
   });
 
   it("renders ppchat daily remaining usage meter on the card", async () => {

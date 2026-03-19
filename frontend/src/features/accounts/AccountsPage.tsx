@@ -463,6 +463,7 @@ function renderUsageHealthTooltip(
   language: AppLanguage,
 ) {
   const checkedAt = formatCheckedAt(record.checked_at, language);
+  const errorMessage = maskSensitiveErrorText(record.last_error || "");
   if (!record.checked_at) {
     return <span>{checkedAt}</span>;
   }
@@ -470,12 +471,31 @@ function renderUsageHealthTooltip(
     <div className="account-usage-health-tooltip">
       <div>{checkedAt}</div>
       {record.stale ? (
-        <div>{record.last_error || (language === "en-US" ? "Refresh failed" : "刷新失败")}</div>
+        <div>{errorMessage || (language === "en-US" ? "Refresh failed" : "刷新失败")}</div>
       ) : (
         <div>{language === "en-US" ? "Refresh healthy" : "刷新正常"}</div>
       )}
     </div>
   );
+}
+
+function maskSensitiveErrorText(value: string): string {
+  if (!value) {
+    return "";
+  }
+  return value
+    .replace(
+      /\b(token(?:_key)?=)([^&\s"]+)/gi,
+      (_match, prefix: string, secret: string) => `${prefix}${maskSecretValue(secret)}`,
+    )
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, (secret) => maskSecretValue(secret));
+}
+
+function maskSecretValue(secret: string): string {
+  if (/^sk-/i.test(secret)) {
+    return "sk-***";
+  }
+  return "***";
 }
 
 function formatInteger(language: AppLanguage, value: number): string {
@@ -1395,6 +1415,13 @@ export function AccountsPage({
                 <Text type="secondary" className="account-base-url">
                   <Tooltip
                     mouseEnterDelay={0.15}
+                    placement="topLeft"
+                    getPopupContainer={() => document.body}
+                    styles={{
+                      body: {
+                        maxWidth: 320,
+                      },
+                    }}
                     title={renderUsageHealthTooltip(record, language)}
                   >
                     <span

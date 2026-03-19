@@ -1205,6 +1205,9 @@ html[data-theme-mode="dark"] .stats-chart-shell {
   gap: 4px;
   font-size: 12px;
   line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .account-side-slot {
