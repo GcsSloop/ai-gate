@@ -1,6 +1,12 @@
 import { runtimeTranslate } from "./i18n";
+import { isDesktopShell, writeDesktopClipboardText } from "./desktop-shell";
 
 export async function writeClipboardText(value: string): Promise<void> {
+  if (isDesktopShell()) {
+    await writeDesktopClipboardText(value);
+    return;
+  }
+
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(value);
     return;

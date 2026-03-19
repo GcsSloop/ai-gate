@@ -7,11 +7,17 @@ import {
 } from "@testing-library/react";
 import { App as AntApp, ConfigProvider } from "antd";
 
-import { refreshDesktopTrayState } from "../../lib/desktop-shell";
+import {
+  refreshDesktopTrayState,
+  isDesktopShell,
+  writeDesktopClipboardText,
+} from "../../lib/desktop-shell";
 import { AccountsPage } from "./AccountsPage";
 
 vi.mock("../../lib/desktop-shell", () => ({
   refreshDesktopTrayState: vi.fn(),
+  writeDesktopClipboardText: vi.fn(),
+  isDesktopShell: vi.fn(() => false),
 }));
 
 function renderAccountsPage() {
@@ -27,6 +33,7 @@ function renderAccountsPage() {
 describe("AccountsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(isDesktopShell).mockReturnValue(false);
   });
 
   it("supports official upload, third-party create, and chat test in a single dashboard", async () => {
@@ -425,6 +432,236 @@ describe("AccountsPage", () => {
         '{"kind":"aigate-account-share"}',
       );
     });
+  });
+
+  it("routes shared account copy through desktop shell clipboard in desktop mode", async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true);
+    const desktopClipboardWrite = vi.mocked(writeDesktopClipboardText);
+    desktopClipboardWrite.mockResolvedValue(undefined);
+    const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: { writeText: clipboardWriteText },
+      configurable: true,
+    });
+    const shellWindow = window as Window & {
+      __TAURI__?: unknown;
+      __TAURI_INTERNALS__?: unknown;
+    };
+    shellWindow.__TAURI__ = {};
+
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "mirror-east",
+        source_icon: "ppchat",
+        auth_mode: "api_key",
+        base_url: "https://code.ppchat.vip/v1",
+        account_driver: "builtin_api_key",
+        usage_driver: "lua",
+        usage_config_json: '{"script":"adapters/vendor.lua"}',
+        status: "active",
+        is_active: false,
+        priority: 2,
+        supports_responses: true,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/1/share" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ payload: '{"kind":"aigate-account-share"}' }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("mirror-east")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "分享-mirror-east" }));
+    const confirmModal = await screen.findByRole("dialog", {
+      name: "分享账户",
+    });
+    fireEvent.click(
+      within(confirmModal).getByRole("button", { name: "确认分享" }),
+    );
+
+    await waitFor(() => {
+      expect(desktopClipboardWrite).toHaveBeenCalledWith(
+        '{"kind":"aigate-account-share"}',
+      );
+      expect(clipboardWriteText).not.toHaveBeenCalled();
+    });
+
+    delete shellWindow.__TAURI__;
+  });
+
+  it("routes lua skill copy through desktop shell clipboard in desktop mode", async () => {
+    vi.mocked(isDesktopShell).mockReturnValue(true);
+    const desktopClipboardWrite = vi.mocked(writeDesktopClipboardText);
+    desktopClipboardWrite.mockResolvedValue(undefined);
+    const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: { writeText: clipboardWriteText },
+      configurable: true,
+    });
+    const shellWindow = window as Window & {
+      __TAURI__?: unknown;
+      __TAURI_INTERNALS__?: unknown;
+    };
+    shellWindow.__TAURI__ = {};
+
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "mirror-east",
+        source_icon: "ppchat",
+        auth_mode: "api_key",
+        base_url: "https://code.ppchat.vip/v1",
+        account_driver: "builtin_api_key",
+        usage_driver: "lua",
+        usage_config_json: '{"script":"adapters/vendor.lua"}',
+        status: "active",
+        is_active: false,
+        priority: 2,
+        supports_responses: true,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage-scripts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ items: ["adapters/vendor.lua"] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage-scripts/adapters%2Fvendor.lua" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              key: "adapters/vendor.lua",
+              content: "return {}",
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("mirror-east")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑-mirror-east" }));
+    const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
+    fireEvent.click(
+      within(editModal).getByRole("button", { name: "复制 AI Skill" }),
+    );
+
+    await waitFor(() => {
+      expect(desktopClipboardWrite).toHaveBeenCalledTimes(1);
+      expect(clipboardWriteText).not.toHaveBeenCalled();
+    });
+
+    delete shellWindow.__TAURI__;
   });
 
   it("falls back to document copy when navigator clipboard is unavailable", async () => {
