@@ -24,6 +24,7 @@ import {
   Skeleton,
   Statistic,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
@@ -354,6 +355,9 @@ function mergeDisplayUsage(
     secondary_used_percent: previous.secondary_used_percent,
     primary_resets_at: previous.primary_resets_at,
     secondary_resets_at: previous.secondary_resets_at,
+    checked_at: previous.checked_at,
+    stale: previous.stale,
+    last_error: previous.last_error,
     ppchat_today_used_quota: previous.ppchat_today_used_quota,
     ppchat_today_added_quota: previous.ppchat_today_added_quota,
     ppchat_today_remaining_quota: previous.ppchat_today_remaining_quota,
@@ -402,6 +406,76 @@ function formatResetDate(value: string | undefined, language: AppLanguage) {
     month: "numeric",
     day: "numeric",
   });
+}
+
+function formatTomorrowMidnight(language: AppLanguage, now = new Date()) {
+  const nextMidnight = new Date(now);
+  nextMidnight.setHours(24, 0, 0, 0);
+  return nextMidnight.toLocaleTimeString(language, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatCheckedAt(value: string | undefined, language: AppLanguage) {
+  if (!value) {
+    return language === "en-US" ? "No usage data yet" : "尚无 usage 数据";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return language === "en-US" ? "Unknown refresh time" : "刷新时间未知";
+  }
+  return date.toLocaleString(language, {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function getUsageHealthState(
+  record: Pick<AccountRecord, "checked_at" | "stale">,
+): "ok" | "warning" | "danger" | "unknown" {
+  if (!record.checked_at) {
+    return "unknown";
+  }
+  if (record.stale) {
+    return "danger";
+  }
+  const checkedAt = new Date(record.checked_at);
+  if (Number.isNaN(checkedAt.getTime())) {
+    return "unknown";
+  }
+  const ageMinutes = (Date.now() - checkedAt.getTime()) / 60000;
+  if (ageMinutes <= 10) {
+    return "ok";
+  }
+  if (ageMinutes <= 30) {
+    return "warning";
+  }
+  return "danger";
+}
+
+function renderUsageHealthTooltip(
+  record: Pick<AccountRecord, "checked_at" | "stale" | "last_error">,
+  language: AppLanguage,
+) {
+  const checkedAt = formatCheckedAt(record.checked_at, language);
+  if (!record.checked_at) {
+    return <span>{checkedAt}</span>;
+  }
+  return (
+    <div className="account-usage-health-tooltip">
+      <div>{checkedAt}</div>
+      {record.stale ? (
+        <div>{record.last_error || (language === "en-US" ? "Refresh failed" : "刷新失败")}</div>
+      ) : (
+        <div>{language === "en-US" ? "Refresh healthy" : "刷新正常"}</div>
+      )}
+    </div>
+  );
 }
 
 function formatInteger(language: AppLanguage, value: number): string {
@@ -1236,15 +1310,18 @@ export function AccountsPage({
   ) {
     const actionsVisible = visibleActionAccountID === record.id;
     const sourceIcon = sourceIconMap[normalizeSourceIcon(record.source_icon)];
+    const usageHealthState = getUsageHealthState(record);
     const usageWindows = isOfficialAccount(record)
       ? [
           {
             label: "5H",
             remainingPercent: clampPercent(100 - record.primary_used_percent),
+            resetLabel: formatResetTime(record.primary_resets_at, language),
           },
           {
             label: "7D",
             remainingPercent: clampPercent(100 - record.secondary_used_percent),
+            resetLabel: formatResetDate(record.secondary_resets_at, language),
           },
         ]
       : isPPChatAccount(record) && (record.ppchat_today_added_quota ?? 0) > 0
@@ -1256,6 +1333,7 @@ export function AccountsPage({
                   Math.max(record.ppchat_today_added_quota ?? 0, 1)) *
                   100,
               ),
+              resetLabel: formatTomorrowMidnight(language),
             },
           ]
         : [];
@@ -1315,6 +1393,15 @@ export function AccountsPage({
                   ) : null}
                 </div>
                 <Text type="secondary" className="account-base-url">
+                  <Tooltip
+                    mouseEnterDelay={0.15}
+                    title={renderUsageHealthTooltip(record, language)}
+                  >
+                    <span
+                      className={`account-usage-health-dot is-${usageHealthState}`}
+                      aria-label={`${record.account_name}-usage-health`}
+                    />
+                  </Tooltip>
                   {record.base_url || t("OpenAI 官方")}
                 </Text>
               </div>
@@ -1329,18 +1416,23 @@ export function AccountsPage({
                       <span className="account-usage-mini-label">
                         {item.label}
                       </span>
+                      <span className="account-usage-mini-reset">
+                        {item.resetLabel || ""}
+                      </span>
                       <span
                         className={`account-usage-mini-value is-${getRemainingTone(item.remainingPercent)}`}
                       >{`${Math.round(item.remainingPercent)}%`}</span>
                     </div>
-                    <div
-                      className="account-usage-mini-track"
-                      aria-label={`${record.account_name}-${item.label}`}
-                    >
+                    <div className="account-usage-mini-meter">
                       <div
-                        className={`account-usage-mini-fill is-${getRemainingTone(item.remainingPercent)}`}
-                        style={{ width: `${item.remainingPercent}%` }}
-                      />
+                        className="account-usage-mini-track"
+                        aria-label={`${record.account_name}-${item.label}`}
+                      >
+                        <div
+                          className={`account-usage-mini-fill is-${getRemainingTone(item.remainingPercent)}`}
+                          style={{ width: `${item.remainingPercent}%` }}
+                        />
+                      </div>
                     </div>
                   </div>
                 ))}

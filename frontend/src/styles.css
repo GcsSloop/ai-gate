@@ -1168,10 +1168,43 @@ html[data-theme-mode="dark"] .stats-chart-shell {
 }
 
 .account-base-url {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 2px;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.account-usage-health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  background: rgba(148, 163, 184, 0.8);
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.14);
+}
+
+.account-usage-health-dot.is-ok {
+  background: #4bb583;
+  box-shadow: 0 0 0 3px rgba(75, 181, 131, 0.16);
+}
+
+.account-usage-health-dot.is-warning {
+  background: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.14);
+}
+
+.account-usage-health-dot.is-danger {
+  background: #dc2626;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.14);
+}
+
+.account-usage-health-tooltip {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .account-side-slot {
@@ -1205,9 +1238,14 @@ html[data-theme-mode="dark"] .stats-chart-shell {
   gap: 4px;
 }
 
+.account-usage-mini-meter {
+  margin-top: 4px;
+}
+
 .account-usage-mini-head {
+  position: relative;
   display: flex;
-  align-items: center;
+  align-items: end;
   justify-content: space-between;
   gap: 8px;
   font-size: 11px;
@@ -1239,6 +1277,23 @@ html[data-theme-mode="dark"] .stats-chart-shell {
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.18);
   overflow: hidden;
+}
+
+.account-usage-mini-reset {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  min-width: 0;
+  transform: translateX(-50%);
+  color: rgba(100, 116, 139, 0.66);
+  font-size: 9px;
+  line-height: 1;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 .account-usage-mini-fill {
