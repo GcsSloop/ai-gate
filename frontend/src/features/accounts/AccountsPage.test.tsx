@@ -427,6 +427,220 @@ describe("AccountsPage", () => {
     });
   });
 
+  it("falls back to document copy when navigator clipboard is unavailable", async () => {
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: undefined,
+      configurable: true,
+    });
+    const originalExecCommand = document.execCommand;
+    Object.defineProperty(document, "execCommand", {
+      value: vi.fn(() => true),
+      configurable: true,
+    });
+    const execCommand = document.execCommand as unknown as ReturnType<
+      typeof vi.fn
+    >;
+
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "mirror-east",
+        source_icon: "ppchat",
+        auth_mode: "api_key",
+        base_url: "https://code.ppchat.vip/v1",
+        account_driver: "builtin_api_key",
+        usage_driver: "lua",
+        usage_config_json: '{"script":"adapters/vendor.lua"}',
+        status: "active",
+        is_active: false,
+        priority: 2,
+        supports_responses: true,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/1/share" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ payload: '{"kind":"aigate-account-share"}' }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("mirror-east")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "分享-mirror-east" }));
+    const confirmModal = await screen.findByRole("dialog", {
+      name: "分享账户",
+    });
+    fireEvent.click(
+      within(confirmModal).getByRole("button", { name: "确认分享" }),
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1/share",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(execCommand).toHaveBeenCalledWith("copy");
+    });
+
+    Object.defineProperty(document, "execCommand", {
+      value: originalExecCommand,
+      configurable: true,
+    });
+  });
+
+  it("keeps only one account action tray visible at a time", async () => {
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "mirror-east",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://one.example/v1",
+        status: "active",
+        is_active: false,
+        priority: 2,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+      {
+        id: 2,
+        provider_type: "openai-compatible",
+        account_name: "mirror-west",
+        source_icon: "claude_code",
+        auth_mode: "api_key",
+        base_url: "https://two.example/v1",
+        status: "active",
+        is_active: false,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("mirror-east")).toBeInTheDocument();
+    const firstCard = screen
+      .getByText("mirror-east")
+      .closest(".account-card-item") as HTMLElement;
+    const secondCard = screen
+      .getByText("mirror-west")
+      .closest(".account-card-item") as HTMLElement;
+
+    fireEvent.focus(screen.getByRole("button", { name: "编辑-mirror-east" }));
+    expect(firstCard.dataset.actionsVisible).toBe("true");
+    expect(secondCard.dataset.actionsVisible).toBe("false");
+
+    fireEvent.mouseEnter(secondCard);
+    expect(firstCard.dataset.actionsVisible).toBe("false");
+    expect(secondCard.dataset.actionsVisible).toBe("true");
+
+    fireEvent.mouseLeave(secondCard);
+    expect(secondCard.dataset.actionsVisible).toBe("false");
+  });
+
   it("supports editing lua usage config, copying AI skill context, and testing lua output", async () => {
     const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", {
@@ -1376,6 +1590,111 @@ describe("AccountsPage", () => {
 
     expect(await screen.findByText("80%")).toBeInTheDocument();
     expect(screen.getByText("90%")).toBeInTheDocument();
+  });
+
+  it("formats official reset windows with time for 5H and date for 7D", async () => {
+    const now = new Date();
+    const primaryReset = new Date(now.getTime() + 60 * 60 * 1000);
+    const secondaryReset = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "codex",
+        account_name: "official-main",
+        source_icon: "openai",
+        auth_mode: "codex_local_import",
+        base_url: "",
+        status: "active",
+        is_active: true,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 23,
+        secondary_used_percent: 67,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                account_id: 1,
+                balance: 0,
+                quota_remaining: 0,
+                rpm_remaining: 0,
+                tpm_remaining: 0,
+                health_score: 1,
+                recent_error_rate: 0,
+                last_total_tokens: 0,
+                last_input_tokens: 0,
+                last_output_tokens: 0,
+                model_context_window: 0,
+                primary_used_percent: 23,
+                secondary_used_percent: 67,
+                primary_resets_at: primaryReset.toISOString(),
+                secondary_resets_at: secondaryReset.toISOString(),
+              },
+            ]),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("official-main")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "详情-official-main" }));
+
+    const detailModal = await screen.findByRole("dialog", {
+      name: "账户详情",
+    });
+    expect(
+      within(detailModal).getByText(
+        `77% · ${primaryReset.toLocaleTimeString("zh-CN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        })}`,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(detailModal).getByText(
+        `33% · ${secondaryReset.toLocaleDateString("zh-CN", {
+          month: "numeric",
+          day: "numeric",
+        })}`,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("renders ppchat daily remaining usage meter on the card", async () => {
