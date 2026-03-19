@@ -30,6 +30,9 @@ export type AccountRecord = {
   secondary_used_percent: number;
   primary_resets_at?: string;
   secondary_resets_at?: string;
+  checked_at?: string;
+  stale?: boolean;
+  last_error?: string;
   ppchat_today_used_quota?: number;
   ppchat_today_added_quota?: number;
   ppchat_today_remaining_quota?: number;
@@ -51,6 +54,9 @@ export type AccountUsageRecord = {
   secondary_used_percent: number;
   primary_resets_at?: string;
   secondary_resets_at?: string;
+  checked_at?: string;
+  stale?: boolean;
+  last_error?: string;
   ppchat_today_used_quota?: number;
   ppchat_today_added_quota?: number;
   ppchat_today_remaining_quota?: number;

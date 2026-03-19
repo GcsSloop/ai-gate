@@ -386,6 +386,9 @@ func (h *AccountsHandler) listAccountsUsage(w http.ResponseWriter, _ *http.Reque
 		SecondaryUsedPercent      float64    `json:"secondary_used_percent"`
 		PrimaryResetsAt           *time.Time `json:"primary_resets_at,omitempty"`
 		SecondaryResetsAt         *time.Time `json:"secondary_resets_at,omitempty"`
+		CheckedAt                 *time.Time `json:"checked_at,omitempty"`
+		Stale                     bool       `json:"stale"`
+		LastError                 string     `json:"last_error,omitempty"`
 		PPChatTodayUsedQuota      float64    `json:"ppchat_today_used_quota,omitempty"`
 		PPChatTodayAddedQuota     float64    `json:"ppchat_today_added_quota,omitempty"`
 		PPChatTodayRemainingQuota float64    `json:"ppchat_today_remaining_quota,omitempty"`
@@ -420,6 +423,9 @@ func (h *AccountsHandler) listAccountsUsage(w http.ResponseWriter, _ *http.Reque
 			SecondaryUsedPercent:      snapshot.SecondaryUsedPercent,
 			PrimaryResetsAt:           snapshot.PrimaryResetsAt,
 			SecondaryResetsAt:         snapshot.SecondaryResetsAt,
+			CheckedAt:                 nilIfZeroTime(snapshot.CheckedAt),
+			Stale:                     snapshot.Stale,
+			LastError:                 snapshot.LastError,
 			PPChatTodayUsedQuota:      ppchatSummary.TodayUsedQuota,
 			PPChatTodayAddedQuota:     ppchatSummary.TodayAddedQuota,
 			PPChatTodayRemainingQuota: ppchatSummary.TodayRemainingQuota,
@@ -427,6 +433,14 @@ func (h *AccountsHandler) listAccountsUsage(w http.ResponseWriter, _ *http.Reque
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+func nilIfZeroTime(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	normalized := value.UTC()
+	return &normalized
 }
 
 type ppchatUsageSummary struct {

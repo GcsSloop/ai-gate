@@ -1910,6 +1910,23 @@ describe("AccountsPage", () => {
     renderAccountsPage();
 
     expect(await screen.findByText("official-main")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        primaryReset.toLocaleTimeString("zh-CN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }),
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        secondaryReset.toLocaleDateString("zh-CN", {
+          month: "numeric",
+          day: "numeric",
+        }),
+      ),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "详情-official-main" }));
 
     const detailModal = await screen.findByRole("dialog", {
@@ -1934,7 +1951,99 @@ describe("AccountsPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows usage health details from the status dot tooltip", async () => {
+    const checkedAt = new Date("2026-03-19T08:35:00.000Z");
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "codex",
+        account_name: "official-main",
+        source_icon: "openai",
+        auth_mode: "codex_local_import",
+        base_url: "https://chatgpt.com/backend-api/codex",
+        status: "active",
+        is_active: true,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 20,
+        secondary_used_percent: 30,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                account_id: 1,
+                balance: 0,
+                quota_remaining: 0,
+                rpm_remaining: 0,
+                tpm_remaining: 0,
+                health_score: 1,
+                recent_error_rate: 0,
+                last_total_tokens: 0,
+                last_input_tokens: 0,
+                last_output_tokens: 0,
+                model_context_window: 0,
+                primary_used_percent: 20,
+                secondary_used_percent: 30,
+                checked_at: checkedAt.toISOString(),
+                stale: true,
+                last_error: "upstream timeout",
+              },
+            ]),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("official-main")).toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getByLabelText("official-main-usage-health"));
+
+    expect(await screen.findByText("upstream timeout")).toBeInTheDocument();
+  });
+
   it("renders ppchat daily remaining usage meter on the card", async () => {
+    const nextMidnight = new Date();
+    nextMidnight.setHours(24, 0, 0, 0);
+    const expectedReset = nextMidnight.toLocaleTimeString("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+
     const accountList = [
       {
         id: 1,
@@ -2013,6 +2122,7 @@ describe("AccountsPage", () => {
 
     expect(await screen.findByText("ppchat-main")).toBeInTheDocument();
     expect(await screen.findByText("1D")).toBeInTheDocument();
+    expect(screen.getByText(expectedReset)).toBeInTheDocument();
     expect(screen.getByText("93%")).toBeInTheDocument();
     expect(document.querySelector(".account-usage-mini")).toHaveClass(
       "account-usage-mini-single",
