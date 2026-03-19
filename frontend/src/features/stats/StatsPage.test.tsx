@@ -74,7 +74,8 @@ describe("StatsPage", () => {
     expect(screen.getByText("输入 Token")).toBeInTheDocument();
     expect(screen.getByText("输出 Token")).toBeInTheDocument();
     expect(screen.getByText("预估费用")).toBeInTheDocument();
-    expect(screen.getByText("余额变化")).toBeInTheDocument();
+    expect(screen.queryByText("余额变化")).not.toBeInTheDocument();
+    expect(screen.getByText("US$1.23")).toBeInTheDocument();
     expect(screen.queryByText("总 Token")).not.toBeInTheDocument();
     expect(screen.queryByText("额度变化")).not.toBeInTheDocument();
     expect(screen.getByText("模型分布")).toBeInTheDocument();
