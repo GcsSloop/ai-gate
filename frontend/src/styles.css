@@ -1268,14 +1268,12 @@ html[data-theme-mode="dark"] .stats-chart-shell {
   transition: opacity 0.16s ease;
 }
 
-.account-card-item:hover .account-usage-mini,
-.account-card-item:focus-within .account-usage-mini {
+.account-card-item[data-actions-visible="true"] .account-usage-mini {
   opacity: 0;
   pointer-events: none;
 }
 
-.account-card-item:hover .account-actions,
-.account-card-item:focus-within .account-actions {
+.account-card-item[data-actions-visible="true"] .account-actions {
   opacity: 1;
   pointer-events: auto;
 }

@@ -53,6 +53,8 @@ import {
   useState,
   type ButtonHTMLAttributes,
   type CSSProperties,
+  type FocusEvent as ReactFocusEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 
@@ -77,6 +79,7 @@ import {
   type PPChatTokenLogsPayload,
   type AccountTestResult,
 } from "../../lib/api";
+import { writeClipboardText } from "../../lib/clipboard";
 import { refreshDesktopTrayState } from "../../lib/desktop-shell";
 import type { AppLanguage, Translator } from "../../lib/i18n";
 import sourceClaudeCodeIcon from "../../assets/providers/claude-code.png";
@@ -357,7 +360,7 @@ function mergeDisplayUsage(
   };
 }
 
-function formatResetAt(value: string | undefined, language: AppLanguage) {
+function formatResetTime(value: string | undefined, language: AppLanguage) {
   if (!value) {
     return "--";
   }
@@ -376,6 +379,24 @@ function formatResetAt(value: string | undefined, language: AppLanguage) {
       minute: "2-digit",
       hour12: false,
     });
+  }
+  return `${date.toLocaleDateString(language, {
+    month: "numeric",
+    day: "numeric",
+  })} ${date.toLocaleTimeString(language, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })}`;
+}
+
+function formatResetDate(value: string | undefined, language: AppLanguage) {
+  if (!value) {
+    return "--";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "--";
   }
   return date.toLocaleDateString(language, {
     month: "numeric",
@@ -542,6 +563,9 @@ export function AccountsPage({
   const [draggingAccountID, setDraggingAccountID] = useState<number | null>(
     null,
   );
+  const [visibleActionAccountID, setVisibleActionAccountID] = useState<
+    number | null
+  >(null);
 
   const [thirdPartyForm] = Form.useForm();
   const [officialForm] = Form.useForm();
@@ -890,9 +914,6 @@ export function AccountsPage({
     if (!editingAccount) {
       return;
     }
-    if (!navigator.clipboard?.writeText) {
-      throw new Error(t("当前环境不支持剪切板写入"));
-    }
     const usageConfigJSON = (() => {
       try {
         return stringifyLuaConfigDraft(luaConfigDraft || "{}", luaScriptKey);
@@ -900,7 +921,7 @@ export function AccountsPage({
         return editingAccount.usage_config_json || "{}";
       }
     })();
-    await navigator.clipboard.writeText(
+    await writeClipboardText(
       buildLuaSkillPrompt(editingAccount, luaScriptKey.trim(), usageConfigJSON),
     );
     void messageApi.success(t("已复制 AI Skill"));
@@ -1028,14 +1049,53 @@ export function AccountsPage({
       cancelText: t("取消"),
       centered: true,
       onOk: async () => {
-        if (!navigator.clipboard?.writeText) {
-          throw new Error(t("当前环境不支持剪切板写入"));
-        }
         const response = await shareAccount(record.id);
-        await navigator.clipboard.writeText(response.payload);
+        await writeClipboardText(response.payload);
         void messageApi.success(t("已复制账户分享信息"));
       },
     });
+  }
+
+  function showActionTray(accountID: number) {
+    setVisibleActionAccountID(accountID);
+  }
+
+  function hideActionTray(accountID: number) {
+    setVisibleActionAccountID((current) =>
+      current === accountID ? null : current,
+    );
+  }
+
+  function handleCardFocus(accountID: number) {
+    showActionTray(accountID);
+  }
+
+  function handleCardBlur(
+    accountID: number,
+    event: ReactFocusEvent<HTMLDivElement>,
+  ) {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+    hideActionTray(accountID);
+  }
+
+  function handleCardMouseEnter(accountID: number) {
+    showActionTray(accountID);
+  }
+
+  function handleCardMouseLeave(
+    accountID: number,
+    event: ReactMouseEvent<HTMLDivElement>,
+  ) {
+    if (
+      typeof document !== "undefined" &&
+      event.currentTarget.contains(document.activeElement)
+    ) {
+      return;
+    }
+    hideActionTray(accountID);
   }
 
   function handleDragStart(event: DragStartEvent) {
@@ -1174,6 +1234,7 @@ export function AccountsPage({
     record: AccountRecord,
     options: AccountCardRenderOptions = {},
   ) {
+    const actionsVisible = visibleActionAccountID === record.id;
     const sourceIcon = sourceIconMap[normalizeSourceIcon(record.source_icon)];
     const usageWindows = isOfficialAccount(record)
       ? [
@@ -1204,6 +1265,21 @@ export function AccountsPage({
         ref={options.cardRef}
         className={`account-card-item ${record.is_active ? "active-account-card" : ""} ${options.className ?? ""}`.trim()}
         style={options.style}
+        data-actions-visible={actionsVisible ? "true" : "false"}
+        onFocus={options.actionsDisabled ? undefined : () => handleCardFocus(record.id)}
+        onBlur={
+          options.actionsDisabled
+            ? undefined
+            : (event) => handleCardBlur(record.id, event)
+        }
+        onMouseEnter={
+          options.actionsDisabled ? undefined : () => handleCardMouseEnter(record.id)
+        }
+        onMouseLeave={
+          options.actionsDisabled
+            ? undefined
+            : (event) => handleCardMouseLeave(record.id, event)
+        }
       >
         <Card variant="borderless" className="account-card-surface">
           <div className="account-card-shell">
@@ -1616,11 +1692,11 @@ export function AccountsPage({
                   </Descriptions.Item>
                   <Descriptions.Item label={t("5 小时剩余")}>
                     {(100 - detailAccount.primary_used_percent).toFixed(0)}% ·{" "}
-                    {formatResetAt(detailAccount.primary_resets_at, language)}
+                    {formatResetTime(detailAccount.primary_resets_at, language)}
                   </Descriptions.Item>
                   <Descriptions.Item label={t("1 周剩余")}>
                     {(100 - detailAccount.secondary_used_percent).toFixed(0)}% ·{" "}
-                    {formatResetAt(detailAccount.secondary_resets_at, language)}
+                    {formatResetDate(detailAccount.secondary_resets_at, language)}
                   </Descriptions.Item>
                 </Descriptions>
               </Card>
