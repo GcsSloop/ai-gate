@@ -1958,6 +1958,7 @@ describe("AccountsPage", () => {
     ).toBeInTheDocument();
   });
 
+
   it("shows usage health details from the status dot tooltip", async () => {
     const checkedAt = new Date("2026-03-19T08:35:00.000Z");
     const accountList = [
