@@ -9,7 +9,7 @@ import { StatsPage } from "./features/stats/StatsPage";
 import { HomeUpdatePanel } from "./features/updates/HomeUpdatePanel";
 import { createDesktopUpdateService, type DesktopUpdateInfo } from "./features/updates/updateService";
 import appLogo from "./assets/aigate_1024_1024.png";
-import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus, subscribeAccountRoutingStateChanged } from "./lib/api";
+import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus, refreshAccountUsage, subscribeAccountRoutingStateChanged } from "./lib/api";
 import { loadDesktopShellContext, refreshDesktopTrayState, subscribeDesktopBackendStateChanged } from "./lib/desktop-shell";
 import { createTranslator, getAntdLocale, normalizeLanguage } from "./lib/i18n";
 import { setAPIBase } from "./lib/paths";
@@ -18,6 +18,10 @@ import "./styles.css";
 const appSettingsBootstrapRetryDelays = [0, 150, 300, 600, 1_000];
 const homeUpdateCheckIntervalMs = 60 * 60 * 1_000;
 const defaultStatusRefreshIntervalSeconds = 60;
+const immediateUsageRefreshDebounceMs = 400;
+const resumeGapWatchIntervalMs = 5_000;
+const resumeGapThresholdMs = 30_000;
+const hiddenResumeThresholdMs = 15_000;
 
 type AppView = "accounts" | "stats" | "settings";
 
@@ -42,6 +46,10 @@ export function App() {
   const [homeUpdateModalOpen, setHomeUpdateModalOpen] = useState(false);
   const updateService = useMemo(() => createDesktopUpdateService(), []);
   const previousViewRef = useRef<AppView>("accounts");
+  const immediateUsageRefreshInFlightRef = useRef(false);
+  const immediateUsageRefreshPendingRef = useRef(false);
+  const immediateUsageRefreshTimerRef = useRef<number | null>(null);
+  const hiddenSinceRef = useRef<number | null>(null);
   const language = normalizeLanguage(appSettings?.language);
   const t = createTranslator(language);
   const themeMode = appSettings?.theme_mode ?? "system";
@@ -85,6 +93,47 @@ export function App() {
       setHomeUpdate(null);
     }
   }, [updateService]);
+
+  const runImmediateUsageRefresh = useCallback(async () => {
+    if (immediateUsageRefreshInFlightRef.current) {
+      immediateUsageRefreshPendingRef.current = true;
+      return;
+    }
+    immediateUsageRefreshInFlightRef.current = true;
+    try {
+      do {
+        immediateUsageRefreshPendingRef.current = false;
+        try {
+          await refreshAccountUsage();
+        } catch {
+          // Network and wake-up recovery should stay silent and retry on the next trigger.
+        }
+        setAccountsSyncToken((value) => value + 1);
+        void refreshDesktopTrayState();
+      } while (immediateUsageRefreshPendingRef.current);
+    } finally {
+      immediateUsageRefreshInFlightRef.current = false;
+    }
+  }, []);
+
+  const queueImmediateUsageRefresh = useCallback(
+    (trigger: "online" | "resume_gap" | "visibility_resume") => {
+      if (!shellReady || typeof window === "undefined") {
+        return;
+      }
+      if (trigger === "online" && typeof navigator !== "undefined" && navigator.onLine === false) {
+        return;
+      }
+      if (immediateUsageRefreshTimerRef.current !== null) {
+        window.clearTimeout(immediateUsageRefreshTimerRef.current);
+      }
+      immediateUsageRefreshTimerRef.current = window.setTimeout(() => {
+        immediateUsageRefreshTimerRef.current = null;
+        void runImmediateUsageRefresh();
+      }, immediateUsageRefreshDebounceMs);
+    },
+    [runImmediateUsageRefresh, shellReady],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -174,6 +223,49 @@ export function App() {
       unlisten?.();
     };
   }, [shellReady]);
+
+  useEffect(() => {
+    if (!shellReady || typeof window === "undefined") {
+      return;
+    }
+
+    let lastTickAt = Date.now();
+    const handleOnline = () => {
+      queueImmediateUsageRefresh("online");
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenSinceRef.current = Date.now();
+        return;
+      }
+      const hiddenSince = hiddenSinceRef.current;
+      hiddenSinceRef.current = null;
+      if (hiddenSince !== null && Date.now() - hiddenSince >= hiddenResumeThresholdMs) {
+        queueImmediateUsageRefresh("visibility_resume");
+      }
+    };
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      const elapsed = now - lastTickAt;
+      lastTickAt = now;
+      if (elapsed >= resumeGapThresholdMs) {
+        queueImmediateUsageRefresh("resume_gap");
+      }
+    }, resumeGapWatchIntervalMs);
+
+    window.addEventListener("online", handleOnline);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.clearInterval(timer);
+      if (immediateUsageRefreshTimerRef.current !== null) {
+        window.clearTimeout(immediateUsageRefreshTimerRef.current);
+        immediateUsageRefreshTimerRef.current = null;
+      }
+      hiddenSinceRef.current = null;
+    };
+  }, [queueImmediateUsageRefresh, shellReady]);
 
   useEffect(() => {
     if (!appSettings) {
