@@ -19,6 +19,7 @@ type AppSettings struct {
 	ShowProxySwitchOnHome        bool                   `json:"show_proxy_switch_on_home"`
 	ShowHomeUpdateIndicator      bool                   `json:"show_home_update_indicator"`
 	StatusRefreshIntervalSeconds int                    `json:"status_refresh_interval_seconds"`
+	UsageRequestTimeoutSeconds   int                    `json:"usage_request_timeout_seconds"`
 	ProxyHost                    string                 `json:"proxy_host"`
 	ProxyPort                    int                    `json:"proxy_port"`
 	AutoFailoverEnabled          bool                   `json:"auto_failover_enabled"`
@@ -55,6 +56,7 @@ func DefaultAppSettings() AppSettings {
 		ShowProxySwitchOnHome:        true,
 		ShowHomeUpdateIndicator:      true,
 		StatusRefreshIntervalSeconds: 60,
+		UsageRequestTimeoutSeconds:   15,
 		ProxyHost:                    "127.0.0.1",
 		ProxyPort:                    6789,
 		AutoFailoverEnabled:          true,
@@ -67,7 +69,7 @@ func DefaultAppSettings() AppSettings {
 
 func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	row := r.db.QueryRow(
-		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
+		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
 		        language, theme_mode, provider_pricing, account_pricing
 		 FROM app_settings WHERE id = 1`,
 	)
@@ -78,6 +80,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	var showProxySwitchOnHome int
 	var showHomeUpdateIndicator int
 	var statusRefreshIntervalSeconds int
+	var usageRequestTimeoutSeconds int
 	var proxyHost string
 	var proxyPort int
 	var autoFailoverEnabled int
@@ -95,6 +98,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		&showProxySwitchOnHome,
 		&showHomeUpdateIndicator,
 		&statusRefreshIntervalSeconds,
+		&usageRequestTimeoutSeconds,
 		&proxyHost,
 		&proxyPort,
 		&autoFailoverEnabled,
@@ -127,6 +131,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		ShowProxySwitchOnHome:        showProxySwitchOnHome == 1,
 		ShowHomeUpdateIndicator:      showHomeUpdateIndicator == 1,
 		StatusRefreshIntervalSeconds: statusRefreshIntervalSeconds,
+		UsageRequestTimeoutSeconds:   usageRequestTimeoutSeconds,
 		ProxyHost:                    proxyHost,
 		ProxyPort:                    proxyPort,
 		AutoFailoverEnabled:          autoFailoverEnabled == 1,
@@ -151,9 +156,9 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 	}
 	_, err = r.db.Exec(
 		`INSERT INTO app_settings (
-			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
+			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
 			language, theme_mode, provider_pricing, account_pricing, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			launch_at_login = excluded.launch_at_login,
 			silent_start = excluded.silent_start,
@@ -161,6 +166,7 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 			show_proxy_switch_on_home = excluded.show_proxy_switch_on_home,
 			show_home_update_indicator = excluded.show_home_update_indicator,
 			status_refresh_interval_seconds = excluded.status_refresh_interval_seconds,
+			usage_request_timeout_seconds = excluded.usage_request_timeout_seconds,
 			proxy_host = excluded.proxy_host,
 			proxy_port = excluded.proxy_port,
 			auto_failover_enabled = excluded.auto_failover_enabled,
@@ -178,6 +184,7 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 		boolToInt(value.ShowProxySwitchOnHome),
 		boolToInt(value.ShowHomeUpdateIndicator),
 		value.StatusRefreshIntervalSeconds,
+		value.UsageRequestTimeoutSeconds,
 		value.ProxyHost,
 		value.ProxyPort,
 		boolToInt(value.AutoFailoverEnabled),
@@ -266,6 +273,15 @@ func sanitize(value AppSettings) AppSettings {
 	}
 	if value.StatusRefreshIntervalSeconds > 3600 {
 		value.StatusRefreshIntervalSeconds = 3600
+	}
+	if value.UsageRequestTimeoutSeconds <= 0 {
+		value.UsageRequestTimeoutSeconds = defaults.UsageRequestTimeoutSeconds
+	}
+	if value.UsageRequestTimeoutSeconds < 3 {
+		value.UsageRequestTimeoutSeconds = 3
+	}
+	if value.UsageRequestTimeoutSeconds > 300 {
+		value.UsageRequestTimeoutSeconds = 300
 	}
 	if value.Language != "en-US" {
 		value.Language = defaults.Language

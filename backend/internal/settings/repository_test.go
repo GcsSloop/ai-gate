@@ -60,6 +60,7 @@ func TestRepositoryPersistsAppSettingsAndQueue(t *testing.T) {
 		ShowProxySwitchOnHome:        false,
 		ShowHomeUpdateIndicator:      false,
 		StatusRefreshIntervalSeconds: 15,
+		UsageRequestTimeoutSeconds:   22,
 		ProxyHost:                    "localhost",
 		ProxyPort:                    15721,
 		AutoFailoverEnabled:          true,
@@ -138,6 +139,47 @@ func TestRepositoryClampsStatusRefreshInterval(t *testing.T) {
 	}
 	if high.StatusRefreshIntervalSeconds != 3600 {
 		t.Fatalf("high.StatusRefreshIntervalSeconds = %d, want 3600", high.StatusRefreshIntervalSeconds)
+	}
+}
+
+func TestRepositoryClampsUsageRequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := settings.NewSQLiteRepository(store.DB())
+
+	value := settings.DefaultAppSettings()
+	value.UsageRequestTimeoutSeconds = 1
+	if err := repo.SaveAppSettings(value); err != nil {
+		t.Fatalf("SaveAppSettings(low) returned error: %v", err)
+	}
+
+	low, err := repo.GetAppSettings()
+	if err != nil {
+		t.Fatalf("GetAppSettings(low) returned error: %v", err)
+	}
+	if low.UsageRequestTimeoutSeconds != 3 {
+		t.Fatalf("low.UsageRequestTimeoutSeconds = %d, want 3", low.UsageRequestTimeoutSeconds)
+	}
+
+	value.UsageRequestTimeoutSeconds = 999
+	if err := repo.SaveAppSettings(value); err != nil {
+		t.Fatalf("SaveAppSettings(high) returned error: %v", err)
+	}
+
+	high, err := repo.GetAppSettings()
+	if err != nil {
+		t.Fatalf("GetAppSettings(high) returned error: %v", err)
+	}
+	if high.UsageRequestTimeoutSeconds != 300 {
+		t.Fatalf("high.UsageRequestTimeoutSeconds = %d, want 300", high.UsageRequestTimeoutSeconds)
 	}
 }
 

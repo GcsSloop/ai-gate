@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 	"github.com/gcssloop/codex-router/backend/internal/usage/normalize"
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv/registry"
@@ -22,16 +23,21 @@ type snapshotRepository interface {
 	GetLatest(accountID int64) (usage.Snapshot, error)
 }
 
+type settingsReader interface {
+	GetAppSettings() (settings.AppSettings, error)
+}
+
 type Orchestrator struct {
 	accounts accountLister
 	usage    snapshotRepository
 	registry *registry.Registry
+	settings settingsReader
 	now      func() time.Time
 	timeout  time.Duration
 	workers  int
 }
 
-const defaultPerAccountTimeout = 5 * time.Second
+const defaultPerAccountTimeout = 15 * time.Second
 const defaultRefreshWorkers = 4
 
 func NewOrchestrator(accountsRepo accountLister, usageRepo snapshotRepository, driverRegistry *registry.Registry) *Orchestrator {
@@ -43,6 +49,12 @@ func NewOrchestrator(accountsRepo accountLister, usageRepo snapshotRepository, d
 		timeout:  defaultPerAccountTimeout,
 		workers:  defaultRefreshWorkers,
 	}
+}
+
+func NewOrchestratorWithSettings(accountsRepo accountLister, usageRepo snapshotRepository, driverRegistry *registry.Registry, settingsRepo settingsReader) *Orchestrator {
+	orchestrator := NewOrchestrator(accountsRepo, usageRepo, driverRegistry)
+	orchestrator.settings = settingsRepo
+	return orchestrator
 }
 
 func NewOrchestratorWithTimeout(accountsRepo accountLister, usageRepo snapshotRepository, driverRegistry *registry.Registry, timeout time.Duration) *Orchestrator {
@@ -135,9 +147,15 @@ func (o *Orchestrator) Run(ctx context.Context, runAt time.Time) error {
 }
 
 func (o *Orchestrator) refreshOne(ctx context.Context, account accounts.Account, runAt time.Time) error {
-	if o.timeout > 0 {
+	timeout := o.timeout
+	if o.settings != nil {
+		if appSettings, err := o.settings.GetAppSettings(); err == nil && appSettings.UsageRequestTimeoutSeconds > 0 {
+			timeout = time.Duration(appSettings.UsageRequestTimeoutSeconds) * time.Second
+		}
+	}
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, o.timeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	accountDriver, err := o.registry.AccountDriverFor(account)

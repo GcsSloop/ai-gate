@@ -223,6 +223,7 @@ export type AppSettings = {
   show_proxy_switch_on_home: boolean;
   show_home_update_indicator: boolean;
   status_refresh_interval_seconds: number;
+  usage_request_timeout_seconds?: number;
   proxy_host: string;
   proxy_port: number;
   auto_failover_enabled: boolean;
