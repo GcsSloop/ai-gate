@@ -182,6 +182,7 @@ export function SettingsPage({
       ...initialSettings,
       provider_pricing: initialSettings.provider_pricing ?? {},
       account_pricing: initialSettings.account_pricing ?? {},
+      usage_request_timeout_seconds: initialSettings.usage_request_timeout_seconds ?? 15,
     });
   }, [initialSettings]);
 
@@ -612,6 +613,21 @@ export function SettingsPage({
                   onChange={(value) =>
                     updateDraft({
                       status_refresh_interval_seconds: Math.min(Math.max(Number(value) || 60, 5), 3600),
+                    })
+                  }
+                  className="settings-number"
+                />
+              </label>
+              <label className="settings-field">
+                <span className="settings-field-label">{t("Usage 请求超时（秒）")}</span>
+                <InputNumber
+                  aria-label={t("Usage 请求超时（秒）")}
+                  min={3}
+                  max={300}
+                  value={draftSettings.usage_request_timeout_seconds ?? 15}
+                  onChange={(value) =>
+                    updateDraft({
+                      usage_request_timeout_seconds: Math.min(Math.max(Number(value) || 15, 3), 300),
                     })
                   }
                   className="settings-number"

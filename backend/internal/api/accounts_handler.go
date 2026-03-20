@@ -21,6 +21,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/providers"
 	providercodex "github.com/gcssloop/codex-router/backend/internal/providers/codex"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 	luadrv "github.com/gcssloop/codex-router/backend/internal/usagedrv/lua"
 	driverregistry "github.com/gcssloop/codex-router/backend/internal/usagedrv/registry"
@@ -36,10 +37,15 @@ type AccountsHandler struct {
 	client      *http.Client
 	stateEvents *StateEventBus
 	refresher   AccountsUsageRefresher
+	settings    accountsSettingsReader
 	refreshTTL  time.Duration
 	drivers     *driverregistry.Registry
 	luaScripts  *luadrv.ManagedScriptStore
 	luaRuntime  *luadrv.Runtime
+}
+
+type accountsSettingsReader interface {
+	GetAppSettings() (settings.AppSettings, error)
 }
 
 type AccountsHandlerOption func(*AccountsHandler)
@@ -53,6 +59,12 @@ func WithAccountsStateEvents(bus *StateEventBus) AccountsHandlerOption {
 func WithAccountsUsageRefresher(refresher AccountsUsageRefresher) AccountsHandlerOption {
 	return func(handler *AccountsHandler) {
 		handler.refresher = refresher
+	}
+}
+
+func WithAccountsSettings(repo accountsSettingsReader) AccountsHandlerOption {
+	return func(handler *AccountsHandler) {
+		handler.settings = repo
 	}
 }
 
@@ -94,7 +106,7 @@ func NewAccountsHandler(repo accounts.Repository, usage AccountsUsage, connector
 		connector:  connector,
 		stateStore: stateStore,
 		client:     http.DefaultClient,
-		refreshTTL: 5 * time.Second,
+		refreshTTL: 15 * time.Second,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -491,8 +503,13 @@ func (h *AccountsHandler) refreshAccountsUsage(w http.ResponseWriter, r *http.Re
 		return
 	}
 	timeout := h.refreshTTL
+	if h.settings != nil {
+		if appSettings, err := h.settings.GetAppSettings(); err == nil && appSettings.UsageRequestTimeoutSeconds > 0 {
+			timeout = time.Duration(appSettings.UsageRequestTimeoutSeconds) * time.Second
+		}
+	}
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		timeout = 15 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()

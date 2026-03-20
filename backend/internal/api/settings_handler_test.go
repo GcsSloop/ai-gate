@@ -45,6 +45,7 @@ func TestSettingsHandlerGetAndPutAppSettings(t *testing.T) {
 		"close_to_tray": false,
 		"show_proxy_switch_on_home": false,
 		"show_home_update_indicator": false,
+		"usage_request_timeout_seconds": 18,
 		"proxy_host": "localhost",
 		"proxy_port": 15721,
 		"auto_failover_enabled": true,
@@ -65,7 +66,7 @@ func TestSettingsHandlerGetAndPutAppSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAppSettings returned error: %v", err)
 	}
-	if !stored.LaunchAtLogin || !stored.SilentStart || stored.CloseToTray || stored.ShowProxySwitchOnHome || stored.ShowHomeUpdateIndicator || stored.ProxyHost != "localhost" || stored.ProxyPort != 15721 || !stored.AutoFailoverEnabled || stored.AutoBackupIntervalHours != 12 || stored.BackupRetentionCount != 7 || stored.Language != "en-US" || stored.ThemeMode != "dark" {
+	if !stored.LaunchAtLogin || !stored.SilentStart || stored.CloseToTray || stored.ShowProxySwitchOnHome || stored.ShowHomeUpdateIndicator || stored.UsageRequestTimeoutSeconds != 18 || stored.ProxyHost != "localhost" || stored.ProxyPort != 15721 || !stored.AutoFailoverEnabled || stored.AutoBackupIntervalHours != 12 || stored.BackupRetentionCount != 7 || stored.Language != "en-US" || stored.ThemeMode != "dark" {
 		t.Fatalf("stored settings = %+v, want updated values", stored)
 	}
 }

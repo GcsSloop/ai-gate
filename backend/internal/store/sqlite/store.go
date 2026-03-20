@@ -123,6 +123,7 @@ func (s *Store) migrate() error {
 		{table: "accounts", name: "usage_config_json", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "app_settings", name: "show_home_update_indicator", definition: "INTEGER NOT NULL DEFAULT 1"},
 		{table: "app_settings", name: "status_refresh_interval_seconds", definition: "INTEGER NOT NULL DEFAULT 60"},
+		{table: "app_settings", name: "usage_request_timeout_seconds", definition: "INTEGER NOT NULL DEFAULT 15"},
 		{table: "app_settings", name: "audit_limit_message", definition: "INTEGER NOT NULL DEFAULT 200"},
 		{table: "app_settings", name: "audit_limit_function_call", definition: "INTEGER NOT NULL DEFAULT 100"},
 		{table: "app_settings", name: "audit_limit_function_call_output", definition: "INTEGER NOT NULL DEFAULT 100"},

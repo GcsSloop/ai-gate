@@ -615,6 +615,15 @@ func normalizeAppSettings(value settings.AppSettings) settings.AppSettings {
 	if value.StatusRefreshIntervalSeconds > 3600 {
 		value.StatusRefreshIntervalSeconds = 3600
 	}
+	if value.UsageRequestTimeoutSeconds <= 0 {
+		value.UsageRequestTimeoutSeconds = defaults.UsageRequestTimeoutSeconds
+	}
+	if value.UsageRequestTimeoutSeconds < 3 {
+		value.UsageRequestTimeoutSeconds = 3
+	}
+	if value.UsageRequestTimeoutSeconds > 300 {
+		value.UsageRequestTimeoutSeconds = 300
+	}
 	if value.Language != "en-US" {
 		value.Language = defaults.Language
 	}

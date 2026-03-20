@@ -18,6 +18,7 @@ const baseSettings = {
   show_proxy_switch_on_home: true,
   show_home_update_indicator: true,
   status_refresh_interval_seconds: 60,
+  usage_request_timeout_seconds: 15,
   proxy_host: "127.0.0.1",
   proxy_port: 6789,
   auto_failover_enabled: true,
@@ -488,6 +489,7 @@ describe("SettingsPage", () => {
 
     fireEvent.click(await screen.findByRole("tab", { name: "数据" }));
     fireEvent.change(await screen.findByLabelText("状态刷新间隔（秒）"), { target: { value: "5" } });
+    fireEvent.change(await screen.findByLabelText("Usage 请求超时（秒）"), { target: { value: "18" } });
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
 
     await waitFor(() => {
@@ -495,12 +497,12 @@ describe("SettingsPage", () => {
         "/ai-router/api/settings/app",
         expect.objectContaining({
           method: "PUT",
-          body: JSON.stringify({ ...baseSettings, status_refresh_interval_seconds: 5 }),
+          body: JSON.stringify({ ...baseSettings, status_refresh_interval_seconds: 5, usage_request_timeout_seconds: 18 }),
         }),
       );
     });
 
-    expect(onSettingsChanged).toHaveBeenCalledWith({ ...baseSettings, status_refresh_interval_seconds: 5 });
+    expect(onSettingsChanged).toHaveBeenCalledWith({ ...baseSettings, status_refresh_interval_seconds: 5, usage_request_timeout_seconds: 18 });
   });
 
   it("renders recent desktop logs inside a bounded scroll panel", async () => {

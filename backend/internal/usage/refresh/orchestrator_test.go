@@ -12,6 +12,7 @@ import (
 
 	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 	"github.com/gcssloop/codex-router/backend/internal/usage/refresh"
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv"
@@ -30,6 +31,27 @@ type stubUsageRepo struct {
 	mu     sync.Mutex
 	saved  []usage.Snapshot
 	latest map[int64]usage.Snapshot
+}
+
+type stubSettingsRepo struct {
+	mu    sync.Mutex
+	value settings.AppSettings
+}
+
+func newStubSettingsRepo(value settings.AppSettings) *stubSettingsRepo {
+	return &stubSettingsRepo{value: value}
+}
+
+func (r *stubSettingsRepo) GetAppSettings() (settings.AppSettings, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.value, nil
+}
+
+func (r *stubSettingsRepo) Set(value settings.AppSettings) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.value = value
 }
 
 func newStubUsageRepo(initial ...usage.Snapshot) *stubUsageRepo {
@@ -436,6 +458,64 @@ func TestOrchestratorLimitsConcurrentRefreshes(t *testing.T) {
 
 	if maxSeen.Load() != 2 {
 		t.Fatalf("max concurrent refreshes = %d, want 2", maxSeen.Load())
+	}
+}
+
+func TestOrchestratorAppliesUpdatedSettingsTimeoutWithoutRestart(t *testing.T) {
+	t.Parallel()
+
+	reg := newRegistry(t,
+		[]accountdrv.AccountDriver{
+			stubAccountDriver{
+				name: "builtin_api_key",
+				supports: func(account accounts.Account) bool {
+					return account.AuthMode == accounts.AuthModeAPIKey
+				},
+				resolve: func(context.Context, accounts.Account) (accountdrv.ResolvedCredential, error) {
+					return accountdrv.ResolvedCredential{AccessToken: "token"}, nil
+				},
+			},
+		},
+		[]usagedrv.UsageDriver{
+			stubUsageDriver{
+				name: "builtin_ppchat",
+				fetch: func(ctx context.Context, account accounts.Account, _ accountdrv.ResolvedCredential) (usagedrv.RawUsageResult, error) {
+					<-ctx.Done()
+					return usagedrv.RawUsageResult{}, fmt.Errorf("usage fetch timeout: %w", ctx.Err())
+				},
+			},
+		},
+	)
+
+	usageRepo := newStubUsageRepo()
+	appSettings := settings.DefaultAppSettings()
+	appSettings.UsageRequestTimeoutSeconds = 1
+	settingsRepo := newStubSettingsRepo(appSettings)
+	orchestrator := refresh.NewOrchestratorWithSettings(stubAccountRepo{accounts: []accounts.Account{
+		{ID: 1, AccountName: "hung", AuthMode: accounts.AuthModeAPIKey, UsageDriver: "builtin_ppchat"},
+	}}, usageRepo, reg, settingsRepo)
+
+	start := time.Now()
+	err := orchestrator.Run(context.Background(), time.Date(2026, 3, 20, 2, 0, 0, 0, time.UTC))
+	firstElapsed := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "deadline exceeded") {
+		t.Fatalf("first Run error = %v, want deadline exceeded", err)
+	}
+	if firstElapsed < 900*time.Millisecond || firstElapsed > 2*time.Second {
+		t.Fatalf("first Run took %s, want about 1s", firstElapsed)
+	}
+
+	appSettings.UsageRequestTimeoutSeconds = 3
+	settingsRepo.Set(appSettings)
+
+	start = time.Now()
+	err = orchestrator.Run(context.Background(), time.Date(2026, 3, 20, 2, 1, 0, 0, time.UTC))
+	secondElapsed := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "deadline exceeded") {
+		t.Fatalf("second Run error = %v, want deadline exceeded", err)
+	}
+	if secondElapsed < 2900*time.Millisecond || secondElapsed > 4*time.Second {
+		t.Fatalf("second Run took %s, want about 3s after settings update", secondElapsed)
 	}
 }
 

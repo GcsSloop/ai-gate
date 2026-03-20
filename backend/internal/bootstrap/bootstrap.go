@@ -97,7 +97,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		_ = store.Close()
 		return nil, err
 	}
-	refreshOrchestrator := refresh.NewOrchestrator(accountRepo, usageRepo, driverRegistry)
+	refreshOrchestrator := refresh.NewOrchestratorWithSettings(accountRepo, usageRepo, driverRegistry, settingsRepo)
 	accountsHandler := api.NewAccountsHandler(
 		accountRepo,
 		usageRepo,
@@ -105,6 +105,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		stateStore,
 		api.WithAccountsStateEvents(stateEvents),
 		api.WithAccountsUsageRefresher(refreshOrchestrator),
+		api.WithAccountsSettings(settingsRepo),
 		api.WithAccountsDriverRegistry(driverRegistry),
 		api.WithAccountsLuaScriptRoot(luaScriptRoot),
 	)
