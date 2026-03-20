@@ -653,7 +653,7 @@ describe("AccountsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "编辑-mirror-east" }));
     const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
     fireEvent.click(
-      within(editModal).getByRole("button", { name: "复制 AI Skill" }),
+      await within(editModal).findByRole("button", { name: "复制 AI Skill" }),
     );
 
     await waitFor(() => {
@@ -1025,7 +1025,7 @@ describe("AccountsPage", () => {
     ).toContain("fetch_usage");
 
     fireEvent.click(
-      within(editModal).getByRole("button", { name: "复制 AI Skill" }),
+      await within(editModal).findByRole("button", { name: "复制 AI Skill" }),
     );
     await waitFor(() => {
       expect(clipboardWriteText).toHaveBeenCalledTimes(1);
