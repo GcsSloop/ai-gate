@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, Runtime, Size};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 #[cfg(windows)]
@@ -44,6 +44,9 @@ static UPDATE_MANAGER: Lazy<Mutex<UpdateManagerState>> =
 const DEFAULT_PROXY_HOST: &str = "127.0.0.1";
 const DEFAULT_PROXY_PORT: u16 = 6789;
 const SETTINGS_CACHE_FILE: &str = "desktop-settings.json";
+const MAIN_WINDOW_LABEL: &str = "main";
+const MAIN_WINDOW_MIN_WIDTH: u32 = 1024;
+const MAIN_WINDOW_MIN_HEIGHT: u32 = 700;
 const LAUNCH_AGENT_LABEL: &str = "com.aigate.desktop";
 const TRAY_ID: &str = "aigate-tray";
 const MENU_OPEN_MAIN: &str = "open-main";
@@ -75,6 +78,18 @@ const UPDATER_PUBKEY_BASE64: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1Ymx
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct WindowSizeCache {
+    width: u32,
+    height: u32,
+}
+
+impl WindowSizeCache {
+    fn as_tauri_size(self) -> Size {
+        Size::Logical(LogicalSize::new(self.width as f64, self.height as f64))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 struct DesktopSettingsCache {
     launch_at_login: bool,
@@ -82,6 +97,7 @@ struct DesktopSettingsCache {
     close_to_tray: bool,
     proxy_host: String,
     proxy_port: u16,
+    main_window_size: Option<WindowSizeCache>,
 }
 
 impl Default for DesktopSettingsCache {
@@ -92,12 +108,17 @@ impl Default for DesktopSettingsCache {
             close_to_tray: true,
             proxy_host: DEFAULT_PROXY_HOST.to_string(),
             proxy_port: DEFAULT_PROXY_PORT,
+            main_window_size: None,
         }
     }
 }
 
 impl DesktopSettingsCache {
     fn from_app_settings(value: AppSettingsPayload) -> Self {
+        Self::default().updated_from_app_settings(value)
+    }
+
+    fn updated_from_app_settings(mut self, value: AppSettingsPayload) -> Self {
         let defaults = Self::default();
         let proxy_host = value.proxy_host.trim();
         let proxy_port = if value.proxy_port == 0 {
@@ -105,17 +126,16 @@ impl DesktopSettingsCache {
         } else {
             value.proxy_port
         };
-        Self {
-            launch_at_login: value.launch_at_login,
-            silent_start: value.silent_start,
-            close_to_tray: value.close_to_tray,
-            proxy_host: if proxy_host.is_empty() {
-                defaults.proxy_host
-            } else {
-                proxy_host.to_string()
-            },
-            proxy_port,
-        }
+        self.launch_at_login = value.launch_at_login;
+        self.silent_start = value.silent_start;
+        self.close_to_tray = value.close_to_tray;
+        self.proxy_host = if proxy_host.is_empty() {
+            defaults.proxy_host
+        } else {
+            proxy_host.to_string()
+        };
+        self.proxy_port = proxy_port;
+        self
     }
 
     fn backend_addr(&self) -> String {
@@ -343,6 +363,7 @@ fn main() {
             if let Err(err) = sync_launch_agent(cache.launch_at_login) {
                 eprintln!("sync launch agent failed: {err}");
             }
+            apply_saved_main_window_size(app.handle())?;
             spawn_sidecar()?;
             wait_for_backend_ready(
                 &cache.backend_addr(),
@@ -362,23 +383,31 @@ fn main() {
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
             tauri::RunEvent::WindowEvent { label, event, .. } => {
-                if label == "main" {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        match window_close_action(current_settings_cache().close_to_tray) {
-                            WindowCloseAction::MinimizeWindow => {
-                                api.prevent_close();
-                                if let Some(window) = app_handle.get_webview_window("main") {
-                                    let _ = window.minimize();
+                if label == MAIN_WINDOW_LABEL {
+                    match event {
+                        tauri::WindowEvent::CloseRequested { api, .. } => {
+                            match window_close_action(current_settings_cache().close_to_tray) {
+                                WindowCloseAction::MinimizeWindow => {
+                                    api.prevent_close();
+                                    if let Some(window) =
+                                        app_handle.get_webview_window(MAIN_WINDOW_LABEL)
+                                    {
+                                        let _ = window.minimize();
+                                    }
+                                }
+                                WindowCloseAction::ExitApp => {
+                                    api.prevent_close();
+                                    stop_sidecar_exit_watcher();
+                                    stop_resume_recovery_watcher();
+                                    shutdown_sidecar();
+                                    app_handle.exit(0);
                                 }
                             }
-                            WindowCloseAction::ExitApp => {
-                                api.prevent_close();
-                                stop_sidecar_exit_watcher();
-                                stop_resume_recovery_watcher();
-                                shutdown_sidecar();
-                                app_handle.exit(0);
-                            }
                         }
+                        tauri::WindowEvent::Resized(_) => {
+                            let _ = persist_main_window_size_from_window(&app_handle);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -808,6 +837,63 @@ fn current_settings_cache() -> DesktopSettingsCache {
 
 fn current_backend_addr() -> String {
     current_settings_cache().backend_addr()
+}
+
+fn sanitize_main_window_size(width: u32, height: u32) -> Option<WindowSizeCache> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some(WindowSizeCache {
+        width: width.max(MAIN_WINDOW_MIN_WIDTH),
+        height: height.max(MAIN_WINDOW_MIN_HEIGHT),
+    })
+}
+
+fn resolve_main_window_size(size: Option<WindowSizeCache>) -> WindowSizeCache {
+    size.unwrap_or(WindowSizeCache {
+        width: MAIN_WINDOW_MIN_WIDTH,
+        height: MAIN_WINDOW_MIN_HEIGHT,
+    })
+}
+
+fn apply_saved_main_window_size<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let size = resolve_main_window_size(current_settings_cache().main_window_size);
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        window
+            .set_size(size.as_tauri_size())
+            .map_err(|e| format!("apply main window size failed: {e}"))?;
+    }
+    Ok(())
+}
+
+fn persist_main_window_size(size: WindowSizeCache) -> Result<(), String> {
+    let mut runtime = DESKTOP_RUNTIME
+        .lock()
+        .map_err(|_| "desktop runtime lock poisoned".to_string())?;
+    if runtime.settings_cache.main_window_size == Some(size.clone()) {
+        return Ok(());
+    }
+    runtime.settings_cache.main_window_size = Some(size);
+    persist_settings_cache(&runtime.settings_path, &runtime.settings_cache)
+}
+
+fn persist_main_window_size_from_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return Ok(());
+    };
+    let inner_size = window
+        .inner_size()
+        .map_err(|e| format!("read main window size failed: {e}"))?;
+    let scale_factor = window
+        .scale_factor()
+        .map_err(|e| format!("read main window scale factor failed: {e}"))?;
+    let logical_size = inner_size.to_logical::<f64>(scale_factor);
+    let width = logical_size.width.round().max(0.0) as u32;
+    let height = logical_size.height.round().max(0.0) as u32;
+    let Some(size) = sanitize_main_window_size(width, height) else {
+        return Ok(());
+    };
+    persist_main_window_size(size)
 }
 
 fn clamp_recent_log_limit(limit: Option<usize>) -> usize {
@@ -1877,16 +1963,18 @@ mod tests {
         append_recent_desktop_log, build_launch_agent_plist, clamp_recent_log_limit,
         decode_chunked_body, format_timeout_error, format_tray_title, map_backend_io_error,
         parse_account_menu_id, parse_accounts_response, parse_proxy_status_response,
-        proxy_menu_enabled_states, should_attempt_sidecar_recovery,
-        should_refresh_tray_after_action, should_restart_sidecar_after_exit,
-        should_retry_sidecar_request, should_trigger_resume_recovery, sidecar_candidate_paths,
-        sidecar_creation_flags, sidecar_request_with_recovery, sidecar_request_with_recovery_hooks,
+        proxy_menu_enabled_states, resolve_main_window_size, sanitize_main_window_size,
+        should_attempt_sidecar_recovery, should_refresh_tray_after_action,
+        should_restart_sidecar_after_exit, should_retry_sidecar_request,
+        should_trigger_resume_recovery, sidecar_candidate_paths, sidecar_creation_flags,
+        sidecar_request_with_recovery, sidecar_request_with_recovery_hooks,
         sidecar_resource_name, tray_icon_bytes_for_platform, tray_icon_is_template_for_platform,
         update_download_progress, wait_for_backend_ready_with_probe, window_close_action,
-        AppSettingsPayload, DesktopLogEntry, DesktopSettingsCache, HttpResponse, UpdateInfoPayload,
-        UpdateManagerState, UpdateProgressPayload, UpdateStatePayload, UpdateStatus,
-        WindowCloseAction, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME, TRAY_ICON_COLOR_BYTES,
-        TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
+        AppSettingsPayload, DesktopLogEntry, DesktopSettingsCache, HttpResponse,
+        UpdateInfoPayload, UpdateManagerState, UpdateProgressPayload, UpdateStatePayload,
+        UpdateStatus, WindowCloseAction, WindowSizeCache, MAIN_WINDOW_MIN_HEIGHT,
+        MAIN_WINDOW_MIN_WIDTH, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
+        TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
     };
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -2052,6 +2140,7 @@ mod tests {
         assert!(cache.close_to_tray);
         assert_eq!(cache.proxy_host, "127.0.0.1");
         assert_eq!(cache.proxy_port, 6789);
+        assert_eq!(cache.main_window_size, None);
         assert_eq!(cache.backend_addr(), "127.0.0.1:6789");
         assert_eq!(
             cache.backend_api_base(),
@@ -2073,7 +2162,7 @@ mod tests {
             backup_retention_count: 7,
         };
 
-        let cache = DesktopSettingsCache::from_app_settings(payload);
+        let cache = DesktopSettingsCache::default().updated_from_app_settings(payload);
         assert!(cache.launch_at_login);
         assert!(cache.silent_start);
         assert!(!cache.close_to_tray);
@@ -2096,9 +2185,57 @@ mod tests {
             backup_retention_count: 10,
         };
 
-        let cache = DesktopSettingsCache::from_app_settings(payload);
+        let cache = DesktopSettingsCache::default().updated_from_app_settings(payload);
         assert_eq!(cache.proxy_host, "127.0.0.1");
         assert_eq!(cache.proxy_port, 6789);
+    }
+
+    #[test]
+    fn resolved_main_window_size_uses_minimum_dimensions_by_default() {
+        let size = resolve_main_window_size(None);
+
+        assert_eq!(size.width, MAIN_WINDOW_MIN_WIDTH);
+        assert_eq!(size.height, MAIN_WINDOW_MIN_HEIGHT);
+    }
+
+    #[test]
+    fn desktop_settings_cache_preserves_saved_window_size_when_app_settings_change() {
+        let initial = DesktopSettingsCache {
+            main_window_size: Some(WindowSizeCache {
+                width: 1440,
+                height: 900,
+            }),
+            ..DesktopSettingsCache::default()
+        };
+        let payload = AppSettingsPayload {
+            launch_at_login: true,
+            silent_start: false,
+            close_to_tray: true,
+            show_proxy_switch_on_home: true,
+            proxy_host: "127.0.0.1".to_string(),
+            proxy_port: 6789,
+            auto_failover_enabled: false,
+            auto_backup_interval_hours: 24,
+            backup_retention_count: 10,
+        };
+
+        let updated = initial.updated_from_app_settings(payload);
+
+        assert_eq!(
+            updated.main_window_size,
+            Some(WindowSizeCache {
+                width: 1440,
+                height: 900,
+            })
+        );
+    }
+
+    #[test]
+    fn sanitize_main_window_size_clamps_small_dimensions_to_minimum() {
+        let size = sanitize_main_window_size(800, 600).expect("size should be accepted");
+
+        assert_eq!(size.width, MAIN_WINDOW_MIN_WIDTH);
+        assert_eq!(size.height, MAIN_WINDOW_MIN_HEIGHT);
     }
 
     #[test]
