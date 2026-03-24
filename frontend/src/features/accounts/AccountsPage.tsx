@@ -108,6 +108,14 @@ const statusTextMap: Record<string, string> = {
   disabled: "已停用",
 };
 
+const routingCooldownTextMap: Record<string, string> = {
+  official_remaining_below_3pct: "路由冷却",
+  usage_limited: "路由冷却",
+  capacity_failed: "路由冷却",
+  rate_limited: "路由冷却",
+  routing_cooldown: "路由冷却",
+};
+
 const authModeTextMap: Record<string, string> = {
   api_key: "API Key",
   oauth: "官方授权",
@@ -511,6 +519,16 @@ function formatDeletedAccountMessage(
   return language === "en-US"
     ? `Deleted account ${accountName}`
     : `已删除账户 ${accountName}`;
+}
+
+function getRoutingCooldownSeconds(record: AccountRecord): number | undefined {
+  return (
+    record.routing_cooldown_remaining_seconds ?? record.cooldown_remaining_seconds
+  );
+}
+
+function getRoutingCooldownLabel(record: AccountRecord): string {
+  return routingCooldownTextMap[record.routing_cooldown_reason ?? ""] ?? "路由冷却";
 }
 
 function formatActiveAccountMessage(
@@ -1408,6 +1426,9 @@ export function AccountsPage({
                   <Tag color={statusColorMap[record.status] ?? "default"}>
                     {t(statusTextMap[record.status] ?? record.status)}
                   </Tag>
+                  {getRoutingCooldownSeconds(record) ? (
+                    <Tag color="gold">{t(getRoutingCooldownLabel(record))}</Tag>
+                  ) : null}
                   {record.is_active ? (
                     <Tag color="green">{t("当前使用中")}</Tag>
                   ) : null}
@@ -1799,6 +1820,14 @@ export function AccountsPage({
                       statusTextMap[detailAccount.status] ??
                         detailAccount.status,
                     )}
+                  </Descriptions.Item>
+                  <Descriptions.Item label={t("路由状态")}>
+                    {getRoutingCooldownSeconds(detailAccount)
+                      ? `${t(getRoutingCooldownLabel(detailAccount))} · ${Math.max(
+                          Math.floor((getRoutingCooldownSeconds(detailAccount) ?? 0) / 60),
+                          0,
+                        )}m`
+                      : t("正常")}
                   </Descriptions.Item>
                   <Descriptions.Item label={t("认证方式")}>
                     {t(
