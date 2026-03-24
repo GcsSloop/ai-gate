@@ -228,6 +228,10 @@ export type AppSettings = {
   usage_request_timeout_seconds?: number;
   proxy_host: string;
   proxy_port: number;
+  upstream_proxy_mode?: "system" | "direct" | "manual";
+  upstream_proxy_url?: string;
+  upstream_proxy_username?: string;
+  upstream_proxy_password?: string;
   auto_failover_enabled: boolean;
   auto_backup_interval_hours: number;
   backup_retention_count: number;

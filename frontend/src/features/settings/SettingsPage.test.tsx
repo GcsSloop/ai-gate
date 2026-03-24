@@ -21,6 +21,10 @@ const baseSettings = {
   usage_request_timeout_seconds: 15,
   proxy_host: "127.0.0.1",
   proxy_port: 6789,
+  upstream_proxy_mode: "system",
+  upstream_proxy_url: "",
+  upstream_proxy_username: "",
+  upstream_proxy_password: "",
   auto_failover_enabled: true,
   auto_backup_interval_hours: 24,
   backup_retention_count: 10,
@@ -107,6 +111,8 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("tab", { name: "关于" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "代理" }));
     expect(await screen.findByRole("switch", { name: "自动故障转移开关" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "手动指定" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "上游代理地址" }), { target: { value: "http://127.0.0.1:7890" } });
     expect(screen.queryByText("自动故障转移队列")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "数据" }));
     expect(await screen.findByText("费用统计")).toBeInTheDocument();
@@ -125,6 +131,8 @@ describe("SettingsPage", () => {
           body: JSON.stringify({
             ...baseSettings,
             launch_at_login: true,
+            upstream_proxy_mode: "manual",
+            upstream_proxy_url: "http://127.0.0.1:7890",
             provider_pricing: { codex: { input_per_million: 4.5, output_per_million: 0 } },
             account_pricing: { "1": { input_per_million: 0, output_per_million: 15.2 } },
           }),
@@ -134,12 +142,16 @@ describe("SettingsPage", () => {
     expect(applyDesktopAppSettings).toHaveBeenCalledWith({
       ...baseSettings,
       launch_at_login: true,
+      upstream_proxy_mode: "manual",
+      upstream_proxy_url: "http://127.0.0.1:7890",
       provider_pricing: { codex: { input_per_million: 4.5, output_per_million: 0 } },
       account_pricing: { "1": { input_per_million: 0, output_per_million: 15.2 } },
     });
     expect(onSettingsChanged).toHaveBeenCalledWith({
       ...baseSettings,
       launch_at_login: true,
+      upstream_proxy_mode: "manual",
+      upstream_proxy_url: "http://127.0.0.1:7890",
       provider_pricing: { codex: { input_per_million: 4.5, output_per_million: 0 } },
       account_pricing: { "1": { input_per_million: 0, output_per_million: 15.2 } },
     });
