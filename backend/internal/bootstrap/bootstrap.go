@@ -17,6 +17,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/api"
 	"github.com/gcssloop/codex-router/backend/internal/auth"
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
+	"github.com/gcssloop/codex-router/backend/internal/netproxy"
 	"github.com/gcssloop/codex-router/backend/internal/policy"
 	"github.com/gcssloop/codex-router/backend/internal/scheduler"
 	"github.com/gcssloop/codex-router/backend/internal/secrets"
@@ -77,6 +78,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	accountRepo := accounts.NewSQLiteRepository(store.DB(), credentialCipher)
 	settingsRepo := settings.NewSQLiteRepository(store.DB())
 	usageRepo := usage.NewSQLiteRepository(store.DB())
+	upstreamHTTPClient := netproxy.NewHTTPClient(settingsRepo)
 	conversationRepo := conversations.NewSQLiteRepository(store.DB())
 	policyRepo := policy.NewMemoryRepository()
 	authConnector := auth.NewOAuthConnector(auth.Config{})
@@ -84,13 +86,13 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	stateEvents := api.NewStateEventBus()
 	driverRegistry, err := registry.New(
 		[]accountdrv.AccountDriver{
-			accountdrv.NewOfficialDriver(http.DefaultClient, accountRepo),
+			accountdrv.NewOfficialDriver(upstreamHTTPClient, accountRepo),
 			accountdrv.NewAPIKeyDriver(),
 		},
 		[]usagedrv.UsageDriver{
-			builtin.NewOpenAIOfficialDriver(http.DefaultClient),
-			builtin.NewPPChatDriver(http.DefaultClient),
-			luadrv.NewDriver(http.DefaultClient, "", luadrv.WithManagedScriptRoot(luaScriptRoot)),
+			builtin.NewOpenAIOfficialDriver(upstreamHTTPClient),
+			builtin.NewPPChatDriver(upstreamHTTPClient),
+			luadrv.NewDriver(upstreamHTTPClient, "", luadrv.WithManagedScriptRoot(luaScriptRoot)),
 		},
 	)
 	if err != nil {
@@ -106,6 +108,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		api.WithAccountsStateEvents(stateEvents),
 		api.WithAccountsUsageRefresher(refreshOrchestrator),
 		api.WithAccountsSettings(settingsRepo),
+		api.WithAccountsHTTPClient(upstreamHTTPClient),
 		api.WithAccountsDriverRegistry(driverRegistry),
 		api.WithAccountsLuaScriptRoot(luaScriptRoot),
 	)
@@ -148,8 +151,22 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/settings/proxy/status", settingsHandler)
 	apiMux.Handle("/settings/proxy/enable", settingsHandler)
 	apiMux.Handle("/settings/proxy/disable", settingsHandler)
-	gatewayHandler := api.NewGatewayHandler(accountRepo, usageRepo, conversationRepo, api.WithGatewaySettings(settingsRepo), api.WithGatewayStateEvents(stateEvents))
-	responsesHandler := api.NewResponsesHandler(accountRepo, usageRepo, conversationRepo, api.WithResponsesSettings(settingsRepo), api.WithResponsesStateEvents(stateEvents))
+	gatewayHandler := api.NewGatewayHandler(
+		accountRepo,
+		usageRepo,
+		conversationRepo,
+		api.WithGatewaySettings(settingsRepo),
+		api.WithGatewayHTTPClient(upstreamHTTPClient),
+		api.WithGatewayStateEvents(stateEvents),
+	)
+	responsesHandler := api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversationRepo,
+		api.WithResponsesSettings(settingsRepo),
+		api.WithResponsesHTTPClient(upstreamHTTPClient),
+		api.WithResponsesStateEvents(stateEvents),
+	)
 	apiMux.Handle("/chat/completions", api.RequireProxyEnabled(gatewayHandler))
 	apiMux.Handle("/v1/chat/completions", api.RequireProxyEnabled(gatewayHandler))
 	apiMux.Handle("/responses", api.RequireProxyEnabled(responsesHandler))

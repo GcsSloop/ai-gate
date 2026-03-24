@@ -5,12 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 type PricingRule struct {
 	InputPerMillion  float64 `json:"input_per_million"`
 	OutputPerMillion float64 `json:"output_per_million"`
 }
+
+const (
+	UpstreamProxyModeSystem = "system"
+	UpstreamProxyModeDirect = "direct"
+	UpstreamProxyModeManual = "manual"
+)
 
 type AppSettings struct {
 	LaunchAtLogin                bool                   `json:"launch_at_login"`
@@ -22,6 +29,10 @@ type AppSettings struct {
 	UsageRequestTimeoutSeconds   int                    `json:"usage_request_timeout_seconds"`
 	ProxyHost                    string                 `json:"proxy_host"`
 	ProxyPort                    int                    `json:"proxy_port"`
+	UpstreamProxyMode            string                 `json:"upstream_proxy_mode"`
+	UpstreamProxyURL             string                 `json:"upstream_proxy_url"`
+	UpstreamProxyUsername        string                 `json:"upstream_proxy_username"`
+	UpstreamProxyPassword        string                 `json:"upstream_proxy_password"`
 	AutoFailoverEnabled          bool                   `json:"auto_failover_enabled"`
 	AutoBackupIntervalHours      int                    `json:"auto_backup_interval_hours"`
 	BackupRetentionCount         int                    `json:"backup_retention_count"`
@@ -59,6 +70,7 @@ func DefaultAppSettings() AppSettings {
 		UsageRequestTimeoutSeconds:   15,
 		ProxyHost:                    "127.0.0.1",
 		ProxyPort:                    6789,
+		UpstreamProxyMode:            UpstreamProxyModeSystem,
 		AutoFailoverEnabled:          true,
 		AutoBackupIntervalHours:      24,
 		BackupRetentionCount:         10,
@@ -69,7 +81,8 @@ func DefaultAppSettings() AppSettings {
 
 func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	row := r.db.QueryRow(
-		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
+		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port,
+		        upstream_proxy_mode, upstream_proxy_url, upstream_proxy_username, upstream_proxy_password, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
 		        language, theme_mode, provider_pricing, account_pricing
 		 FROM app_settings WHERE id = 1`,
 	)
@@ -83,6 +96,10 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	var usageRequestTimeoutSeconds int
 	var proxyHost string
 	var proxyPort int
+	var upstreamProxyMode string
+	var upstreamProxyURL string
+	var upstreamProxyUsername string
+	var upstreamProxyPassword string
 	var autoFailoverEnabled int
 	var autoBackupIntervalHours int
 	var backupRetentionCount int
@@ -101,6 +118,10 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		&usageRequestTimeoutSeconds,
 		&proxyHost,
 		&proxyPort,
+		&upstreamProxyMode,
+		&upstreamProxyURL,
+		&upstreamProxyUsername,
+		&upstreamProxyPassword,
 		&autoFailoverEnabled,
 		&autoBackupIntervalHours,
 		&backupRetentionCount,
@@ -134,6 +155,10 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		UsageRequestTimeoutSeconds:   usageRequestTimeoutSeconds,
 		ProxyHost:                    proxyHost,
 		ProxyPort:                    proxyPort,
+		UpstreamProxyMode:            upstreamProxyMode,
+		UpstreamProxyURL:             upstreamProxyURL,
+		UpstreamProxyUsername:        upstreamProxyUsername,
+		UpstreamProxyPassword:        upstreamProxyPassword,
 		AutoFailoverEnabled:          autoFailoverEnabled == 1,
 		AutoBackupIntervalHours:      autoBackupIntervalHours,
 		BackupRetentionCount:         backupRetentionCount,
@@ -156,9 +181,10 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 	}
 	_, err = r.db.Exec(
 		`INSERT INTO app_settings (
-			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
+			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port,
+			upstream_proxy_mode, upstream_proxy_url, upstream_proxy_username, upstream_proxy_password, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
 			language, theme_mode, provider_pricing, account_pricing, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			launch_at_login = excluded.launch_at_login,
 			silent_start = excluded.silent_start,
@@ -169,6 +195,10 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 			usage_request_timeout_seconds = excluded.usage_request_timeout_seconds,
 			proxy_host = excluded.proxy_host,
 			proxy_port = excluded.proxy_port,
+			upstream_proxy_mode = excluded.upstream_proxy_mode,
+			upstream_proxy_url = excluded.upstream_proxy_url,
+			upstream_proxy_username = excluded.upstream_proxy_username,
+			upstream_proxy_password = excluded.upstream_proxy_password,
 			auto_failover_enabled = excluded.auto_failover_enabled,
 			auto_backup_interval_hours = excluded.auto_backup_interval_hours,
 			backup_retention_count = excluded.backup_retention_count,
@@ -187,6 +217,10 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 		value.UsageRequestTimeoutSeconds,
 		value.ProxyHost,
 		value.ProxyPort,
+		value.UpstreamProxyMode,
+		value.UpstreamProxyURL,
+		value.UpstreamProxyUsername,
+		value.UpstreamProxyPassword,
 		boolToInt(value.AutoFailoverEnabled),
 		value.AutoBackupIntervalHours,
 		value.BackupRetentionCount,
@@ -258,6 +292,19 @@ func sanitize(value AppSettings) AppSettings {
 	}
 	if value.ProxyPort <= 0 {
 		value.ProxyPort = defaults.ProxyPort
+	}
+	switch value.UpstreamProxyMode {
+	case UpstreamProxyModeSystem, UpstreamProxyModeDirect, UpstreamProxyModeManual:
+	default:
+		value.UpstreamProxyMode = defaults.UpstreamProxyMode
+	}
+	value.UpstreamProxyURL = sanitizeOptionalString(value.UpstreamProxyURL)
+	value.UpstreamProxyUsername = sanitizeOptionalString(value.UpstreamProxyUsername)
+	value.UpstreamProxyPassword = sanitizeOptionalString(value.UpstreamProxyPassword)
+	if value.UpstreamProxyMode != UpstreamProxyModeManual {
+		value.UpstreamProxyURL = ""
+		value.UpstreamProxyUsername = ""
+		value.UpstreamProxyPassword = ""
 	}
 	if value.AutoBackupIntervalHours <= 0 {
 		value.AutoBackupIntervalHours = defaults.AutoBackupIntervalHours
@@ -357,4 +404,8 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func sanitizeOptionalString(value string) string {
+	return strings.TrimSpace(value)
 }

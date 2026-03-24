@@ -68,6 +68,14 @@ type ResponsesHandler struct {
 
 type ResponsesHandlerOption func(*ResponsesHandler)
 
+func WithResponsesHTTPClient(client *http.Client) ResponsesHandlerOption {
+	return func(handler *ResponsesHandler) {
+		if client != nil {
+			handler.client = client
+		}
+	}
+}
+
 func WithResponsesSettings(repo settings.ReadRepository) ResponsesHandlerOption {
 	return func(handler *ResponsesHandler) {
 		handler.settings = repo

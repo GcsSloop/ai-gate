@@ -600,6 +600,19 @@ func normalizeAppSettings(value settings.AppSettings) settings.AppSettings {
 	if value.ProxyPort <= 0 {
 		value.ProxyPort = defaults.ProxyPort
 	}
+	switch value.UpstreamProxyMode {
+	case settings.UpstreamProxyModeSystem, settings.UpstreamProxyModeDirect, settings.UpstreamProxyModeManual:
+	default:
+		value.UpstreamProxyMode = defaults.UpstreamProxyMode
+	}
+	value.UpstreamProxyURL = strings.TrimSpace(value.UpstreamProxyURL)
+	value.UpstreamProxyUsername = strings.TrimSpace(value.UpstreamProxyUsername)
+	value.UpstreamProxyPassword = strings.TrimSpace(value.UpstreamProxyPassword)
+	if value.UpstreamProxyMode != settings.UpstreamProxyModeManual {
+		value.UpstreamProxyURL = ""
+		value.UpstreamProxyUsername = ""
+		value.UpstreamProxyPassword = ""
+	}
 	if value.AutoBackupIntervalHours <= 0 {
 		value.AutoBackupIntervalHours = defaults.AutoBackupIntervalHours
 	}
