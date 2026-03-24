@@ -50,6 +50,18 @@ type accountsSettingsReader interface {
 
 type AccountsHandlerOption func(*AccountsHandler)
 
+func WithAccountsHTTPClient(client *http.Client) AccountsHandlerOption {
+	return func(handler *AccountsHandler) {
+		if client == nil {
+			return
+		}
+		handler.client = client
+		if handler.luaRuntime != nil {
+			handler.luaRuntime = luadrv.NewRuntime(handler.client, "")
+		}
+	}
+}
+
 func WithAccountsStateEvents(bus *StateEventBus) AccountsHandlerOption {
 	return func(handler *AccountsHandler) {
 		handler.stateEvents = bus

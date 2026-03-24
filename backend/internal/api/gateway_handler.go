@@ -53,6 +53,14 @@ type GatewayHandler struct {
 
 type GatewayHandlerOption func(*GatewayHandler)
 
+func WithGatewayHTTPClient(client *http.Client) GatewayHandlerOption {
+	return func(handler *GatewayHandler) {
+		if client != nil {
+			handler.client = client
+		}
+	}
+}
+
 func WithGatewaySettings(repo GatewayRoutingSettings) GatewayHandlerOption {
 	return func(handler *GatewayHandler) {
 		handler.settings = repo

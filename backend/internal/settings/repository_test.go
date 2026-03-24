@@ -63,6 +63,10 @@ func TestRepositoryPersistsAppSettingsAndQueue(t *testing.T) {
 		UsageRequestTimeoutSeconds:   22,
 		ProxyHost:                    "localhost",
 		ProxyPort:                    15721,
+		UpstreamProxyMode:            "manual",
+		UpstreamProxyURL:             "http://127.0.0.1:7890",
+		UpstreamProxyUsername:        "proxy-user",
+		UpstreamProxyPassword:        "proxy-pass",
 		AutoFailoverEnabled:          true,
 		AutoBackupIntervalHours:      12,
 		BackupRetentionCount:         7,
@@ -98,6 +102,35 @@ func TestRepositoryPersistsAppSettingsAndQueue(t *testing.T) {
 	wantQueue := []int64{3, 1, 8}
 	if !reflect.DeepEqual(gotQueue, wantQueue) {
 		t.Fatalf("ListFailoverQueue = %v, want %v", gotQueue, wantQueue)
+	}
+}
+
+func TestRepositorySanitizesUpstreamProxyMode(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := settings.NewSQLiteRepository(store.DB())
+
+	value := settings.DefaultAppSettings()
+	value.UpstreamProxyMode = "broken"
+	value.UpstreamProxyURL = "127.0.0.1:7890"
+	if err := repo.SaveAppSettings(value); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	got, err := repo.GetAppSettings()
+	if err != nil {
+		t.Fatalf("GetAppSettings returned error: %v", err)
+	}
+	if got.UpstreamProxyMode != settings.UpstreamProxyModeSystem {
+		t.Fatalf("UpstreamProxyMode = %q, want %q", got.UpstreamProxyMode, settings.UpstreamProxyModeSystem)
 	}
 }
 
