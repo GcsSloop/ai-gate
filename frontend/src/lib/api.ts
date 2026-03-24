@@ -16,6 +16,8 @@ export type AccountRecord = {
   is_active: boolean;
   supports_responses?: boolean;
   cooldown_remaining_seconds?: number;
+  routing_cooldown_remaining_seconds?: number;
+  routing_cooldown_reason?: string;
   balance: number;
   quota_remaining: number;
   rpm_remaining: number;
