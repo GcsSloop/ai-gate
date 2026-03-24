@@ -183,6 +183,10 @@ export function SettingsPage({
       provider_pricing: initialSettings.provider_pricing ?? {},
       account_pricing: initialSettings.account_pricing ?? {},
       usage_request_timeout_seconds: initialSettings.usage_request_timeout_seconds ?? 15,
+      upstream_proxy_mode: initialSettings.upstream_proxy_mode ?? "system",
+      upstream_proxy_url: initialSettings.upstream_proxy_url ?? "",
+      upstream_proxy_username: initialSettings.upstream_proxy_username ?? "",
+      upstream_proxy_password: initialSettings.upstream_proxy_password ?? "",
     });
   }, [initialSettings]);
 
@@ -578,6 +582,56 @@ export function SettingsPage({
                 />
               </label>
             </div>
+          </Card>
+
+          <Card className="settings-card" variant="borderless">
+            <SectionHeader
+              icon={<DesktopOutlined />}
+              title={t("上游网络代理")}
+              description={t("仅影响 AI Gate 发往上游服务商的网络请求，不影响 AI Gate 本地代理监听地址。")}
+            />
+            <div className="settings-stack">
+              <Radio.Group
+                value={draftSettings.upstream_proxy_mode ?? "system"}
+                onChange={(event) => updateDraft({ upstream_proxy_mode: event.target.value })}
+              >
+                <Radio value="system">{t("跟随系统")}</Radio>
+                <Radio value="direct">{t("直连")}</Radio>
+                <Radio value="manual">{t("手动指定")}</Radio>
+              </Radio.Group>
+              <Text type="secondary">{t("Clash / Mihomo 常见地址示例：")}http://127.0.0.1:7890</Text>
+            </div>
+            {draftSettings.upstream_proxy_mode === "manual" ? (
+              <div className="settings-field-grid">
+                <label className="settings-field">
+                  <span className="settings-field-label">{t("上游代理地址")}</span>
+                  <Input
+                    aria-label={t("上游代理地址")}
+                    value={draftSettings.upstream_proxy_url}
+                    onChange={(event) => updateDraft({ upstream_proxy_url: event.target.value })}
+                    placeholder="http://127.0.0.1:7890"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span className="settings-field-label">{t("上游代理用户名（可选）")}</span>
+                  <Input
+                    aria-label={t("上游代理用户名（可选）")}
+                    value={draftSettings.upstream_proxy_username}
+                    onChange={(event) => updateDraft({ upstream_proxy_username: event.target.value })}
+                    placeholder={t("留空则不使用认证")}
+                  />
+                </label>
+                <label className="settings-field">
+                  <span className="settings-field-label">{t("上游代理密码（可选）")}</span>
+                  <Input.Password
+                    aria-label={t("上游代理密码（可选）")}
+                    value={draftSettings.upstream_proxy_password}
+                    onChange={(event) => updateDraft({ upstream_proxy_password: event.target.value })}
+                    placeholder={t("留空则不使用认证")}
+                  />
+                </label>
+              </div>
+            ) : null}
           </Card>
 
         </div>
