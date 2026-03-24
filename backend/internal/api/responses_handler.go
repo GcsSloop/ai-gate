@@ -695,13 +695,15 @@ func (h *ResponsesHandler) buildCandidates(accountList []accounts.Account) []rou
 }
 
 func (h *ResponsesHandler) skipReasonForThinCandidate(candidate routing.Candidate) (string, bool) {
+	now := time.Now().UTC()
 	switch candidate.Account.Status {
 	case accounts.StatusDisabled:
 		return "status=disabled", true
 	case accounts.StatusInvalid:
 		return "status=invalid", true
-	case accounts.StatusCooldown:
-		return "status=cooldown", true
+	}
+	if candidate.Account.RoutingCooldownActive(now) {
+		return "routing_cooldown", true
 	}
 	if officialRemainingBelowThreshold(candidate) {
 		return "official_remaining_below_3pct", true
@@ -725,7 +727,10 @@ func officialRemainingBelowThreshold(candidate routing.Candidate) bool {
 }
 
 func shouldCooldownThinCandidate(candidate routing.Candidate, reason string) bool {
-	return reason == "official_remaining_below_3pct" || reason == "status=cooldown"
+	if reason == "routing_cooldown" {
+		return false
+	}
+	return reason == "official_remaining_below_3pct"
 }
 
 func shouldFailoverOnThinError(err error) bool {
@@ -744,11 +749,11 @@ func shouldFailoverOnThinStatus(status string) bool {
 
 func (h *ResponsesHandler) markThinCandidateCooldown(account accounts.Account, snapshot usage.Snapshot, reason string) (bool, error) {
 	until := computeThinCandidateCooldownUntil(snapshot, reason)
-	if account.Status == accounts.StatusCooldown && account.CooldownUntil != nil && until != nil && account.CooldownUntil.Equal(*until) {
+	if account.CooldownUntil != nil && until != nil && account.CooldownUntil.Equal(*until) && account.CooldownReason == reason {
 		return false, nil
 	}
-	account.Status = accounts.StatusCooldown
 	account.CooldownUntil = until
+	account.CooldownReason = reason
 	if err := h.accounts.Update(account); err != nil {
 		return false, err
 	}
@@ -771,7 +776,7 @@ func computeThinCandidateCooldownUntil(snapshot usage.Snapshot, reason string) *
 	case "rate_limited":
 		until := routing.ComputeCooldownUntil(now, routing.CooldownReasonRateLimit, nil, thinResponsesRateLimitCooldownWindow)
 		return &until
-	case "status=cooldown":
+	case "routing_cooldown":
 		resetAt := latestRelevantResetAt(snapshot)
 		if resetAt == nil {
 			return nil

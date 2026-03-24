@@ -301,34 +301,36 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	type responseItem struct {
-		ID                       int64                 `json:"id"`
-		ProviderType             accounts.ProviderType `json:"provider_type"`
-		AccountName              string                `json:"account_name"`
-		AuthMode                 accounts.AuthMode     `json:"auth_mode"`
-		SourceIcon               string                `json:"source_icon"`
-		BaseURL                  string                `json:"base_url"`
-		Status                   accounts.Status       `json:"status"`
-		CooldownRemainingSeconds *int64                `json:"cooldown_remaining_seconds,omitempty"`
-		Balance                  float64               `json:"balance"`
-		QuotaRemaining           float64               `json:"quota_remaining"`
-		RPMRemaining             float64               `json:"rpm_remaining"`
-		TPMRemaining             float64               `json:"tpm_remaining"`
-		HealthScore              float64               `json:"health_score"`
-		RecentErrorRate          float64               `json:"recent_error_rate"`
-		LastTotalTokens          float64               `json:"last_total_tokens"`
-		LastInputTokens          float64               `json:"last_input_tokens"`
-		LastOutputTokens         float64               `json:"last_output_tokens"`
-		ModelContextWindow       float64               `json:"model_context_window"`
-		PrimaryUsedPercent       float64               `json:"primary_used_percent"`
-		SecondaryUsedPercent     float64               `json:"secondary_used_percent"`
-		PrimaryResetsAt          *time.Time            `json:"primary_resets_at,omitempty"`
-		SecondaryResetsAt        *time.Time            `json:"secondary_resets_at,omitempty"`
-		AccountDriver            string                `json:"account_driver"`
-		UsageDriver              string                `json:"usage_driver"`
-		UsageConfigJSON          string                `json:"usage_config_json"`
-		Priority                 int                   `json:"priority"`
-		IsActive                 bool                  `json:"is_active"`
-		SupportsResponses        bool                  `json:"supports_responses"`
+		ID                              int64                 `json:"id"`
+		ProviderType                    accounts.ProviderType `json:"provider_type"`
+		AccountName                     string                `json:"account_name"`
+		AuthMode                        accounts.AuthMode     `json:"auth_mode"`
+		SourceIcon                      string                `json:"source_icon"`
+		BaseURL                         string                `json:"base_url"`
+		Status                          accounts.Status       `json:"status"`
+		CooldownRemainingSeconds        *int64                `json:"cooldown_remaining_seconds,omitempty"`
+		RoutingCooldownRemainingSeconds *int64                `json:"routing_cooldown_remaining_seconds,omitempty"`
+		RoutingCooldownReason           string                `json:"routing_cooldown_reason,omitempty"`
+		Balance                         float64               `json:"balance"`
+		QuotaRemaining                  float64               `json:"quota_remaining"`
+		RPMRemaining                    float64               `json:"rpm_remaining"`
+		TPMRemaining                    float64               `json:"tpm_remaining"`
+		HealthScore                     float64               `json:"health_score"`
+		RecentErrorRate                 float64               `json:"recent_error_rate"`
+		LastTotalTokens                 float64               `json:"last_total_tokens"`
+		LastInputTokens                 float64               `json:"last_input_tokens"`
+		LastOutputTokens                float64               `json:"last_output_tokens"`
+		ModelContextWindow              float64               `json:"model_context_window"`
+		PrimaryUsedPercent              float64               `json:"primary_used_percent"`
+		SecondaryUsedPercent            float64               `json:"secondary_used_percent"`
+		PrimaryResetsAt                 *time.Time            `json:"primary_resets_at,omitempty"`
+		SecondaryResetsAt               *time.Time            `json:"secondary_resets_at,omitempty"`
+		AccountDriver                   string                `json:"account_driver"`
+		UsageDriver                     string                `json:"usage_driver"`
+		UsageConfigJSON                 string                `json:"usage_config_json"`
+		Priority                        int                   `json:"priority"`
+		IsActive                        bool                  `json:"is_active"`
+		SupportsResponses               bool                  `json:"supports_responses"`
 	}
 
 	response := make([]responseItem, 0, len(accountList))
@@ -368,6 +370,8 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 				remaining = 0
 			}
 			item.CooldownRemainingSeconds = &remaining
+			item.RoutingCooldownRemainingSeconds = &remaining
+			item.RoutingCooldownReason = account.CooldownReason
 		}
 		response = append(response, item)
 	}
@@ -1413,6 +1417,7 @@ func (h *AccountsHandler) duplicateAccount(w http.ResponseWriter, r *http.Reques
 	duplicate.AccountName = nextDuplicatedAccountName(source.AccountName, accountList)
 	duplicate.IsActive = false
 	duplicate.CooldownUntil = nil
+	duplicate.CooldownReason = ""
 
 	if err := h.repo.Create(duplicate); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

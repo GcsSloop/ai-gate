@@ -55,10 +55,10 @@ func TestShouldProbeRecovery(t *testing.T) {
 	expired := now.Add(-1 * time.Minute)
 	future := now.Add(1 * time.Minute)
 
-	if !routing.ShouldProbeRecovery(accounts.Account{Status: accounts.StatusCooldown, CooldownUntil: &expired}, now) {
+	if !routing.ShouldProbeRecovery(accounts.Account{Status: accounts.StatusActive, CooldownUntil: &expired}, now) {
 		t.Fatal("ShouldProbeRecovery() = false, want true for expired cooldown")
 	}
-	if routing.ShouldProbeRecovery(accounts.Account{Status: accounts.StatusCooldown, CooldownUntil: &future}, now) {
+	if routing.ShouldProbeRecovery(accounts.Account{Status: accounts.StatusActive, CooldownUntil: &future}, now) {
 		t.Fatal("ShouldProbeRecovery() = true, want false for active cooldown")
 	}
 	if routing.ShouldProbeRecovery(accounts.Account{Status: accounts.StatusDisabled, CooldownUntil: &expired}, now) {

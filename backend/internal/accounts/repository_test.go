@@ -37,14 +37,15 @@ func TestSQLiteRepositoryCreateAndListAccounts(t *testing.T) {
 	}
 
 	thirdParty := accounts.Account{
-		ProviderType:  accounts.ProviderOpenAICompatible,
-		AccountName:   "mirror-east",
-		AuthMode:      accounts.AuthModeAPIKey,
-		Status:        accounts.StatusCooldown,
-		BaseURL:       "https://example.test/v1",
-		CredentialRef: "cred-2",
-		CooldownUntil: &cooldownUntil,
-		Priority:      5,
+		ProviderType:   accounts.ProviderOpenAICompatible,
+		AccountName:    "mirror-east",
+		AuthMode:       accounts.AuthModeAPIKey,
+		Status:         accounts.StatusActive,
+		BaseURL:        "https://example.test/v1",
+		CredentialRef:  "cred-2",
+		CooldownUntil:  &cooldownUntil,
+		CooldownReason: "capacity_failed",
+		Priority:       5,
 	}
 	if err := repo.Create(thirdParty); err != nil {
 		t.Fatalf("Create(thirdParty) returned error: %v", err)
@@ -62,11 +63,14 @@ func TestSQLiteRepositoryCreateAndListAccounts(t *testing.T) {
 	if got[0].AuthMode != accounts.AuthModeOAuth {
 		t.Fatalf("got[0].AuthMode = %q, want %q", got[0].AuthMode, accounts.AuthModeOAuth)
 	}
-	if got[1].Status != accounts.StatusCooldown {
-		t.Fatalf("got[1].Status = %q, want %q", got[1].Status, accounts.StatusCooldown)
+	if got[1].Status != accounts.StatusActive {
+		t.Fatalf("got[1].Status = %q, want %q", got[1].Status, accounts.StatusActive)
 	}
 	if got[1].CooldownUntil == nil || !got[1].CooldownUntil.Equal(cooldownUntil) {
 		t.Fatalf("got[1].CooldownUntil = %v, want %v", got[1].CooldownUntil, cooldownUntil)
+	}
+	if got[1].CooldownReason != "capacity_failed" {
+		t.Fatalf("got[1].CooldownReason = %q, want capacity_failed", got[1].CooldownReason)
 	}
 }
 

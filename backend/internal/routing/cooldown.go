@@ -21,11 +21,12 @@ func ComputeCooldownUntil(now time.Time, _ CooldownReason, resetAt *time.Time, f
 }
 
 func ShouldProbeRecovery(account accounts.Account, now time.Time) bool {
-	if account.Status != accounts.StatusCooldown {
+	switch account.Status {
+	case accounts.StatusDisabled, accounts.StatusInvalid:
 		return false
 	}
 	if account.CooldownUntil == nil {
-		return true
+		return false
 	}
 	return !account.CooldownUntil.UTC().After(now.UTC())
 }

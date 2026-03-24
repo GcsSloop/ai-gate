@@ -17,7 +17,7 @@ func TestRunCooldownRecoveryRestoresRecoveredAccounts(t *testing.T) {
 	expired := now.Add(-1 * time.Minute)
 	repo := &stubAccountRepo{
 		accounts: []accounts.Account{
-			{ID: 1, AccountName: "recoverable", Status: accounts.StatusCooldown, CooldownUntil: &expired},
+			{ID: 1, AccountName: "recoverable", Status: accounts.StatusActive, CooldownUntil: &expired, CooldownReason: "rate_limited"},
 		},
 	}
 
@@ -32,8 +32,11 @@ func TestRunCooldownRecoveryRestoresRecoveredAccounts(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	if repo.statusUpdates[1] != accounts.StatusActive {
-		t.Fatalf("status update = %q, want %q", repo.statusUpdates[1], accounts.StatusActive)
+	if repo.cooldownUpdates[1] != nil {
+		t.Fatalf("cooldown update = %v, want nil", repo.cooldownUpdates[1])
+	}
+	if repo.cooldownReasonUpdates[1] != "" {
+		t.Fatalf("cooldown reason update = %q, want empty", repo.cooldownReasonUpdates[1])
 	}
 }
 
@@ -44,7 +47,7 @@ func TestRunCooldownRecoveryExtendsCooldownOnFailedProbe(t *testing.T) {
 	expired := now.Add(-1 * time.Minute)
 	repo := &stubAccountRepo{
 		accounts: []accounts.Account{
-			{ID: 2, AccountName: "still-cooling", Status: accounts.StatusCooldown, CooldownUntil: &expired},
+			{ID: 2, AccountName: "still-cooling", Status: accounts.StatusActive, CooldownUntil: &expired},
 		},
 	}
 
@@ -91,9 +94,10 @@ func TestRunCooldownRecoverySkipsDisabledAndInvalid(t *testing.T) {
 }
 
 type stubAccountRepo struct {
-	accounts         []accounts.Account
-	statusUpdates    map[int64]accounts.Status
-	cooldownUpdates  map[int64]*time.Time
+	accounts              []accounts.Account
+	statusUpdates         map[int64]accounts.Status
+	cooldownUpdates       map[int64]*time.Time
+	cooldownReasonUpdates map[int64]string
 }
 
 func (r *stubAccountRepo) List() ([]accounts.Account, error) {
@@ -113,5 +117,13 @@ func (r *stubAccountRepo) UpdateCooldown(id int64, until *time.Time) error {
 		r.cooldownUpdates = make(map[int64]*time.Time)
 	}
 	r.cooldownUpdates[id] = until
+	return nil
+}
+
+func (r *stubAccountRepo) UpdateCooldownReason(id int64, reason string) error {
+	if r.cooldownReasonUpdates == nil {
+		r.cooldownReasonUpdates = make(map[int64]string)
+	}
+	r.cooldownReasonUpdates[id] = reason
 	return nil
 }

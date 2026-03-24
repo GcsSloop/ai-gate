@@ -1184,11 +1184,14 @@ func TestResponsesHandlerThinModeFailsOverAfterOfficialUsageLimit(t *testing.T) 
 	if err != nil {
 		t.Fatalf("GetByID returned error: %v", err)
 	}
-	if primaryAccount.Status != accounts.StatusCooldown {
-		t.Fatalf("status = %q, want %q", primaryAccount.Status, accounts.StatusCooldown)
+	if primaryAccount.Status != accounts.StatusActive {
+		t.Fatalf("status = %q, want %q", primaryAccount.Status, accounts.StatusActive)
 	}
 	if primaryAccount.CooldownUntil == nil {
 		t.Fatal("CooldownUntil = nil, want cooldown timestamp")
+	}
+	if primaryAccount.CooldownReason != "usage_limited" {
+		t.Fatalf("CooldownReason = %q, want usage_limited", primaryAccount.CooldownReason)
 	}
 	fallbackAccount, err := accountRepo.GetByID(2)
 	if err != nil {
@@ -1338,8 +1341,14 @@ func TestResponsesHandlerThinModeFailsOverAfterThirdPartyForbiddenQuotaError(t *
 	if err != nil {
 		t.Fatalf("GetByID returned error: %v", err)
 	}
-	if primaryAccount.Status != accounts.StatusCooldown {
-		t.Fatalf("status = %q, want %q", primaryAccount.Status, accounts.StatusCooldown)
+	if primaryAccount.Status != accounts.StatusActive {
+		t.Fatalf("status = %q, want %q", primaryAccount.Status, accounts.StatusActive)
+	}
+	if primaryAccount.CooldownUntil == nil {
+		t.Fatal("CooldownUntil = nil, want cooldown timestamp")
+	}
+	if primaryAccount.CooldownReason != "capacity_failed" {
+		t.Fatalf("CooldownReason = %q, want capacity_failed", primaryAccount.CooldownReason)
 	}
 
 	events, err := usageRepo.ListRecentEvents(usage.EventFilter{Limit: 10})

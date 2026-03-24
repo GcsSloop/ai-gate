@@ -43,9 +43,14 @@ type Account struct {
 	IsActive          bool
 	SupportsResponses bool
 	CooldownUntil     *time.Time
+	CooldownReason    string
 	CreatedAt         time.Time
 }
 
 func (a Account) NativeResponsesCapable() bool {
 	return a.SupportsResponses || a.ProviderType == ProviderOpenAIOfficial || a.AuthMode == AuthModeLocalImport
+}
+
+func (a Account) RoutingCooldownActive(now time.Time) bool {
+	return a.CooldownUntil != nil && a.CooldownUntil.UTC().After(now.UTC())
 }
