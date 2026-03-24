@@ -3,12 +3,13 @@ package settings_test
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/routing"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
-	"github.com/gcssloop/codex-router/backend/internal/routing"
 )
 
 func TestOrderCandidatesUsesExplicitQueueWhenEnabled(t *testing.T) {
@@ -34,7 +35,7 @@ func TestOrderCandidatesUsesExplicitQueueWhenEnabled(t *testing.T) {
 
 	ordered, err := settings.OrderCandidates(repo, []routing.Candidate{
 		{Account: accounts.Account{ID: 1, Status: accounts.StatusActive, Priority: 100}, Snapshot: usage.Snapshot{HealthScore: 0.9}},
-		{Account: accounts.Account{ID: 2, Status: accounts.StatusCooldown, Priority: 99}, Snapshot: usage.Snapshot{HealthScore: 0.8}},
+		{Account: accounts.Account{ID: 2, Status: accounts.StatusActive, Priority: 99, CooldownUntil: timePtr()}, Snapshot: usage.Snapshot{HealthScore: 0.8}},
 		{Account: accounts.Account{ID: 3, Status: accounts.StatusDegraded, Priority: 98}, Snapshot: usage.Snapshot{HealthScore: 0.7}},
 		{Account: accounts.Account{ID: 4, Status: accounts.StatusDisabled, Priority: 97}, Snapshot: usage.Snapshot{HealthScore: 0.6}},
 	})
@@ -48,6 +49,11 @@ func TestOrderCandidatesUsesExplicitQueueWhenEnabled(t *testing.T) {
 	if ordered[0].Account.ID != 3 || ordered[1].Account.ID != 1 {
 		t.Fatalf("ordered ids = [%d %d], want [3 1]", ordered[0].Account.ID, ordered[1].Account.ID)
 	}
+}
+
+func timePtr() *time.Time {
+	value := time.Now().UTC().Add(5 * time.Minute)
+	return &value
 }
 
 func TestOrderCandidatesFallsBackToScoredOrderWhenDisabled(t *testing.T) {

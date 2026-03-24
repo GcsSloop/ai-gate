@@ -12,14 +12,15 @@ type AccountRepository interface {
 	List() ([]accounts.Account, error)
 	UpdateStatus(id int64, status accounts.Status) error
 	UpdateCooldown(id int64, until *time.Time) error
+	UpdateCooldownReason(id int64, reason string) error
 }
 
 type ProbeFunc func(ctx context.Context, account accounts.Account) error
 
 type RecoveryJob struct {
-	repo           AccountRepository
-	probe          ProbeFunc
-	retryWindow    time.Duration
+	repo        AccountRepository
+	probe       ProbeFunc
+	retryWindow time.Duration
 }
 
 func NewRecoveryJob(repo AccountRepository, probe ProbeFunc, retryWindow time.Duration) *RecoveryJob {
@@ -49,10 +50,10 @@ func (j *RecoveryJob) Run(ctx context.Context, now time.Time) error {
 			continue
 		}
 
-		if err := j.repo.UpdateStatus(account.ID, accounts.StatusActive); err != nil {
+		if err := j.repo.UpdateCooldown(account.ID, nil); err != nil {
 			return err
 		}
-		if err := j.repo.UpdateCooldown(account.ID, nil); err != nil {
+		if err := j.repo.UpdateCooldownReason(account.ID, ""); err != nil {
 			return err
 		}
 	}

@@ -11,11 +11,17 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 	"github.com/gcssloop/codex-router/backend/internal/usage/normalize"
+	"github.com/gcssloop/codex-router/backend/internal/usagedrv"
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv/registry"
 )
 
 type accountLister interface {
 	List() ([]accounts.Account, error)
+}
+
+type cooldownWriter interface {
+	UpdateCooldown(id int64, until *time.Time) error
+	UpdateCooldownReason(id int64, reason string) error
 }
 
 type snapshotRepository interface {
@@ -177,6 +183,14 @@ func (o *Orchestrator) refreshOne(ctx context.Context, account accounts.Account,
 	if err := o.usage.Save(normalize.FromRaw(account.ID, raw, runAt)); err != nil {
 		return fmt.Errorf("save fresh snapshot: %w", err)
 	}
+	if writer, ok := o.accounts.(cooldownWriter); ok && account.CooldownUntil != nil && shouldClearCooldownAfterRefresh(account, raw) {
+		if err := writer.UpdateCooldown(account.ID, nil); err != nil {
+			return fmt.Errorf("clear routing cooldown: %w", err)
+		}
+		if err := writer.UpdateCooldownReason(account.ID, ""); err != nil {
+			return fmt.Errorf("clear routing cooldown reason: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -200,4 +214,23 @@ func (o *Orchestrator) markFailure(accountID int64, runAt time.Time, cause error
 		return fmt.Errorf("save stale snapshot: %w", err)
 	}
 	return cause
+}
+
+func shouldClearCooldownAfterRefresh(account accounts.Account, raw usagedrv.RawUsageResult) bool {
+	if account.AuthMode == accounts.AuthModeOAuth || account.AuthMode == accounts.AuthModeLocalImport {
+		return false
+	}
+	if raw.Limits.QuotaRemaining != nil {
+		return *raw.Limits.QuotaRemaining > 0
+	}
+	if raw.Limits.RPMRemaining != nil {
+		return *raw.Limits.RPMRemaining > 0
+	}
+	if raw.Limits.TPMRemaining != nil {
+		return *raw.Limits.TPMRemaining > 0
+	}
+	if raw.Limits.Balance != nil {
+		return *raw.Limits.Balance > 0
+	}
+	return false
 }

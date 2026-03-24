@@ -76,12 +76,13 @@ func TestAccountsHandler(t *testing.T) {
 
 	cooldownUntil := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second)
 	if err := repo.Create(accounts.Account{
-		ProviderType:  accounts.ProviderOpenAIOfficial,
-		AccountName:   "official-secondary",
-		AuthMode:      accounts.AuthModeOAuth,
-		CredentialRef: "cred-oauth",
-		Status:        accounts.StatusCooldown,
-		CooldownUntil: &cooldownUntil,
+		ProviderType:   accounts.ProviderOpenAIOfficial,
+		AccountName:    "official-secondary",
+		AuthMode:       accounts.AuthModeOAuth,
+		CredentialRef:  "cred-oauth",
+		Status:         accounts.StatusActive,
+		CooldownUntil:  &cooldownUntil,
+		CooldownReason: "rate_limited",
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -126,8 +127,11 @@ func TestAccountsHandler(t *testing.T) {
 	if listed[0]["usage_config_json"] != "{\"script\":\"adapters/vendor.lua\"}" {
 		t.Fatalf("usage_config_json = %v, want serialized config", listed[0]["usage_config_json"])
 	}
-	if listed[1]["cooldown_remaining_seconds"] == nil {
-		t.Fatal("cooldown_remaining_seconds missing from cooldown account")
+	if listed[1]["status"] != string(accounts.StatusActive) {
+		t.Fatalf("status = %v, want active", listed[1]["status"])
+	}
+	if listed[1]["routing_cooldown_remaining_seconds"] == nil {
+		t.Fatal("routing_cooldown_remaining_seconds missing from routed cooldown account")
 	}
 	if listed[1]["balance"].(float64) != 0 {
 		t.Fatalf("balance = %v, want 0", listed[1]["balance"])
@@ -616,7 +620,8 @@ func TestAccountsHandlerShareExportsPortablePayload(t *testing.T) {
 		AccountDriver:     "builtin_api_key",
 		UsageDriver:       "lua",
 		UsageConfigJSON:   `{"script":"adapters/vendor.lua"}`,
-		Status:            accounts.StatusCooldown,
+		Status:            accounts.StatusActive,
+		CooldownReason:    "capacity_failed",
 		Priority:          9,
 		IsActive:          true,
 		SupportsResponses: true,

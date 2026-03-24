@@ -18,6 +18,7 @@ type Repository interface {
 	SetActive(id int64) error
 	UpdateStatus(id int64, status Status) error
 	UpdateCooldown(id int64, until *time.Time) error
+	UpdateCooldownReason(id int64, reason string) error
 }
 
 type SQLiteRepository struct {
@@ -34,6 +35,7 @@ func NewSQLiteRepository(db *sql.DB, cipher ...*secrets.Cipher) *SQLiteRepositor
 }
 
 func (r *SQLiteRepository) Create(account Account) error {
+	account = normalizeDurableAccountState(account)
 	account.SupportsResponses = account.NativeResponsesCapable()
 	credentialRef, err := r.encrypt(account.CredentialRef)
 	if err != nil {
@@ -41,8 +43,8 @@ func (r *SQLiteRepository) Create(account Account) error {
 	}
 
 	_, err = r.db.Exec(
-		`INSERT INTO accounts (provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, supports_responses, cooldown_until)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO accounts (provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, supports_responses, cooldown_until, cooldown_reason)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		account.ProviderType,
 		account.AccountName,
 		account.SourceIcon,
@@ -57,6 +59,7 @@ func (r *SQLiteRepository) Create(account Account) error {
 		boolToInt(account.IsActive),
 		boolToInt(account.SupportsResponses),
 		nullTime(account.CooldownUntil),
+		account.CooldownReason,
 	)
 	if err != nil {
 		return fmt.Errorf("insert account: %w", err)
@@ -66,7 +69,7 @@ func (r *SQLiteRepository) Create(account Account) error {
 
 func (r *SQLiteRepository) List() ([]Account, error) {
 	records, err := r.db.Query(
-		`SELECT id, provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, supports_responses, cooldown_until, created_at
+		`SELECT id, provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, supports_responses, cooldown_until, cooldown_reason, created_at
 		 FROM accounts
 		 ORDER BY priority DESC, id ASC`,
 	)
@@ -98,6 +101,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 			&isActive,
 			&supportsResponses,
 			&cooldown,
+			&account.CooldownReason,
 			&account.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan account: %w", err)
@@ -111,6 +115,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 			value := cooldown.Time.UTC()
 			account.CooldownUntil = &value
 		}
+		account = normalizeDurableAccountState(account)
 		account.CredentialRef, err = r.decrypt(account.CredentialRef)
 		if err != nil {
 			return nil, err
@@ -128,7 +133,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 
 func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 	row := r.db.QueryRow(
-		`SELECT id, provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, supports_responses, cooldown_until, created_at
+		`SELECT id, provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, supports_responses, cooldown_until, cooldown_reason, created_at
 		 FROM accounts WHERE id = ?`,
 		id,
 	)
@@ -153,6 +158,7 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 		&isActive,
 		&supportsResponses,
 		&cooldown,
+		&account.CooldownReason,
 		&account.CreatedAt,
 	); err != nil {
 		return Account{}, fmt.Errorf("select account: %w", err)
@@ -166,6 +172,7 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 		value := cooldown.Time.UTC()
 		account.CooldownUntil = &value
 	}
+	account = normalizeDurableAccountState(account)
 	var err error
 	account.CredentialRef, err = r.decrypt(account.CredentialRef)
 	if err != nil {
@@ -175,6 +182,7 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 }
 
 func (r *SQLiteRepository) Update(account Account) error {
+	account = normalizeDurableAccountState(account)
 	account.SupportsResponses = account.NativeResponsesCapable()
 	credentialRef, err := r.encrypt(account.CredentialRef)
 	if err != nil {
@@ -183,7 +191,7 @@ func (r *SQLiteRepository) Update(account Account) error {
 
 	_, err = r.db.Exec(
 		`UPDATE accounts
-		 SET account_name = ?, source_icon = ?, base_url = ?, credential_ref = ?, account_driver = ?, usage_driver = ?, usage_config_json = ?, status = ?, priority = ?, is_active = ?, supports_responses = ?, cooldown_until = ?
+		 SET account_name = ?, source_icon = ?, base_url = ?, credential_ref = ?, account_driver = ?, usage_driver = ?, usage_config_json = ?, status = ?, priority = ?, is_active = ?, supports_responses = ?, cooldown_until = ?, cooldown_reason = ?
 		 WHERE id = ?`,
 		account.AccountName,
 		account.SourceIcon,
@@ -197,6 +205,7 @@ func (r *SQLiteRepository) Update(account Account) error {
 		boolToInt(account.IsActive),
 		boolToInt(account.SupportsResponses),
 		nullTime(account.CooldownUntil),
+		account.CooldownReason,
 		account.ID,
 	)
 	if err != nil {
@@ -289,6 +298,21 @@ func (r *SQLiteRepository) UpdateCooldown(id int64, until *time.Time) error {
 		return fmt.Errorf("update account cooldown: %w", err)
 	}
 	return nil
+}
+
+func (r *SQLiteRepository) UpdateCooldownReason(id int64, reason string) error {
+	_, err := r.db.Exec(`UPDATE accounts SET cooldown_reason = ? WHERE id = ?`, reason, id)
+	if err != nil {
+		return fmt.Errorf("update account cooldown reason: %w", err)
+	}
+	return nil
+}
+
+func normalizeDurableAccountState(account Account) Account {
+	if account.Status == StatusCooldown {
+		account.Status = StatusActive
+	}
+	return account
 }
 
 func boolToInt(value bool) int {

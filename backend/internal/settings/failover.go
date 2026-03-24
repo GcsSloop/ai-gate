@@ -1,6 +1,8 @@
 package settings
 
 import (
+	"time"
+
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/routing"
 )
@@ -50,9 +52,9 @@ func OrderCandidates(repo ReadRepository, candidates []routing.Candidate) ([]rou
 
 func eligibleForExplicitQueue(account accounts.Account) bool {
 	switch account.Status {
-	case accounts.StatusDisabled, accounts.StatusInvalid, accounts.StatusCooldown:
+	case accounts.StatusDisabled, accounts.StatusInvalid:
 		return false
 	default:
-		return true
+		return !account.RoutingCooldownActive(time.Now().UTC())
 	}
 }
