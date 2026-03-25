@@ -839,7 +839,6 @@ func TestResponsesHandlerThinModeDisablesSyntheticEndpoints(t *testing.T) {
 		{method: http.MethodPost, path: "/v1/responses/resp_1/cancel"},
 		{method: http.MethodDelete, path: "/v1/responses/resp_1"},
 		{method: http.MethodPost, path: "/v1/responses/input_tokens"},
-		{method: http.MethodPost, path: "/v1/responses/compact"},
 	}
 
 	for _, tc := range tests {
@@ -851,6 +850,56 @@ func TestResponsesHandlerThinModeDisablesSyntheticEndpoints(t *testing.T) {
 				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestResponsesHandlerThinModePassesThroughCompactSubpath(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses/compact" {
+			t.Fatalf("path = %q, want /v1/responses/compact", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %q, want POST", r.Method)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-third-party" {
+			t.Fatalf("authorization = %q, want Bearer sk-third-party", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll returned error: %v", err)
+		}
+		if string(body) != `{"model":"gpt-5.4","input":"compact-me"}` {
+			t.Fatalf("body = %s, want passthrough payload", string(body))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":"resp_compact_1","status":"completed","object":"response"}`)
+	}))
+	defer upstream.Close()
+
+	handler := newResponsesHandlerTestHandler(t, accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AccountName:       "team3",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/v1",
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
+		SupportsResponses: true,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewBufferString(`{"model":"gpt-5.4","input":"compact-me"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"resp_compact_1"`) {
+		t.Fatalf("body = %s, want compact passthrough response", rec.Body.String())
 	}
 }
 

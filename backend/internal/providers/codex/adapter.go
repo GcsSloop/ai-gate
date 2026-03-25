@@ -18,7 +18,11 @@ func NewAdapter(baseURL string) *Adapter {
 }
 
 func (a *Adapter) BuildResponsesRequest(ctx context.Context, credential string, accountID string, body []byte, stream bool) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/responses", bytes.NewReader(body))
+	return a.BuildResponsesEndpointRequest(ctx, credential, accountID, "/responses", body, stream)
+}
+
+func (a *Adapter) BuildResponsesEndpointRequest(ctx context.Context, credential string, accountID string, endpointPath string, body []byte, stream bool) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+endpointPath, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
