@@ -170,7 +170,9 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/chat/completions", api.RequireProxyEnabled(gatewayHandler))
 	apiMux.Handle("/v1/chat/completions", api.RequireProxyEnabled(gatewayHandler))
 	apiMux.Handle("/responses", api.RequireProxyEnabled(responsesHandler))
+	apiMux.Handle("/responses/", api.RequireProxyEnabled(responsesHandler))
 	apiMux.Handle("/v1/responses", api.RequireProxyEnabled(responsesHandler))
+	apiMux.Handle("/v1/responses/", api.RequireProxyEnabled(responsesHandler))
 	apiMux.Handle("/models", api.RequireProxyEnabled(responsesHandler))
 	apiMux.Handle("/v1/models", api.RequireProxyEnabled(responsesHandler))
 

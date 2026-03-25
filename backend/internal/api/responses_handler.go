@@ -113,6 +113,8 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && (r.URL.Path == "/v1/responses" || r.URL.Path == "/responses"):
 		h.handleResponses(w, r)
+	case r.Method == http.MethodPost && isTransparentResponsesSubpath(r.URL.Path):
+		h.handleResponsesTransparentSubpath(w, r)
 	case r.Method == http.MethodGet && (r.URL.Path == "/v1/models" || r.URL.Path == "/models"):
 		h.handleModels(w, r)
 	case r.Method == http.MethodGet && isModelDetailPath(r.URL.Path):
@@ -135,6 +137,49 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 	}
 	logRequestSummary("responses", r.URL.Path, r.Method, req.Model, r.RemoteAddr, summarizeResponsesRequestLog(req.Input, req.Tools, req.PreviousResponseID, req.Stream))
 	h.handleResponsesThin(w, r, req, rawBody)
+}
+
+func (h *ResponsesHandler) handleResponsesTransparentSubpath(w http.ResponseWriter, r *http.Request) {
+	account, err := h.selectThinGatewayAccount()
+	if err != nil {
+		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
+			writeThinGatewayUnsupported(w, err.Error())
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	if err := ensureOfficialAccountSession(r.Context(), h.client, h.accounts, &account); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	credential, err := resolveCredential(account)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	upstreamReq, err := h.buildThinResponsesProxySubpathRequest(r.Context(), account, credential, normalizedResponsesSubpath(r.URL.Path), rawBody)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	resp, err := h.client.Do(upstreamReq)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Request, req gatewayopenai.ResponsesRequest, rawBody []byte) {
@@ -380,6 +425,22 @@ func (h *ResponsesHandler) buildThinResponsesProxyRequest(ctx context.Context, a
 	})
 }
 
+func (h *ResponsesHandler) buildThinResponsesProxySubpathRequest(ctx context.Context, account accounts.Account, credential string, endpointPath string, rawBody []byte) (*http.Request, error) {
+	if usesOfficialCodexAdapter(account) {
+		accountID, err := resolveLocalAccountID(account)
+		if err != nil {
+			return nil, err
+		}
+		return providercodex.NewAdapter(resolveAccountBaseURL(account)).BuildResponsesEndpointRequest(ctx, credential, accountID, endpointPath, rawBody, false)
+	}
+	return provideropenai.NewAdapter(resolveAccountBaseURL(account)).BuildRequest(ctx, providers.Request{
+		Path:   endpointPath,
+		Method: http.MethodPost,
+		APIKey: credential,
+		Body:   rawBody,
+	})
+}
+
 func shouldRetryOfficialResponsesTransportError(account accounts.Account, err error) bool {
 	return usesOfficialCodexAdapter(account) && errors.Is(err, io.EOF)
 }
@@ -558,6 +619,17 @@ func copyResponseStreamWithObserver(w http.ResponseWriter, body io.Reader, obser
 
 func isEventStreamResponse(headers http.Header) bool {
 	return strings.Contains(strings.ToLower(headers.Get("Content-Type")), "text/event-stream")
+}
+
+func isTransparentResponsesSubpath(path string) bool {
+	return path == "/responses/compact" || path == "/v1/responses/compact"
+}
+
+func normalizedResponsesSubpath(path string) string {
+	if strings.HasPrefix(path, "/v1/") {
+		return strings.TrimPrefix(path, "/v1")
+	}
+	return path
 }
 
 func (h *ResponsesHandler) startThinAudit(r *http.Request, req gatewayopenai.ResponsesRequest, accountID int64, inputItems []gatewayopenai.ResponsesInputItem) (int64, int) {
