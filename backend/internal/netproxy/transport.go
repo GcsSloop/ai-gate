@@ -15,6 +15,20 @@ type settingsReader interface {
 	GetAppSettings() (settings.AppSettings, error)
 }
 
+var systemProxyResolver = resolveSystemProxy
+
+func SetSystemProxyResolverForTest(resolver func(*http.Request) (*url.URL, error)) func() {
+	previous := systemProxyResolver
+	if resolver == nil {
+		systemProxyResolver = resolveSystemProxy
+	} else {
+		systemProxyResolver = resolver
+	}
+	return func() {
+		systemProxyResolver = previous
+	}
+}
+
 func NewHTTPClient(repo settingsReader) *http.Client {
 	transport := defaultTransportClone()
 	transport.Proxy = func(req *http.Request) (*url.URL, error) {
@@ -44,6 +58,13 @@ func ResolveProxy(req *http.Request, repo settingsReader) (*url.URL, error) {
 		}
 		return proxyURL, nil
 	case "", settings.UpstreamProxyModeSystem:
+		proxyURL, err := systemProxyResolver(req)
+		if err != nil {
+			return nil, err
+		}
+		if proxyURL != nil {
+			return proxyURL, nil
+		}
 		return http.ProxyFromEnvironment(req)
 	default:
 		return http.ProxyFromEnvironment(req)
