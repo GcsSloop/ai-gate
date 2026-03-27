@@ -1829,7 +1829,7 @@ describe("AccountsPage", () => {
     expect(screen.getByText("90%")).toBeInTheDocument();
   });
 
-  it("formats official reset windows with time for 5H and date for 7D", async () => {
+  it("formats official reset windows with explicit time for both 5H and 7D", async () => {
     const now = new Date();
     const primaryReset = new Date(now.getTime() + 60 * 60 * 1000);
     const secondaryReset = new Date(now.getTime() + 2 * 60 * 60 * 1000);
@@ -1926,12 +1926,20 @@ describe("AccountsPage", () => {
           element?.textContent === primaryResetDateTime,
       ),
     ).toBeInTheDocument();
+    const secondaryResetTime = secondaryReset.toLocaleTimeString("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const secondaryResetDateTime = `${secondaryReset.toLocaleDateString("zh-CN", {
+      month: "numeric",
+      day: "numeric",
+    })} ${secondaryResetTime}`;
     expect(
       screen.getByText(
-        secondaryReset.toLocaleDateString("zh-CN", {
-          month: "numeric",
-          day: "numeric",
-        }),
+        (_content, element) =>
+          element?.textContent === secondaryResetTime ||
+          element?.textContent === secondaryResetDateTime,
       ),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "详情-official-main" }));
@@ -1948,12 +1956,13 @@ describe("AccountsPage", () => {
           element?.textContent === detailPrimaryDateTimeValue,
       ),
     ).toBeInTheDocument();
+    const detailSecondaryValue = `33% · ${secondaryResetTime}`;
+    const detailSecondaryDateTimeValue = `33% · ${secondaryResetDateTime}`;
     expect(
       within(detailModal).getByText(
-        `33% · ${secondaryReset.toLocaleDateString("zh-CN", {
-          month: "numeric",
-          day: "numeric",
-        })}`,
+        (_content, element) =>
+          element?.textContent === detailSecondaryValue ||
+          element?.textContent === detailSecondaryDateTimeValue,
       ),
     ).toBeInTheDocument();
   });
