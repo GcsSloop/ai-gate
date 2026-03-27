@@ -402,20 +402,6 @@ function formatResetTime(value: string | undefined, language: AppLanguage) {
   })}`;
 }
 
-function formatResetDate(value: string | undefined, language: AppLanguage) {
-  if (!value) {
-    return "--";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "--";
-  }
-  return date.toLocaleDateString(language, {
-    month: "numeric",
-    day: "numeric",
-  });
-}
-
 function formatTomorrowMidnight(language: AppLanguage, now = new Date()) {
   const nextMidnight = new Date(now);
   nextMidnight.setHours(24, 0, 0, 0);
@@ -1359,7 +1345,7 @@ export function AccountsPage({
           {
             label: "7D",
             remainingPercent: clampPercent(100 - record.secondary_used_percent),
-            resetLabel: formatResetDate(record.secondary_resets_at, language),
+            resetLabel: formatResetTime(record.secondary_resets_at, language),
           },
         ]
       : isPPChatAccount(record) && (record.ppchat_today_added_quota ?? 0) > 0
@@ -1844,7 +1830,7 @@ export function AccountsPage({
                   </Descriptions.Item>
                   <Descriptions.Item label={t("1 周剩余")}>
                     {(100 - detailAccount.secondary_used_percent).toFixed(0)}% ·{" "}
-                    {formatResetDate(detailAccount.secondary_resets_at, language)}
+                    {formatResetTime(detailAccount.secondary_resets_at, language)}
                   </Descriptions.Item>
                 </Descriptions>
               </Card>
