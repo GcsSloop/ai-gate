@@ -565,6 +565,41 @@ function isPPChatAccount(record: AccountRecord): boolean {
   );
 }
 
+function buildGenericUsageWindows(
+  record: AccountRecord,
+  language: AppLanguage,
+) {
+  const windows: Array<{
+    label: string;
+    remainingPercent: number;
+    resetLabel: string;
+  }> = [];
+
+  if (
+    record.primary_used_percent > 0 ||
+    Boolean(record.primary_resets_at)
+  ) {
+    windows.push({
+      label: "P1",
+      remainingPercent: clampPercent(100 - record.primary_used_percent),
+      resetLabel: formatResetTime(record.primary_resets_at, language),
+    });
+  }
+
+  if (
+    record.secondary_used_percent > 0 ||
+    Boolean(record.secondary_resets_at)
+  ) {
+    windows.push({
+      label: "P2",
+      remainingPercent: clampPercent(100 - record.secondary_used_percent),
+      resetLabel: formatResetTime(record.secondary_resets_at, language),
+    });
+  }
+
+  return windows;
+}
+
 type AccountsPageProps = {
   language?: AppLanguage;
   t?: Translator;
@@ -1350,9 +1385,9 @@ export function AccountsPage({
         ]
       : isPPChatAccount(record) && (record.ppchat_today_added_quota ?? 0) > 0
         ? [
-            {
-              label: "1D",
-              remainingPercent: clampPercent(
+          {
+            label: "1D",
+            remainingPercent: clampPercent(
                 ((record.ppchat_today_remaining_quota ?? 0) /
                   Math.max(record.ppchat_today_added_quota ?? 0, 1)) *
                   100,
@@ -1360,7 +1395,7 @@ export function AccountsPage({
               resetLabel: formatTomorrowMidnight(language),
             },
           ]
-        : [];
+        : buildGenericUsageWindows(record, language);
 
     return (
       <div

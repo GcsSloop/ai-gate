@@ -1693,6 +1693,90 @@ describe("AccountsPage", () => {
     ).toHaveClass("is-danger");
   });
 
+  it("renders fallback usage windows for lua-driven third-party accounts", async () => {
+    const accountList = [
+      {
+        id: 35,
+        provider_type: "openai-compatible",
+        account_name: "lua-main",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://w.ciykj.cn",
+        status: "active",
+        is_active: false,
+        priority: 1,
+        account_driver: "builtin_api_key",
+        usage_driver: "lua",
+        usage_config_json: '{"script":"managed:w.ciykj.cn"}',
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                account_id: 35,
+                balance: 0,
+                quota_remaining: 29994,
+                rpm_remaining: 0,
+                tpm_remaining: 0,
+                health_score: 1,
+                recent_error_rate: 0,
+                last_total_tokens: 0,
+                last_input_tokens: 0,
+                last_output_tokens: 0,
+                model_context_window: 0,
+                primary_used_percent: 23,
+                secondary_used_percent: 67,
+              },
+            ]),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("lua-main")).toBeInTheDocument();
+    expect(await screen.findByText("P1")).toBeInTheDocument();
+    expect(screen.getByText("P2")).toBeInTheDocument();
+    expect(screen.getByText("77%")).toBeInTheDocument();
+    expect(screen.getByText("33%")).toBeInTheDocument();
+  });
+
   it("keeps previous usage visible while a refresh is pending", async () => {
     const accountList = [
       {
