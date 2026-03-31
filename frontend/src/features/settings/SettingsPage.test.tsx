@@ -21,6 +21,8 @@ const baseSettings = {
   usage_request_timeout_seconds: 15,
   proxy_host: "127.0.0.1",
   proxy_port: 6789,
+  lan_share_enabled: false,
+  lan_share_ip_whitelist: "",
   upstream_proxy_mode: "system",
   upstream_proxy_url: "",
   upstream_proxy_username: "",
@@ -110,6 +112,10 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("tab", { name: "数据" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "关于" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "代理" }));
+    expect(screen.queryByRole("textbox", { name: "代理主机" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("switch", { name: "局域网共享" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "局域网共享" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "IP 白名单" }), { target: { value: "192.168.1.10\n192.168.1.0/24" } });
     expect(await screen.findByRole("switch", { name: "自动故障转移开关" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: "手动指定" }));
     fireEvent.change(screen.getByRole("textbox", { name: "上游代理地址" }), { target: { value: "http://127.0.0.1:7890" } });
@@ -131,6 +137,8 @@ describe("SettingsPage", () => {
           body: JSON.stringify({
             ...baseSettings,
             launch_at_login: true,
+            lan_share_enabled: true,
+            lan_share_ip_whitelist: "192.168.1.10\n192.168.1.0/24",
             upstream_proxy_mode: "manual",
             upstream_proxy_url: "http://127.0.0.1:7890",
             provider_pricing: { codex: { input_per_million: 4.5, output_per_million: 0 } },
@@ -142,6 +150,8 @@ describe("SettingsPage", () => {
     expect(applyDesktopAppSettings).toHaveBeenCalledWith({
       ...baseSettings,
       launch_at_login: true,
+      lan_share_enabled: true,
+      lan_share_ip_whitelist: "192.168.1.10\n192.168.1.0/24",
       upstream_proxy_mode: "manual",
       upstream_proxy_url: "http://127.0.0.1:7890",
       provider_pricing: { codex: { input_per_million: 4.5, output_per_million: 0 } },
@@ -150,6 +160,8 @@ describe("SettingsPage", () => {
     expect(onSettingsChanged).toHaveBeenCalledWith({
       ...baseSettings,
       launch_at_login: true,
+      lan_share_enabled: true,
+      lan_share_ip_whitelist: "192.168.1.10\n192.168.1.0/24",
       upstream_proxy_mode: "manual",
       upstream_proxy_url: "http://127.0.0.1:7890",
       provider_pricing: { codex: { input_per_million: 4.5, output_per_million: 0 } },
