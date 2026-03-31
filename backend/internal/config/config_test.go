@@ -62,11 +62,15 @@ func TestLoadParsesValuesFromEnv(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsNonLocalListenAddr(t *testing.T) {
+func TestLoadAllowsLANShareListenAddr(t *testing.T) {
 	t.Setenv("CODEX_ROUTER_LISTEN_ADDR", "0.0.0.0:6789")
+	t.Setenv("CODEX_ROUTER_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
 
-	_, err := config.Load()
-	if err == nil {
-		t.Fatal("Load returned nil error, want localhost validation error")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.ListenAddr != "0.0.0.0:6789" {
+		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, "0.0.0.0:6789")
 	}
 }

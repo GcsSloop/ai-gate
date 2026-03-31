@@ -328,6 +328,14 @@ func (h *SettingsHandler) saveAppSettings(w http.ResponseWriter, r *http.Request
 		return
 	}
 	payload = normalizeAppSettings(payload)
+	if err := validateLocalProxyHost(payload.ProxyHost); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateLANShareIPWhitelist(payload.LANShareIPWhitelist); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if proxyEndpointChanged(current, payload) {
 		if err := h.updateEnabledProxyConfig(payload); err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
@@ -339,6 +347,43 @@ func (h *SettingsHandler) saveAppSettings(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, h.appSettings())
+}
+
+func validateLocalProxyHost(host string) error {
+	normalized := strings.TrimSpace(host)
+	if normalized == "" {
+		return fmt.Errorf("proxy_host is required")
+	}
+	if strings.EqualFold(normalized, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(normalized)
+	if ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("proxy_host %q is not local-only, use 127.0.0.1 / localhost / ::1", host)
+}
+
+func validateLANShareIPWhitelist(raw string) error {
+	for _, entry := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ';'
+	}) {
+		normalized := strings.TrimSpace(entry)
+		if normalized == "" {
+			continue
+		}
+		if strings.EqualFold(normalized, "localhost") {
+			continue
+		}
+		if ip := net.ParseIP(normalized); ip != nil {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(normalized); err == nil {
+			continue
+		}
+		return fmt.Errorf("lan_share_ip_whitelist entry %q is invalid, use IP or CIDR", normalized)
+	}
+	return nil
 }
 
 func (h *SettingsHandler) getFailoverQueue(w http.ResponseWriter) {
@@ -600,6 +645,7 @@ func normalizeAppSettings(value settings.AppSettings) settings.AppSettings {
 	if value.ProxyPort <= 0 {
 		value.ProxyPort = defaults.ProxyPort
 	}
+	value.LANShareIPWhitelist = strings.TrimSpace(value.LANShareIPWhitelist)
 	switch value.UpstreamProxyMode {
 	case settings.UpstreamProxyModeSystem, settings.UpstreamProxyModeDirect, settings.UpstreamProxyModeManual:
 	default:

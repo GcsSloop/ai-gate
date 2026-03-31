@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -184,7 +186,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		}
 		http.NotFound(w, r)
 	})
-	mux.Handle("/ai-router/api/", withCORS(http.StripPrefix("/ai-router/api", apiMux)))
+	mux.Handle("/ai-router/api/", withCORS(withLANShareAccessControl(settingsRepo, http.StripPrefix("/ai-router/api", apiMux))))
 
 	appCtx, cancel := context.WithCancel(context.Background())
 	app := &App{listenAddr: cfg.ListenAddr, handler: mux, store: store, cancel: cancel}
@@ -313,6 +315,85 @@ func withCORS(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func withLANShareAccessControl(repo settings.ReadRepository, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if repo == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		appSettings, err := repo.GetAppSettings()
+		if err != nil || !appSettings.LANShareEnabled {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		remoteIP, err := remoteIPFromAddr(r.RemoteAddr)
+		if err != nil {
+			http.Error(w, "invalid remote address", http.StatusForbidden)
+			return
+		}
+		if remoteIP.IsLoopback() {
+			next.ServeHTTP(w, r)
+			return
+		}
+		allowed, err := ipAllowedByWhitelist(remoteIP, appSettings.LANShareIPWhitelist)
+		if err != nil {
+			log.Printf("lan share whitelist parse failed: %v", err)
+			http.Error(w, "lan share whitelist is invalid", http.StatusForbidden)
+			return
+		}
+		if !allowed {
+			http.Error(w, "remote address is not allowed by lan share whitelist", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func remoteIPFromAddr(addr string) (net.IP, error) {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return nil, err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil, fmt.Errorf("parse remote ip: %q", host)
+	}
+	return ip, nil
+}
+
+func ipAllowedByWhitelist(ip net.IP, raw string) (bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return true, nil
+	}
+	for _, entry := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ';'
+	}) {
+		normalized := strings.TrimSpace(entry)
+		if normalized == "" {
+			continue
+		}
+		if strings.EqualFold(normalized, "localhost") {
+			continue
+		}
+		if allowedIP := net.ParseIP(normalized); allowedIP != nil {
+			if allowedIP.Equal(ip) {
+				return true, nil
+			}
+			continue
+		}
+		_, network, err := net.ParseCIDR(normalized)
+		if err != nil {
+			return false, err
+		}
+		if network.Contains(ip) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (a *App) ListenAddr() string {
