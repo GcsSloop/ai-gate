@@ -71,9 +71,9 @@ func validateLocalListenAddr(addr string) error {
 	}
 	normalized := strings.TrimSpace(host)
 	switch normalized {
-	case "127.0.0.1", "localhost", "::1":
+	case "127.0.0.1", "localhost", "::1", "0.0.0.0", "::":
 		return nil
 	default:
-		return fmt.Errorf("listen addr %q is not local-only, use 127.0.0.1/localhost/::1", addr)
+		return fmt.Errorf("listen addr %q is invalid, use 127.0.0.1/localhost/::1 for local-only or 0.0.0.0/:: for LAN sharing", addr)
 	}
 }

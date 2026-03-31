@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -95,6 +95,7 @@ struct DesktopSettingsCache {
     launch_at_login: bool,
     silent_start: bool,
     close_to_tray: bool,
+    lan_share_enabled: bool,
     proxy_host: String,
     proxy_port: u16,
     main_window_size: Option<WindowSizeCache>,
@@ -106,6 +107,7 @@ impl Default for DesktopSettingsCache {
             launch_at_login: false,
             silent_start: false,
             close_to_tray: true,
+            lan_share_enabled: false,
             proxy_host: DEFAULT_PROXY_HOST.to_string(),
             proxy_port: DEFAULT_PROXY_PORT,
             main_window_size: None,
@@ -120,7 +122,7 @@ impl DesktopSettingsCache {
 
     fn updated_from_app_settings(mut self, value: AppSettingsPayload) -> Self {
         let defaults = Self::default();
-        let proxy_host = value.proxy_host.trim();
+        let proxy_host = sanitize_local_proxy_host(value.proxy_host.trim(), &defaults.proxy_host);
         let proxy_port = if value.proxy_port == 0 {
             defaults.proxy_port
         } else {
@@ -129,21 +131,47 @@ impl DesktopSettingsCache {
         self.launch_at_login = value.launch_at_login;
         self.silent_start = value.silent_start;
         self.close_to_tray = value.close_to_tray;
-        self.proxy_host = if proxy_host.is_empty() {
-            defaults.proxy_host
-        } else {
-            proxy_host.to_string()
-        };
+        self.lan_share_enabled = value.lan_share_enabled;
+        self.proxy_host = proxy_host;
         self.proxy_port = proxy_port;
         self
     }
 
     fn backend_addr(&self) -> String {
-        format!("{}:{}", self.proxy_host, self.proxy_port)
+        format_host_port(&self.proxy_host, self.proxy_port)
+    }
+
+    fn listen_addr(&self) -> String {
+        if self.lan_share_enabled {
+            format_host_port("0.0.0.0", self.proxy_port)
+        } else {
+            self.backend_addr()
+        }
     }
 
     fn backend_api_base(&self) -> String {
         format!("http://{}/ai-router/api", self.backend_addr())
+    }
+}
+
+fn sanitize_local_proxy_host(host: &str, fallback: &str) -> String {
+    let normalized = host.trim();
+    if normalized.is_empty() {
+        return fallback.to_string();
+    }
+    if normalized.eq_ignore_ascii_case("localhost") {
+        return normalized.to_string();
+    }
+    match normalized.parse::<IpAddr>() {
+        Ok(ip) if ip.is_loopback() => normalized.to_string(),
+        _ => fallback.to_string(),
+    }
+}
+
+fn format_host_port(host: &str, port: u16) -> String {
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V6(_)) => format!("[{host}]:{port}"),
+        _ => format!("{host}:{port}"),
     }
 }
 
@@ -153,6 +181,7 @@ struct AppSettingsPayload {
     silent_start: bool,
     close_to_tray: bool,
     show_proxy_switch_on_home: bool,
+    lan_share_enabled: bool,
     proxy_host: String,
     proxy_port: u16,
     auto_failover_enabled: bool,
@@ -802,17 +831,23 @@ fn load_settings_cache(settings_path: &Path) -> DesktopSettingsCache {
     let Ok(raw) = std::fs::read_to_string(settings_path) else {
         return DesktopSettingsCache::default();
     };
-    serde_json::from_str::<DesktopSettingsCache>(&raw).unwrap_or_default()
+    let mut cache = serde_json::from_str::<DesktopSettingsCache>(&raw).unwrap_or_default();
+    let fallback = DesktopSettingsCache::default().proxy_host;
+    cache.proxy_host = sanitize_local_proxy_host(&cache.proxy_host, &fallback);
+    if cache.proxy_port == 0 {
+        cache.proxy_port = DEFAULT_PROXY_PORT;
+    }
+    cache
 }
 
 fn persist_runtime_settings(cache: DesktopSettingsCache) -> Result<bool, String> {
     let mut runtime = DESKTOP_RUNTIME
         .lock()
         .map_err(|_| "desktop runtime lock poisoned".to_string())?;
-    let previous_addr = runtime.settings_cache.backend_addr();
+    let previous_addr = runtime.settings_cache.listen_addr();
     persist_settings_cache(&runtime.settings_path, &cache)?;
     runtime.settings_cache = cache.clone();
-    Ok(previous_addr != cache.backend_addr())
+    Ok(previous_addr != cache.listen_addr())
 }
 
 fn persist_settings_cache(
@@ -970,8 +1005,9 @@ fn spawn_sidecar() -> Result<(), String> {
         "info",
         "sidecar",
         format!(
-            "spawn requested path={} addr={}",
+            "spawn requested path={} listen_addr={} backend_addr={}",
             runtime.sidecar_path.display(),
+            runtime.settings_cache.listen_addr(),
             runtime.settings_cache.backend_addr()
         ),
     );
@@ -980,7 +1016,7 @@ fn spawn_sidecar() -> Result<(), String> {
     command
         .env(
             "CODEX_ROUTER_LISTEN_ADDR",
-            runtime.settings_cache.backend_addr(),
+            runtime.settings_cache.listen_addr(),
         )
         .env("CODEX_ROUTER_DATABASE_PATH", runtime.database_path)
         .env("CODEX_ROUTER_PARENT_HEARTBEAT", "stdin")
@@ -1961,27 +1997,34 @@ fn stop_sidecar_exit_watcher() {
 mod tests {
     use super::{
         append_recent_desktop_log, build_launch_agent_plist, clamp_recent_log_limit,
-        decode_chunked_body, format_timeout_error, format_tray_title, map_backend_io_error,
-        parse_account_menu_id, parse_accounts_response, parse_proxy_status_response,
-        proxy_menu_enabled_states, resolve_main_window_size, sanitize_main_window_size,
-        should_attempt_sidecar_recovery, should_refresh_tray_after_action,
-        should_restart_sidecar_after_exit, should_retry_sidecar_request,
-        should_trigger_resume_recovery, sidecar_candidate_paths, sidecar_creation_flags,
-        sidecar_request_with_recovery, sidecar_request_with_recovery_hooks,
-        sidecar_resource_name, tray_icon_bytes_for_platform, tray_icon_is_template_for_platform,
-        update_download_progress, wait_for_backend_ready_with_probe, window_close_action,
-        AppSettingsPayload, DesktopLogEntry, DesktopSettingsCache, HttpResponse,
-        UpdateInfoPayload, UpdateManagerState, UpdateProgressPayload, UpdateStatePayload,
-        UpdateStatus, WindowCloseAction, WindowSizeCache, MAIN_WINDOW_MIN_HEIGHT,
-        MAIN_WINDOW_MIN_WIDTH, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
-        TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
+        current_backend_addr, current_settings_cache, decode_chunked_body, format_timeout_error,
+        format_tray_title, load_settings_cache, map_backend_io_error, parse_account_menu_id, parse_accounts_response,
+        parse_proxy_status_response, proxy_menu_enabled_states, resolve_main_window_size,
+        request_backend, restart_sidecar_and_wait_ready,
+        sanitize_main_window_size, should_attempt_sidecar_recovery,
+        should_refresh_tray_after_action, should_restart_sidecar_after_exit,
+        should_retry_sidecar_request, should_trigger_resume_recovery, sidecar_candidate_paths,
+        sidecar_creation_flags, sidecar_request_with_recovery, sidecar_request_with_recovery_hooks,
+        sidecar_resource_name, shutdown_sidecar_with_reason, spawn_sidecar,
+        tray_icon_bytes_for_platform, tray_icon_is_template_for_platform,
+        update_download_progress, wait_for_backend_ready, wait_for_backend_ready_with_probe,
+        window_close_action, AppSettingsPayload, DesktopLogEntry, DesktopRuntime,
+        DesktopSettingsCache, HttpResponse, UpdateInfoPayload, UpdateManagerState,
+        UpdateProgressPayload, UpdateStatePayload, UpdateStatus, WindowCloseAction,
+        WindowSizeCache, DESKTOP_RUNTIME, MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH,
+        SIDECAR_CHILD, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME, TRAY_ICON_COLOR_BYTES,
+        TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER, persist_runtime_settings,
     };
     use std::cell::RefCell;
     use std::collections::VecDeque;
+    use std::fs;
+    use std::net::TcpListener;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::Duration;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parse_account_menu_id_accepts_valid_ids() {
@@ -2138,6 +2181,7 @@ mod tests {
         assert!(!cache.launch_at_login);
         assert!(!cache.silent_start);
         assert!(cache.close_to_tray);
+        assert!(!cache.lan_share_enabled);
         assert_eq!(cache.proxy_host, "127.0.0.1");
         assert_eq!(cache.proxy_port, 6789);
         assert_eq!(cache.main_window_size, None);
@@ -2155,7 +2199,8 @@ mod tests {
             silent_start: true,
             close_to_tray: false,
             show_proxy_switch_on_home: false,
-            proxy_host: "0.0.0.0".to_string(),
+            lan_share_enabled: true,
+            proxy_host: "localhost".to_string(),
             proxy_port: 18080,
             auto_failover_enabled: true,
             auto_backup_interval_hours: 12,
@@ -2166,9 +2211,11 @@ mod tests {
         assert!(cache.launch_at_login);
         assert!(cache.silent_start);
         assert!(!cache.close_to_tray);
-        assert_eq!(cache.proxy_host, "0.0.0.0");
+        assert!(cache.lan_share_enabled);
+        assert_eq!(cache.proxy_host, "localhost");
         assert_eq!(cache.proxy_port, 18080);
-        assert_eq!(cache.backend_addr(), "0.0.0.0:18080");
+        assert_eq!(cache.backend_addr(), "localhost:18080");
+        assert_eq!(cache.listen_addr(), "0.0.0.0:18080");
     }
 
     #[test]
@@ -2178,6 +2225,7 @@ mod tests {
             silent_start: false,
             close_to_tray: true,
             show_proxy_switch_on_home: true,
+            lan_share_enabled: false,
             proxy_host: "   ".to_string(),
             proxy_port: 0,
             auto_failover_enabled: false,
@@ -2188,6 +2236,60 @@ mod tests {
         let cache = DesktopSettingsCache::default().updated_from_app_settings(payload);
         assert_eq!(cache.proxy_host, "127.0.0.1");
         assert_eq!(cache.proxy_port, 6789);
+    }
+
+    #[test]
+    fn desktop_settings_cache_rejects_non_local_proxy_host() {
+        let payload = AppSettingsPayload {
+            launch_at_login: false,
+            silent_start: false,
+            close_to_tray: true,
+            show_proxy_switch_on_home: true,
+            lan_share_enabled: true,
+            proxy_host: "192.168.1.24".to_string(),
+            proxy_port: 18080,
+            auto_failover_enabled: false,
+            auto_backup_interval_hours: 24,
+            backup_retention_count: 10,
+        };
+
+        let cache = DesktopSettingsCache::default().updated_from_app_settings(payload);
+        assert_eq!(cache.proxy_host, "127.0.0.1");
+        assert_eq!(cache.proxy_port, 18080);
+        assert_eq!(cache.backend_addr(), "127.0.0.1:18080");
+        assert_eq!(cache.listen_addr(), "0.0.0.0:18080");
+    }
+
+    #[test]
+    fn load_settings_cache_sanitizes_non_local_proxy_host_from_disk() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("aigate-desktop-tests-{unique}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("desktop-settings.json");
+        fs::write(
+            &path,
+            r#"{
+  "launch_at_login": false,
+  "silent_start": false,
+  "close_to_tray": true,
+  "lan_share_enabled": true,
+  "proxy_host": "10.0.0.8",
+  "proxy_port": 16789
+}"#,
+        )
+        .expect("write settings cache");
+
+        let cache = load_settings_cache(&path);
+        assert!(cache.lan_share_enabled);
+        assert_eq!(cache.proxy_host, "127.0.0.1");
+        assert_eq!(cache.proxy_port, 16789);
+        assert_eq!(cache.backend_addr(), "127.0.0.1:16789");
+        assert_eq!(cache.listen_addr(), "0.0.0.0:16789");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
     }
 
     #[test]
@@ -2212,6 +2314,7 @@ mod tests {
             silent_start: false,
             close_to_tray: true,
             show_proxy_switch_on_home: true,
+            lan_share_enabled: false,
             proxy_host: "127.0.0.1".to_string(),
             proxy_port: 6789,
             auto_failover_enabled: false,
@@ -2228,6 +2331,109 @@ mod tests {
                 height: 900,
             })
         );
+    }
+
+    #[test]
+    #[ignore = "local smoke test that builds and launches routerd"]
+    fn lan_share_toggle_restarts_sidecar_without_changing_desktop_backend_addr() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!("aigate-lan-smoke-{unique}"));
+        fs::create_dir_all(&temp_root).expect("create smoke root");
+
+        let backend_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../backend");
+        let sidecar_path = temp_root.join("routerd-smoke");
+        let build_status = Command::new("go")
+            .args(["build", "-o"])
+            .arg(&sidecar_path)
+            .arg("./cmd/routerd")
+            .current_dir(&backend_root)
+            .status()
+            .expect("run go build");
+        assert!(build_status.success(), "go build routerd failed");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("allocate local port");
+        let port = listener.local_addr().expect("listener addr").port();
+        drop(listener);
+
+        let database_path = temp_root.join("aigate.sqlite");
+        let settings_path = temp_root.join("desktop-settings.json");
+
+        {
+            let mut runtime = DESKTOP_RUNTIME.lock().expect("desktop runtime lock");
+            *runtime = DesktopRuntime {
+                sidecar_path: sidecar_path.clone(),
+                database_path,
+                settings_path,
+                settings_cache: DesktopSettingsCache {
+                    proxy_host: "127.0.0.1".to_string(),
+                    proxy_port: port,
+                    lan_share_enabled: false,
+                    ..DesktopSettingsCache::default()
+                },
+            };
+        }
+
+        shutdown_sidecar_with_reason("smoke-cleanup-start");
+        spawn_sidecar().expect("spawn initial sidecar");
+        wait_for_backend_ready(&current_backend_addr(), Duration::from_secs(5))
+            .expect("wait for initial backend");
+        let initial_response =
+            request_backend("GET", "/ai-router/api/settings/app", "").expect("request app settings");
+        assert_eq!(initial_response.status, 200, "initial backend request should succeed");
+        let initial_pid = SIDECAR_CHILD
+            .lock()
+            .expect("sidecar child lock")
+            .as_ref()
+            .map(|child| child.id())
+            .expect("initial child pid");
+        assert_eq!(current_backend_addr(), format!("127.0.0.1:{port}"));
+
+        let mut shared_cache = current_settings_cache();
+        shared_cache.lan_share_enabled = true;
+        let restart_required =
+            persist_runtime_settings(shared_cache).expect("persist shared runtime settings");
+        assert!(restart_required, "lan toggle should require sidecar restart");
+        restart_sidecar_and_wait_ready().expect("restart sidecar after enabling lan");
+        let shared_pid = SIDECAR_CHILD
+            .lock()
+            .expect("sidecar child lock")
+            .as_ref()
+            .map(|child| child.id())
+            .expect("shared child pid");
+        assert_ne!(shared_pid, initial_pid, "sidecar pid should change after restart");
+        assert_eq!(current_backend_addr(), format!("127.0.0.1:{port}"));
+        assert_eq!(current_settings_cache().listen_addr(), format!("0.0.0.0:{port}"));
+        let shared_response =
+            request_backend("GET", "/ai-router/api/settings/app", "").expect("request shared app settings");
+        assert_eq!(shared_response.status, 200, "shared backend request should succeed");
+
+        let mut local_cache = current_settings_cache();
+        local_cache.lan_share_enabled = false;
+        let restart_required =
+            persist_runtime_settings(local_cache).expect("persist local runtime settings");
+        assert!(restart_required, "lan toggle reset should require sidecar restart");
+        restart_sidecar_and_wait_ready().expect("restart sidecar after disabling lan");
+        let final_pid = SIDECAR_CHILD
+            .lock()
+            .expect("sidecar child lock")
+            .as_ref()
+            .map(|child| child.id())
+            .expect("final child pid");
+        assert_ne!(final_pid, shared_pid, "sidecar pid should change after second restart");
+        assert_eq!(current_backend_addr(), format!("127.0.0.1:{port}"));
+        assert_eq!(current_settings_cache().listen_addr(), format!("127.0.0.1:{port}"));
+        let final_response =
+            request_backend("GET", "/ai-router/api/settings/app", "").expect("request local app settings");
+        assert_eq!(final_response.status, 200, "final backend request should succeed");
+
+        shutdown_sidecar_with_reason("smoke-cleanup-end");
+        let _ = fs::remove_file(&sidecar_path);
+        let _ = fs::remove_file(temp_root.join("desktop-settings.json"));
+        let _ = fs::remove_file(temp_root.join("aigate.sqlite"));
+        let _ = fs::remove_dir_all(&temp_root);
     }
 
     #[test]

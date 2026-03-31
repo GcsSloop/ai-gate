@@ -48,6 +48,8 @@ func TestSettingsHandlerGetAndPutAppSettings(t *testing.T) {
 		"usage_request_timeout_seconds": 18,
 		"proxy_host": "localhost",
 		"proxy_port": 15721,
+		"lan_share_enabled": true,
+		"lan_share_ip_whitelist": "192.168.1.10\n192.168.1.0/24",
 		"auto_failover_enabled": true,
 		"auto_backup_interval_hours": 12,
 		"backup_retention_count": 7,
@@ -66,8 +68,48 @@ func TestSettingsHandlerGetAndPutAppSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAppSettings returned error: %v", err)
 	}
-	if !stored.LaunchAtLogin || !stored.SilentStart || stored.CloseToTray || stored.ShowProxySwitchOnHome || stored.ShowHomeUpdateIndicator || stored.UsageRequestTimeoutSeconds != 18 || stored.ProxyHost != "localhost" || stored.ProxyPort != 15721 || !stored.AutoFailoverEnabled || stored.AutoBackupIntervalHours != 12 || stored.BackupRetentionCount != 7 || stored.Language != "en-US" || stored.ThemeMode != "dark" {
+	if !stored.LaunchAtLogin || !stored.SilentStart || stored.CloseToTray || stored.ShowProxySwitchOnHome || stored.ShowHomeUpdateIndicator || stored.UsageRequestTimeoutSeconds != 18 || stored.ProxyHost != "localhost" || stored.ProxyPort != 15721 || !stored.LANShareEnabled || stored.LANShareIPWhitelist != "192.168.1.10\n192.168.1.0/24" || !stored.AutoFailoverEnabled || stored.AutoBackupIntervalHours != 12 || stored.BackupRetentionCount != 7 || stored.Language != "en-US" || stored.ThemeMode != "dark" {
 		t.Fatalf("stored settings = %+v, want updated values", stored)
+	}
+}
+
+func TestSettingsHandlerRejectsInvalidLANShareWhitelist(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	handler, _ := newSettingsHandler(t)
+
+	body := strings.NewReader(`{
+		"launch_at_login": false,
+		"silent_start": false,
+		"close_to_tray": true,
+		"show_proxy_switch_on_home": true,
+		"show_home_update_indicator": true,
+		"status_refresh_interval_seconds": 60,
+		"usage_request_timeout_seconds": 15,
+		"proxy_host": "127.0.0.1",
+		"proxy_port": 6789,
+		"lan_share_enabled": true,
+		"lan_share_ip_whitelist": "bad-entry",
+		"upstream_proxy_mode": "system",
+		"upstream_proxy_url": "",
+		"upstream_proxy_username": "",
+		"upstream_proxy_password": "",
+		"auto_failover_enabled": true,
+		"auto_backup_interval_hours": 24,
+		"backup_retention_count": 10,
+		"language": "zh-CN",
+		"theme_mode": "system"
+	}`)
+	req := httptest.NewRequest(http.MethodPut, "/settings/app", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT /settings/app status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "lan_share_ip_whitelist") {
+		t.Fatalf("response body = %q, want lan_share_ip_whitelist validation error", rec.Body.String())
 	}
 }
 
@@ -607,6 +649,52 @@ func TestSettingsHandlerUpdatingProxyAddressRewritesEnabledConfig(t *testing.T) 
 	}
 
 	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "http://localhost:15721/ai-router/api"`)
+}
+
+func TestSettingsHandlerRejectsNonLocalProxyHost(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	handler, repo := newSettingsHandler(t)
+
+	body := strings.NewReader(`{
+		"launch_at_login": false,
+		"silent_start": false,
+		"close_to_tray": true,
+		"show_proxy_switch_on_home": true,
+		"show_home_update_indicator": true,
+		"status_refresh_interval_seconds": 60,
+		"usage_request_timeout_seconds": 15,
+		"proxy_host": "192.168.1.24",
+		"proxy_port": 6789,
+		"upstream_proxy_mode": "system",
+		"upstream_proxy_url": "",
+		"upstream_proxy_username": "",
+		"upstream_proxy_password": "",
+		"auto_failover_enabled": true,
+		"auto_backup_interval_hours": 24,
+		"backup_retention_count": 10,
+		"language": "zh-CN",
+		"theme_mode": "system"
+	}`)
+	req := httptest.NewRequest(http.MethodPut, "/settings/app", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT /settings/app status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "proxy_host") {
+		t.Fatalf("response body = %q, want proxy_host validation error", rec.Body.String())
+	}
+
+	stored, err := repo.GetAppSettings()
+	if err != nil {
+		t.Fatalf("GetAppSettings returned error: %v", err)
+	}
+	if stored.ProxyHost != settings.DefaultAppSettings().ProxyHost {
+		t.Fatalf("stored proxy_host = %q, want %q", stored.ProxyHost, settings.DefaultAppSettings().ProxyHost)
+	}
 }
 
 func TestSettingsHandlerProxyDisableDetachesEvenWhenConfigChanged(t *testing.T) {

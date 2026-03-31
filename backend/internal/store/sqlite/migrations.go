@@ -124,6 +124,8 @@ var schemaStatements = []string{
 		usage_request_timeout_seconds INTEGER NOT NULL DEFAULT 15,
 		proxy_host TEXT NOT NULL DEFAULT '127.0.0.1',
 		proxy_port INTEGER NOT NULL DEFAULT 6789,
+		lan_share_enabled INTEGER NOT NULL DEFAULT 0,
+		lan_share_ip_whitelist TEXT NOT NULL DEFAULT '',
 		upstream_proxy_mode TEXT NOT NULL DEFAULT 'system',
 		upstream_proxy_url TEXT NOT NULL DEFAULT '',
 		upstream_proxy_username TEXT NOT NULL DEFAULT '',

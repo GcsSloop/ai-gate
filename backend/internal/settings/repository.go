@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -29,6 +30,8 @@ type AppSettings struct {
 	UsageRequestTimeoutSeconds   int                    `json:"usage_request_timeout_seconds"`
 	ProxyHost                    string                 `json:"proxy_host"`
 	ProxyPort                    int                    `json:"proxy_port"`
+	LANShareEnabled              bool                   `json:"lan_share_enabled"`
+	LANShareIPWhitelist          string                 `json:"lan_share_ip_whitelist"`
 	UpstreamProxyMode            string                 `json:"upstream_proxy_mode"`
 	UpstreamProxyURL             string                 `json:"upstream_proxy_url"`
 	UpstreamProxyUsername        string                 `json:"upstream_proxy_username"`
@@ -70,6 +73,8 @@ func DefaultAppSettings() AppSettings {
 		UsageRequestTimeoutSeconds:   15,
 		ProxyHost:                    "127.0.0.1",
 		ProxyPort:                    6789,
+		LANShareEnabled:              false,
+		LANShareIPWhitelist:          "",
 		UpstreamProxyMode:            UpstreamProxyModeSystem,
 		AutoFailoverEnabled:          true,
 		AutoBackupIntervalHours:      24,
@@ -81,7 +86,7 @@ func DefaultAppSettings() AppSettings {
 
 func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	row := r.db.QueryRow(
-		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port,
+		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, lan_share_enabled, lan_share_ip_whitelist,
 		        upstream_proxy_mode, upstream_proxy_url, upstream_proxy_username, upstream_proxy_password, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
 		        language, theme_mode, provider_pricing, account_pricing
 		 FROM app_settings WHERE id = 1`,
@@ -96,6 +101,8 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	var usageRequestTimeoutSeconds int
 	var proxyHost string
 	var proxyPort int
+	var lanShareEnabled int
+	var lanShareIPWhitelist string
 	var upstreamProxyMode string
 	var upstreamProxyURL string
 	var upstreamProxyUsername string
@@ -118,6 +125,8 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		&usageRequestTimeoutSeconds,
 		&proxyHost,
 		&proxyPort,
+		&lanShareEnabled,
+		&lanShareIPWhitelist,
 		&upstreamProxyMode,
 		&upstreamProxyURL,
 		&upstreamProxyUsername,
@@ -155,6 +164,8 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		UsageRequestTimeoutSeconds:   usageRequestTimeoutSeconds,
 		ProxyHost:                    proxyHost,
 		ProxyPort:                    proxyPort,
+		LANShareEnabled:              lanShareEnabled == 1,
+		LANShareIPWhitelist:          lanShareIPWhitelist,
 		UpstreamProxyMode:            upstreamProxyMode,
 		UpstreamProxyURL:             upstreamProxyURL,
 		UpstreamProxyUsername:        upstreamProxyUsername,
@@ -181,10 +192,10 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 	}
 	_, err = r.db.Exec(
 		`INSERT INTO app_settings (
-			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port,
+			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, lan_share_enabled, lan_share_ip_whitelist,
 			upstream_proxy_mode, upstream_proxy_url, upstream_proxy_username, upstream_proxy_password, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
 			language, theme_mode, provider_pricing, account_pricing, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			launch_at_login = excluded.launch_at_login,
 			silent_start = excluded.silent_start,
@@ -195,6 +206,8 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 			usage_request_timeout_seconds = excluded.usage_request_timeout_seconds,
 			proxy_host = excluded.proxy_host,
 			proxy_port = excluded.proxy_port,
+			lan_share_enabled = excluded.lan_share_enabled,
+			lan_share_ip_whitelist = excluded.lan_share_ip_whitelist,
 			upstream_proxy_mode = excluded.upstream_proxy_mode,
 			upstream_proxy_url = excluded.upstream_proxy_url,
 			upstream_proxy_username = excluded.upstream_proxy_username,
@@ -217,6 +230,8 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 		value.UsageRequestTimeoutSeconds,
 		value.ProxyHost,
 		value.ProxyPort,
+		boolToInt(value.LANShareEnabled),
+		value.LANShareIPWhitelist,
 		value.UpstreamProxyMode,
 		value.UpstreamProxyURL,
 		value.UpstreamProxyUsername,
@@ -293,6 +308,7 @@ func sanitize(value AppSettings) AppSettings {
 	if value.ProxyPort <= 0 {
 		value.ProxyPort = defaults.ProxyPort
 	}
+	value.LANShareIPWhitelist = sanitizeIPWhitelist(value.LANShareIPWhitelist)
 	switch value.UpstreamProxyMode {
 	case UpstreamProxyModeSystem, UpstreamProxyModeDirect, UpstreamProxyModeManual:
 	default:
@@ -408,4 +424,47 @@ func boolToInt(value bool) int {
 
 func sanitizeOptionalString(value string) string {
 	return strings.TrimSpace(value)
+}
+
+func sanitizeIPWhitelist(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+
+	seen := make(map[string]struct{})
+	items := make([]string, 0)
+	for _, raw := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ';'
+	}) {
+		entry := strings.TrimSpace(raw)
+		if entry == "" || isLoopbackWhitelistEntry(entry) {
+			continue
+		}
+		if _, ok := seen[entry]; ok {
+			continue
+		}
+		seen[entry] = struct{}{}
+		items = append(items, entry)
+	}
+	return strings.Join(items, "\n")
+}
+
+func isLoopbackWhitelistEntry(value string) bool {
+	if strings.EqualFold(value, "localhost") {
+		return true
+	}
+	if ip, err := strconv.Unquote(value); err == nil {
+		value = ip
+	}
+	parsed := strings.TrimSpace(value)
+	ip := net.ParseIP(parsed)
+	if ip != nil {
+		return ip.IsLoopback()
+	}
+	if strings.Contains(parsed, "/") {
+		if _, cidr, err := net.ParseCIDR(parsed); err == nil && cidr.IP.IsLoopback() {
+			return true
+		}
+	}
+	return false
 }
