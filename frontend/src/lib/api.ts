@@ -228,6 +228,8 @@ export type AppSettings = {
   usage_request_timeout_seconds?: number;
   proxy_host: string;
   proxy_port: number;
+  lan_share_enabled: boolean;
+  lan_share_ip_whitelist: string;
   upstream_proxy_mode?: "system" | "direct" | "manual";
   upstream_proxy_url?: string;
   upstream_proxy_username?: string;

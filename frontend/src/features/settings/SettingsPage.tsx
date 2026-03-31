@@ -49,6 +49,7 @@ import appLogo from "../../assets/aigate_1024_1024.png";
 import { UpdateCard } from "../updates/UpdateCard";
 
 const { Text, Title } = Typography;
+const { TextArea } = Input;
 
 type SettingsTabKey = "general" | "proxy" | "advanced" | "about";
 
@@ -183,6 +184,8 @@ export function SettingsPage({
       provider_pricing: initialSettings.provider_pricing ?? {},
       account_pricing: initialSettings.account_pricing ?? {},
       usage_request_timeout_seconds: initialSettings.usage_request_timeout_seconds ?? 15,
+      lan_share_enabled: initialSettings.lan_share_enabled ?? false,
+      lan_share_ip_whitelist: initialSettings.lan_share_ip_whitelist ?? "",
       upstream_proxy_mode: initialSettings.upstream_proxy_mode ?? "system",
       upstream_proxy_url: initialSettings.upstream_proxy_url ?? "",
       upstream_proxy_username: initialSettings.upstream_proxy_username ?? "",
@@ -530,7 +533,9 @@ export function SettingsPage({
                 {t("本地代理")} {proxyEnabled ? t("已开启") : t("未开启")}
               </Tag>
               <Text type="secondary">
-                {t("当前地址")} {draftSettings.proxy_host}:{draftSettings.proxy_port}
+                {draftSettings.lan_share_enabled
+                  ? `${t("本机地址")} 127.0.0.1:${draftSettings.proxy_port} · ${t("局域网地址")} 0.0.0.0:${draftSettings.proxy_port}`
+                  : `${t("当前地址")} 127.0.0.1:${draftSettings.proxy_port}`}
               </Text>
             </div>
             <div className="settings-stack">
@@ -552,6 +557,14 @@ export function SettingsPage({
                 onChange={(checked) => void handleProxyToggle(checked)}
               />
               <ToggleRow
+                icon={<DesktopOutlined />}
+                title={t("局域网共享")}
+                description={t("开启后使用当前端口对局域网开放访问；本机 127.0.0.1 / ::1 永远允许访问。")}
+                label={t("局域网共享")}
+                checked={draftSettings.lan_share_enabled}
+                onChange={(checked) => updateDraft({ lan_share_enabled: checked })}
+              />
+              <ToggleRow
                 icon={<SwapOutlined />}
                 title={t("自动故障转移开关")}
                 description={t("开启后按账户页当前排序自动切换；关闭后仅使用当前选中的账户。")}
@@ -562,15 +575,6 @@ export function SettingsPage({
             </div>
             <div className="settings-field-grid">
               <label className="settings-field">
-                <span className="settings-field-label">{t("代理主机")}</span>
-                <Input
-                  aria-label={t("代理主机")}
-                  value={draftSettings.proxy_host}
-                  onChange={(event) => updateDraft({ proxy_host: event.target.value })}
-                  placeholder="127.0.0.1"
-                />
-              </label>
-              <label className="settings-field">
                 <span className="settings-field-label">{t("代理端口")}</span>
                 <InputNumber
                   aria-label={t("代理端口")}
@@ -580,6 +584,19 @@ export function SettingsPage({
                   onChange={(value) => updateDraft({ proxy_port: Number(value) || 6789 })}
                   className="settings-number"
                 />
+              </label>
+              <label className="settings-field">
+                <span className="settings-field-label">{t("IP 白名单")}</span>
+                <TextArea
+                  aria-label={t("IP 白名单")}
+                  value={draftSettings.lan_share_ip_whitelist}
+                  onChange={(event) => updateDraft({ lan_share_ip_whitelist: event.target.value })}
+                  placeholder={`192.168.1.10\n192.168.1.0/24`}
+                  autoSize={{ minRows: 4, maxRows: 6 }}
+                />
+                <Text type="secondary">
+                  {t("每行一个 IP 或 CIDR。留空表示允许所有局域网来源；本机 127.0.0.1 / ::1 始终放行。")}
+                </Text>
               </label>
             </div>
           </Card>
