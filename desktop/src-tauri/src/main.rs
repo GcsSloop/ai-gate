@@ -2082,12 +2082,11 @@ mod tests {
         should_retry_sidecar_request, should_trigger_resume_recovery, shutdown_sidecar_with_reason,
         sidecar_candidate_paths, sidecar_creation_flags, sidecar_request_with_recovery,
         sidecar_request_with_recovery_hooks, sidecar_resource_name, spawn_sidecar,
-        tray_icon_bytes_for_platform, tray_icon_is_template_for_platform,
-        try_acquire_resume_recovery_slot, update_download_progress, wait_for_backend_ready,
-        wait_for_backend_ready_with_probe, window_close_action, AppSettingsPayload,
-        DesktopLogEntry, DesktopRuntime, DesktopSettingsCache, HttpResponse, UpdateInfoPayload,
-        UpdateManagerState, UpdateProgressPayload, UpdateStatePayload, UpdateStatus,
-        WindowCloseAction, WindowSizeCache, DESKTOP_RUNTIME, MAIN_WINDOW_MIN_HEIGHT,
+        tray_icon_bytes_for_platform, tray_icon_is_template_for_platform, update_download_progress,
+        wait_for_backend_ready, wait_for_backend_ready_with_probe, window_close_action,
+        AppSettingsPayload, DesktopLogEntry, DesktopRuntime, DesktopSettingsCache, HttpResponse,
+        UpdateInfoPayload, UpdateManagerState, UpdateProgressPayload, UpdateStatePayload,
+        UpdateStatus, WindowCloseAction, WindowSizeCache, DESKTOP_RUNTIME, MAIN_WINDOW_MIN_HEIGHT,
         MAIN_WINDOW_MIN_WIDTH, SIDECAR_CHILD, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
         TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
     };
@@ -2097,10 +2096,15 @@ mod tests {
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(target_os = "macos")]
+    use super::try_acquire_resume_recovery_slot;
+    #[cfg(target_os = "macos")]
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 
     #[test]
     fn parse_account_menu_id_accepts_valid_ids() {
@@ -2773,6 +2777,7 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn resume_recovery_slot_coalesces_overlapping_runs() {
         let running = AtomicBool::new(false);
@@ -2807,6 +2812,7 @@ mod tests {
         assert!(!running.load(Ordering::SeqCst));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn resume_recovery_slot_skips_recent_duplicate_triggers() {
         let running = AtomicBool::new(false);
@@ -2826,6 +2832,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "local smoke test that stresses duplicate resume recovery triggers"]
     fn resume_recovery_slot_stays_single_flight_under_burst_triggers() {
