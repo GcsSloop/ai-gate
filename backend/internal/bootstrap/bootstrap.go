@@ -339,15 +339,21 @@ func withLANShareAccessControl(repo settings.ReadRepository, next http.Handler) 
 			next.ServeHTTP(w, r)
 			return
 		}
-		allowed, err := ipAllowedByWhitelist(remoteIP, appSettings.LANShareIPWhitelist)
-		if err != nil {
-			log.Printf("lan share whitelist parse failed: %v", err)
-			http.Error(w, "lan share whitelist is invalid", http.StatusForbidden)
-			return
-		}
-		if !allowed {
-			http.Error(w, "remote address is not allowed by lan share whitelist", http.StatusForbidden)
-			return
+		if appSettings.LANShareWhitelistEnabled {
+			if strings.TrimSpace(appSettings.LANShareIPWhitelist) == "" {
+				http.Error(w, "remote address is not allowed by lan share whitelist", http.StatusForbidden)
+				return
+			}
+			allowed, err := ipAllowedByWhitelist(remoteIP, appSettings.LANShareIPWhitelist)
+			if err != nil {
+				log.Printf("lan share whitelist parse failed: %v", err)
+				http.Error(w, "lan share whitelist is invalid", http.StatusForbidden)
+				return
+			}
+			if !allowed {
+				http.Error(w, "remote address is not allowed by lan share whitelist", http.StatusForbidden)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

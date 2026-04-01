@@ -64,6 +64,7 @@ func TestRepositoryPersistsAppSettingsAndQueue(t *testing.T) {
 		ProxyHost:                    "localhost",
 		ProxyPort:                    15721,
 		LANShareEnabled:              true,
+		LANShareWhitelistEnabled:     true,
 		LANShareIPWhitelist:          "192.168.1.10\n192.168.1.0/24",
 		UpstreamProxyMode:            "manual",
 		UpstreamProxyURL:             "http://127.0.0.1:7890",
@@ -121,6 +122,7 @@ func TestRepositorySanitizesLANShareWhitelist(t *testing.T) {
 	repo := settings.NewSQLiteRepository(store.DB())
 	value := settings.DefaultAppSettings()
 	value.LANShareEnabled = true
+	value.LANShareWhitelistEnabled = true
 	value.LANShareIPWhitelist = " 192.168.1.10 \n\n127.0.0.1\n192.168.1.10\n10.0.0.0/24 "
 	if err := repo.SaveAppSettings(value); err != nil {
 		t.Fatalf("SaveAppSettings returned error: %v", err)
@@ -132,6 +134,38 @@ func TestRepositorySanitizesLANShareWhitelist(t *testing.T) {
 	}
 	if got.LANShareIPWhitelist != "192.168.1.10\n10.0.0.0/24" {
 		t.Fatalf("LANShareIPWhitelist = %q, want %q", got.LANShareIPWhitelist, "192.168.1.10\n10.0.0.0/24")
+	}
+}
+
+func TestRepositoryPreservesWhitelistEnabledWithoutEntries(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := settings.NewSQLiteRepository(store.DB())
+	value := settings.DefaultAppSettings()
+	value.LANShareEnabled = true
+	value.LANShareWhitelistEnabled = true
+	value.LANShareIPWhitelist = ""
+	if err := repo.SaveAppSettings(value); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	got, err := repo.GetAppSettings()
+	if err != nil {
+		t.Fatalf("GetAppSettings returned error: %v", err)
+	}
+	if !got.LANShareWhitelistEnabled {
+		t.Fatalf("LANShareWhitelistEnabled = false, want true")
+	}
+	if got.LANShareIPWhitelist != "" {
+		t.Fatalf("LANShareIPWhitelist = %q, want empty", got.LANShareIPWhitelist)
 	}
 }
 
