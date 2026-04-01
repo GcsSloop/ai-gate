@@ -126,6 +126,7 @@ func (s *Store) migrate() error {
 		{table: "app_settings", name: "status_refresh_interval_seconds", definition: "INTEGER NOT NULL DEFAULT 60"},
 		{table: "app_settings", name: "usage_request_timeout_seconds", definition: "INTEGER NOT NULL DEFAULT 15"},
 		{table: "app_settings", name: "lan_share_enabled", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "app_settings", name: "lan_share_whitelist_enabled", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "app_settings", name: "lan_share_ip_whitelist", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "app_settings", name: "upstream_proxy_mode", definition: "TEXT NOT NULL DEFAULT 'system'"},
 		{table: "app_settings", name: "upstream_proxy_url", definition: "TEXT NOT NULL DEFAULT ''"},

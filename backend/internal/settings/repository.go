@@ -31,6 +31,7 @@ type AppSettings struct {
 	ProxyHost                    string                 `json:"proxy_host"`
 	ProxyPort                    int                    `json:"proxy_port"`
 	LANShareEnabled              bool                   `json:"lan_share_enabled"`
+	LANShareWhitelistEnabled     bool                   `json:"lan_share_whitelist_enabled"`
 	LANShareIPWhitelist          string                 `json:"lan_share_ip_whitelist"`
 	UpstreamProxyMode            string                 `json:"upstream_proxy_mode"`
 	UpstreamProxyURL             string                 `json:"upstream_proxy_url"`
@@ -74,6 +75,7 @@ func DefaultAppSettings() AppSettings {
 		ProxyHost:                    "127.0.0.1",
 		ProxyPort:                    6789,
 		LANShareEnabled:              false,
+		LANShareWhitelistEnabled:     false,
 		LANShareIPWhitelist:          "",
 		UpstreamProxyMode:            UpstreamProxyModeSystem,
 		AutoFailoverEnabled:          true,
@@ -86,7 +88,7 @@ func DefaultAppSettings() AppSettings {
 
 func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	row := r.db.QueryRow(
-		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, lan_share_enabled, lan_share_ip_whitelist,
+		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, lan_share_enabled, lan_share_whitelist_enabled, lan_share_ip_whitelist,
 		        upstream_proxy_mode, upstream_proxy_url, upstream_proxy_username, upstream_proxy_password, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
 		        language, theme_mode, provider_pricing, account_pricing
 		 FROM app_settings WHERE id = 1`,
@@ -102,6 +104,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	var proxyHost string
 	var proxyPort int
 	var lanShareEnabled int
+	var lanShareWhitelistEnabled int
 	var lanShareIPWhitelist string
 	var upstreamProxyMode string
 	var upstreamProxyURL string
@@ -126,6 +129,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		&proxyHost,
 		&proxyPort,
 		&lanShareEnabled,
+		&lanShareWhitelistEnabled,
 		&lanShareIPWhitelist,
 		&upstreamProxyMode,
 		&upstreamProxyURL,
@@ -165,6 +169,7 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		ProxyHost:                    proxyHost,
 		ProxyPort:                    proxyPort,
 		LANShareEnabled:              lanShareEnabled == 1,
+		LANShareWhitelistEnabled:     lanShareWhitelistEnabled == 1,
 		LANShareIPWhitelist:          lanShareIPWhitelist,
 		UpstreamProxyMode:            upstreamProxyMode,
 		UpstreamProxyURL:             upstreamProxyURL,
@@ -192,10 +197,10 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 	}
 	_, err = r.db.Exec(
 		`INSERT INTO app_settings (
-			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, lan_share_enabled, lan_share_ip_whitelist,
+			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, lan_share_enabled, lan_share_whitelist_enabled, lan_share_ip_whitelist,
 			upstream_proxy_mode, upstream_proxy_url, upstream_proxy_username, upstream_proxy_password, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
 			language, theme_mode, provider_pricing, account_pricing, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			launch_at_login = excluded.launch_at_login,
 			silent_start = excluded.silent_start,
@@ -207,6 +212,7 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 			proxy_host = excluded.proxy_host,
 			proxy_port = excluded.proxy_port,
 			lan_share_enabled = excluded.lan_share_enabled,
+			lan_share_whitelist_enabled = excluded.lan_share_whitelist_enabled,
 			lan_share_ip_whitelist = excluded.lan_share_ip_whitelist,
 			upstream_proxy_mode = excluded.upstream_proxy_mode,
 			upstream_proxy_url = excluded.upstream_proxy_url,
@@ -231,6 +237,7 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 		value.ProxyHost,
 		value.ProxyPort,
 		boolToInt(value.LANShareEnabled),
+		boolToInt(value.LANShareWhitelistEnabled),
 		value.LANShareIPWhitelist,
 		value.UpstreamProxyMode,
 		value.UpstreamProxyURL,
