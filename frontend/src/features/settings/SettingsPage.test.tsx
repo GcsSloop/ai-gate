@@ -22,6 +22,7 @@ const baseSettings = {
   proxy_host: "127.0.0.1",
   proxy_port: 6789,
   lan_share_enabled: false,
+  lan_share_whitelist_enabled: false,
   lan_share_ip_whitelist: "",
   upstream_proxy_mode: "system",
   upstream_proxy_url: "",
@@ -115,7 +116,13 @@ describe("SettingsPage", () => {
     expect(screen.queryByRole("textbox", { name: "代理主机" })).not.toBeInTheDocument();
     expect(await screen.findByRole("switch", { name: "局域网共享" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("switch", { name: "局域网共享" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "IP 白名单" }), { target: { value: "192.168.1.10\n192.168.1.0/24" } });
+    fireEvent.click(await screen.findByRole("switch", { name: "是否开启白名单" }));
+    fireEvent.click(screen.getByRole("button", { name: "新增白名单" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "白名单 IP" }), { target: { value: "192.168.1.10" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认白名单弹窗" }));
+    fireEvent.click(screen.getByRole("button", { name: "新增白名单" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "白名单 IP" }), { target: { value: "192.168.1.0/24" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认白名单弹窗" }));
     expect(await screen.findByRole("switch", { name: "自动故障转移开关" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: "手动指定" }));
     fireEvent.change(screen.getByRole("textbox", { name: "上游代理地址" }), { target: { value: "http://127.0.0.1:7890" } });
@@ -138,6 +145,7 @@ describe("SettingsPage", () => {
             ...baseSettings,
             launch_at_login: true,
             lan_share_enabled: true,
+            lan_share_whitelist_enabled: true,
             lan_share_ip_whitelist: "192.168.1.10\n192.168.1.0/24",
             upstream_proxy_mode: "manual",
             upstream_proxy_url: "http://127.0.0.1:7890",
@@ -151,6 +159,7 @@ describe("SettingsPage", () => {
       ...baseSettings,
       launch_at_login: true,
       lan_share_enabled: true,
+      lan_share_whitelist_enabled: true,
       lan_share_ip_whitelist: "192.168.1.10\n192.168.1.0/24",
       upstream_proxy_mode: "manual",
       upstream_proxy_url: "http://127.0.0.1:7890",
@@ -161,12 +170,59 @@ describe("SettingsPage", () => {
       ...baseSettings,
       launch_at_login: true,
       lan_share_enabled: true,
+      lan_share_whitelist_enabled: true,
       lan_share_ip_whitelist: "192.168.1.10\n192.168.1.0/24",
       upstream_proxy_mode: "manual",
       upstream_proxy_url: "http://127.0.0.1:7890",
       provider_pricing: { codex: { input_per_million: 4.5, output_per_million: 0 } },
       account_pricing: { "1": { input_per_million: 0, output_per_million: 15.2 } },
     });
+  });
+
+  it("shows whitelist card only after lan share is enabled and supports edit and delete with modals", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/database/backups") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(getAppMetadata).mockResolvedValue({
+      name: "AI Gate",
+      version: "0.1.0",
+      description: "桌面代理与路由控制台",
+      author: "GcsSloop",
+    });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
+    vi.mocked(applyDesktopAppSettings).mockResolvedValue(null);
+
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "代理" }));
+    expect(screen.queryByText("白名单")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("switch", { name: "局域网共享" }));
+    expect(await screen.findByText("白名单")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "是否开启白名单" }));
+    fireEvent.click(screen.getByRole("button", { name: "新增白名单" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "白名单 IP" }), { target: { value: "10.0.0.8" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认白名单弹窗" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑白名单 10.0.0.8" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "白名单 IP" }), { target: { value: "10.0.0.9" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认白名单弹窗" }));
+    expect(await screen.findByText("10.0.0.9")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除白名单 10.0.0.9" }));
+    fireEvent.click(await screen.findByRole("button", { name: "确认删除白名单" }));
+    await waitFor(() => {
+      expect(screen.queryByText("10.0.0.9")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("当前未配置任何 IP，保存后将拒绝所有非本机局域网访问。")).toBeInTheDocument();
   });
 
   it("supports database backup actions and about metadata", async () => {

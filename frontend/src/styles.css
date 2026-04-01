@@ -696,6 +696,38 @@ html[data-theme-mode="dark"] .stats-chart-shell {
   margin-bottom: 28px;
 }
 
+.settings-whitelist-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.settings-whitelist-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-strong);
+}
+
+.settings-whitelist-value {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.settings-whitelist-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .settings-field {
   display: grid;
   gap: 8px;

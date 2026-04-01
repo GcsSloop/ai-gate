@@ -8,11 +8,13 @@ import {
   DatabaseOutlined,
   DeleteOutlined,
   DesktopOutlined,
+  EditOutlined,
   EyeInvisibleOutlined,
   FileTextOutlined,
   InfoCircleOutlined,
   MoreOutlined,
   PoweroffOutlined,
+  PlusOutlined,
   RollbackOutlined,
   SaveOutlined,
   SwapOutlined,
@@ -49,7 +51,6 @@ import appLogo from "../../assets/aigate_1024_1024.png";
 import { UpdateCard } from "../updates/UpdateCard";
 
 const { Text, Title } = Typography;
-const { TextArea } = Input;
 
 type SettingsTabKey = "general" | "proxy" | "advanced" | "about";
 
@@ -96,6 +97,20 @@ function triggerTextDownload(filename: string, content: string) {
   anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+function parseWhitelistEntries(raw: string): string[] {
+  return raw
+    .split(/[\n\r,;]+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function stringifyWhitelistEntries(entries: string[]): string {
+  return entries
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .join("\n");
 }
 
 function validateExchangePayload(raw: string): void {
@@ -176,6 +191,9 @@ export function SettingsPage({
   const [importingSQL, setImportingSQL] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
+  const [whitelistModalOpen, setWhitelistModalOpen] = useState(false);
+  const [whitelistModalValue, setWhitelistModalValue] = useState("");
+  const [editingWhitelistIndex, setEditingWhitelistIndex] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabKey>(initialTab);
 
   useEffect(() => {
@@ -185,6 +203,7 @@ export function SettingsPage({
       account_pricing: initialSettings.account_pricing ?? {},
       usage_request_timeout_seconds: initialSettings.usage_request_timeout_seconds ?? 15,
       lan_share_enabled: initialSettings.lan_share_enabled ?? false,
+      lan_share_whitelist_enabled: initialSettings.lan_share_whitelist_enabled ?? false,
       lan_share_ip_whitelist: initialSettings.lan_share_ip_whitelist ?? "",
       upstream_proxy_mode: initialSettings.upstream_proxy_mode ?? "system",
       upstream_proxy_url: initialSettings.upstream_proxy_url ?? "",
@@ -240,6 +259,71 @@ export function SettingsPage({
       ...current,
       ...patch,
     }));
+  }
+
+  const whitelistEntries = parseWhitelistEntries(draftSettings.lan_share_ip_whitelist);
+  const whitelistEnabled = draftSettings.lan_share_whitelist_enabled ?? false;
+
+  function updateWhitelistEntries(entries: string[]) {
+    updateDraft({ lan_share_ip_whitelist: stringifyWhitelistEntries(entries) });
+  }
+
+  function openCreateWhitelistModal() {
+    setEditingWhitelistIndex(null);
+    setWhitelistModalValue("");
+    setWhitelistModalOpen(true);
+  }
+
+  function openEditWhitelistModal(index: number) {
+    setEditingWhitelistIndex(index);
+    setWhitelistModalValue(whitelistEntries[index] ?? "");
+    setWhitelistModalOpen(true);
+  }
+
+  function closeWhitelistModal() {
+    setWhitelistModalOpen(false);
+    setWhitelistModalValue("");
+    setEditingWhitelistIndex(null);
+  }
+
+  function submitWhitelistModal() {
+    const nextValue = whitelistModalValue.trim();
+    if (!nextValue) {
+      void messageApi.error(t("请输入白名单 IP 或 CIDR"));
+      return;
+    }
+
+    const nextEntries = [...whitelistEntries];
+    const duplicateIndex = nextEntries.findIndex((entry, index) => entry === nextValue && index !== editingWhitelistIndex);
+    if (duplicateIndex >= 0) {
+      void messageApi.error(t("该白名单条目已存在"));
+      return;
+    }
+
+    if (editingWhitelistIndex === null) {
+      nextEntries.push(nextValue);
+    } else {
+      nextEntries[editingWhitelistIndex] = nextValue;
+    }
+    updateWhitelistEntries(nextEntries);
+    closeWhitelistModal();
+  }
+
+  function handleDeleteWhitelistEntry(index: number) {
+    const value = whitelistEntries[index];
+    if (!value) {
+      return;
+    }
+    Modal.confirm({
+      title: t("删除白名单"),
+      content: t("确认删除该白名单条目？"),
+      okText: t("删除"),
+      cancelText: t("取消"),
+      okButtonProps: { danger: true, "aria-label": t("确认删除白名单") } as any,
+      onOk: () => {
+        updateWhitelistEntries(whitelistEntries.filter((_, itemIndex) => itemIndex !== index));
+      },
+    });
   }
 
   function updateProviderPricing(providerType: string, field: "input_per_million" | "output_per_million", value: number | null) {
@@ -585,21 +669,65 @@ export function SettingsPage({
                   className="settings-number"
                 />
               </label>
-              <label className="settings-field">
-                <span className="settings-field-label">{t("IP 白名单")}</span>
-                <TextArea
-                  aria-label={t("IP 白名单")}
-                  value={draftSettings.lan_share_ip_whitelist}
-                  onChange={(event) => updateDraft({ lan_share_ip_whitelist: event.target.value })}
-                  placeholder={`192.168.1.10\n192.168.1.0/24`}
-                  autoSize={{ minRows: 4, maxRows: 6 }}
-                />
-                <Text type="secondary">
-                  {t("每行一个 IP 或 CIDR。留空表示允许所有局域网来源；本机 127.0.0.1 / ::1 始终放行。")}
-                </Text>
-              </label>
             </div>
           </Card>
+
+          {draftSettings.lan_share_enabled ? (
+            <Card className="settings-card" variant="borderless">
+              <SectionHeader
+                icon={<ControlOutlined />}
+                title={t("白名单")}
+                description={t("仅控制局域网共享的远端访问来源；本机 127.0.0.1 / ::1 始终放行。")}
+                actions={
+                  whitelistEnabled ? (
+                    <Button icon={<PlusOutlined />} aria-label={t("新增白名单")} onClick={openCreateWhitelistModal}>
+                      {t("新增")}
+                    </Button>
+                  ) : null
+                }
+              />
+              <div className="settings-stack">
+                <ToggleRow
+                  icon={<ControlOutlined />}
+                  title={t("是否开启白名单")}
+                  description={t("关闭时允许所有局域网来源；开启后只允许列表中的 IP。")}
+                  label={t("是否开启白名单")}
+                  checked={whitelistEnabled}
+                  onChange={(checked) => updateDraft({ lan_share_whitelist_enabled: checked })}
+                />
+              </div>
+              {whitelistEnabled ? (
+                whitelistEntries.length > 0 ? (
+                  <div className="settings-whitelist-list">
+                    {whitelistEntries.map((entry, index) => (
+                      <div key={`${entry}-${index}`} className="settings-whitelist-item">
+                        <div className="settings-whitelist-value">{entry}</div>
+                        <div className="settings-whitelist-actions">
+                          <Button
+                            type="text"
+                            icon={<EditOutlined />}
+                            aria-label={`${t("编辑白名单")} ${entry}`}
+                            onClick={() => openEditWhitelistModal(index)}
+                          />
+                          <Button
+                            type="text"
+                            danger
+                            icon={<DeleteOutlined />}
+                            aria-label={`${t("删除白名单")} ${entry}`}
+                            onClick={() => handleDeleteWhitelistEntry(index)}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="settings-empty">{t("当前未配置任何 IP，保存后将拒绝所有非本机局域网访问。")}</div>
+                )
+              ) : (
+                <Text type="secondary">{t("关闭白名单时，所有局域网来源都可访问；已配置条目会保留但不会生效。")}</Text>
+              )}
+            </Card>
+          ) : null}
 
           <Card className="settings-card" variant="borderless">
             <SectionHeader
@@ -985,6 +1113,29 @@ export function SettingsPage({
         <div style={{ display: "grid", gap: 12 }}>
           <Input type="file" accept=".json,application/json,text/plain" onChange={(event) => setImportFile(event.target.files?.[0] || null)} />
         </div>
+      </Modal>
+      <Modal
+        open={whitelistModalOpen}
+        title={editingWhitelistIndex === null ? t("新增白名单") : t("编辑白名单")}
+        onCancel={closeWhitelistModal}
+        footer={[
+          <Button key="cancel" onClick={closeWhitelistModal}>
+            {t("取消")}
+          </Button>,
+          <Button key="ok" type="primary" aria-label={t("确认白名单弹窗")} onClick={submitWhitelistModal}>
+            {t("确认")}
+          </Button>,
+        ]}
+      >
+        <label className="settings-field">
+          <span className="settings-field-label">{t("白名单 IP")}</span>
+          <Input
+            aria-label={t("白名单 IP")}
+            value={whitelistModalValue}
+            onChange={(event) => setWhitelistModalValue(event.target.value)}
+            placeholder="192.168.1.10 或 192.168.1.0/24"
+          />
+        </label>
       </Modal>
     </div>
   );
