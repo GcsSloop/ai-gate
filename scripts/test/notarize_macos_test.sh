@@ -32,7 +32,13 @@ make_repo() {
     "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
   cp "$SOURCE_SCRIPT" "$repo_dir/scripts/desktop/notarize_macos.sh"
   chmod +x "$repo_dir/scripts/desktop/notarize_macos.sh"
-  mkdir -p "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app"
+  mkdir -p "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/MacOS"
+  mkdir -p "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/Resources/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/MacOS/aigate-desktop"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/Resources/bin/routerd-universal-apple-darwin"
+  chmod +x \
+    "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/MacOS/aigate-desktop" \
+    "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/Resources/bin/routerd-universal-apple-darwin"
   : > "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
 }
 
@@ -151,5 +157,9 @@ assert_contains "$log_accept" "xcrun:notarytool submit"
 assert_contains "$log_accept" "stapler:$repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
 assert_not_contains "$log_accept" "stapler:$repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app"
 assert_contains "$log_accept" "spctl:-a -t open -vv $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
+assert_contains "$log_accept" "codesign:--force --options runtime --timestamp --sign Developer ID Application: Example Developer (TEAMID1234) $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/MacOS/aigate-desktop"
+assert_contains "$log_accept" "codesign:--force --options runtime --timestamp --sign Developer ID Application: Example Developer (TEAMID1234) $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/Resources/bin/routerd-universal-apple-darwin"
+assert_contains "$log_accept" "codesign:--force --options runtime --timestamp --sign Developer ID Application: Example Developer (TEAMID1234) $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app"
+assert_not_contains "$log_accept" "codesign:--force --deep --options runtime --timestamp"
 
 echo "PASS: notarize_macos_test"

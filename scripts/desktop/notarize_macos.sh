@@ -24,6 +24,14 @@ if isinstance(value, str):
 PY
 }
 
+sign_binary() {
+  local path="$1"
+
+  codesign --force --options runtime --timestamp \
+    --sign "$APPLE_SIGNING_IDENTITY" \
+    "$path"
+}
+
 if [[ -z "$APP_PATH" ]]; then
   echo "No macOS app bundle found, skip notarization"
   exit 0
@@ -31,9 +39,14 @@ fi
 
 if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   echo "Code signing app with identity: $APPLE_SIGNING_IDENTITY"
-  codesign --force --deep --options runtime --timestamp \
-    --sign "$APPLE_SIGNING_IDENTITY" \
-    "$APP_PATH"
+  while IFS= read -r executable_path; do
+    sign_binary "$executable_path"
+  done < <(
+    find "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources/bin" \
+      -type f -perm -111 2>/dev/null | sort
+  )
+
+  sign_binary "$APP_PATH"
 else
   echo "APPLE_SIGNING_IDENTITY not set, skip explicit codesign"
 fi
