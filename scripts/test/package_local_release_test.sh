@@ -60,7 +60,6 @@ set -euo pipefail
 printf 'sidecar:macos\n' >>"$CALL_LOG"
 EOF
 chmod +x "$repo_dir/scripts/desktop/build_sidecar_macos.sh"
-
 cat >"$repo_dir/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
