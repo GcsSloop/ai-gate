@@ -16,7 +16,6 @@ DMG_APP_ICON_X=170
 DMG_APP_ICON_Y=275
 DMG_APPLICATIONS_ICON_X=630
 DMG_APPLICATIONS_ICON_Y=275
-APPDMG_BIN="$ROOT_DIR/desktop/node_modules/.bin/appdmg"
 
 resolve_bundle_dir() {
   local universal_dir="$TARGET_DIR/universal-apple-darwin/release/bundle"
@@ -90,11 +89,18 @@ rebuild_dmg_from_signed_app() {
   local background_path
   local app_name
   local spec_path
+  local appdmg_cmd=()
   app_name="$(basename "$app_path")"
 
   rm -f "$dmg_path"
 
-  if [[ -x "$APPDMG_BIN" && -f "$DMG_BACKGROUND_SOURCE" ]]; then
+  if [[ -x "$ROOT_DIR/desktop/node_modules/.bin/appdmg" ]]; then
+    appdmg_cmd=("$ROOT_DIR/desktop/node_modules/.bin/appdmg")
+  elif command -v npx >/dev/null 2>&1; then
+    appdmg_cmd=(npx --yes appdmg@0.6.6)
+  fi
+
+  if [[ ${#appdmg_cmd[@]} -gt 0 && -f "$DMG_BACKGROUND_SOURCE" ]]; then
     stage_dir="$(mktemp -d)"
     mkdir -p "$stage_dir/.background"
     background_path="$stage_dir/.background/dmg-bg.png"
@@ -119,10 +125,13 @@ rebuild_dmg_from_signed_app() {
 }
 EOF
 
-    "$APPDMG_BIN" "$spec_path" "$dmg_path"
+    if "${appdmg_cmd[@]}" "$spec_path" "$dmg_path"; then
+      rm -rf "$stage_dir"
+      return
+    fi
 
     rm -rf "$stage_dir"
-    return
+    echo "appdmg execution failed; falling back to simple DMG layout" >&2
   fi
 
   echo "appdmg unavailable or background missing; falling back to simple DMG layout" >&2
