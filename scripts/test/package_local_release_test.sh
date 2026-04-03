@@ -47,6 +47,20 @@ printf 'artifact\n' >"${RELEASE_ASSET_DIR:-$PWD/release-assets}/artifact.txt"
 EOF
 chmod +x "$repo_dir/scripts/desktop/collect_release_assets.sh"
 
+cat >"$repo_dir/scripts/desktop/notarize_macos.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'notarize\n' >>"$CALL_LOG"
+EOF
+chmod +x "$repo_dir/scripts/desktop/notarize_macos.sh"
+
+cat >"$repo_dir/scripts/desktop/build_sidecar_macos.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'sidecar:macos\n' >>"$CALL_LOG"
+EOF
+chmod +x "$repo_dir/scripts/desktop/build_sidecar_macos.sh"
+
 cat >"$repo_dir/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -69,13 +83,16 @@ chmod +x "$repo_dir/bin/npm"
 
   CALL_LOG="$tmp_dir/calls.log" \
   PATH="$repo_dir/bin:$PATH" \
+  RELEASE_PLATFORM=macos \
   RELEASE_ASSET_DIR="$tmp_dir/release-assets" \
   bash "$repo_dir/scripts/desktop/package_local_release.sh" >/dev/null
 )
 
 assert_file "$tmp_dir/release-assets/artifact.txt"
 assert_contains "$tmp_dir/calls.log" "sync:--tag v2.3.4"
+assert_contains "$tmp_dir/calls.log" "sidecar:macos"
 assert_contains "$tmp_dir/calls.log" "npm:--prefix desktop run tauri build"
+assert_contains "$tmp_dir/calls.log" "notarize"
 assert_contains "$tmp_dir/calls.log" "collect:v2.3.4"
 
 no_tag_dir="$tmp_dir/no-tag"
