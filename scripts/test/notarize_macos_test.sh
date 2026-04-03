@@ -67,6 +67,25 @@ printf 'ditto:%s\n' "$*" >>"$CALL_LOG"
 EOF
   chmod +x "$bin_dir/ditto"
 
+  cat >"$bin_dir/hdiutil" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'hdiutil:%s\n' "$*" >>"$CALL_LOG"
+out=""
+prev=""
+for arg in "$@"; do
+  if [[ "$prev" == "-o" ]]; then
+    out="$arg"
+    break
+  fi
+  prev="$arg"
+done
+if [[ -n "$out" ]]; then
+  : >"$out"
+fi
+EOF
+  chmod +x "$bin_dir/hdiutil"
+
   cat >"$bin_dir/xcrun" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -154,6 +173,7 @@ make_fake_bin "$bin_accept"
 )
 
 assert_contains "$log_accept" "xcrun:notarytool submit"
+assert_contains "$log_accept" "hdiutil:create -volname AI Gate -srcfolder $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app -ov -format UDZO -o $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
 assert_contains "$log_accept" "stapler:$repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
 assert_not_contains "$log_accept" "stapler:$repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app"
 assert_contains "$log_accept" "spctl:-a -t open -vv $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
