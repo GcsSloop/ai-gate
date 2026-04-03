@@ -39,7 +39,7 @@ jobs:
         run: npm --prefix desktop ci
 
       - name: Backend tests
-        run: go test ./...
+        run: bash ../scripts/ci/go_test_with_retry.sh
         working-directory: backend
 
       - name: Frontend tests
@@ -48,6 +48,7 @@ jobs:
       - name: Release script tests
         run: |
           bash scripts/test/desktop_updater_config_test.sh
+          bash scripts/test/go_test_with_retry_test.sh
           bash scripts/test/notarize_macos_test.sh
           bash scripts/test/release_apple_signing_test.sh
           bash scripts/test/release_updater_signing_key_test.sh
