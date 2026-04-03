@@ -5,6 +5,24 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUNDLE_DIR="$ROOT_DIR/desktop/src-tauri/target/universal-apple-darwin/release/bundle"
 APP_PATH="$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app" -type d | head -n1 || true)"
 DMG_PATH="$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name "*.dmg" -type f | head -n1 || true)"
+NOTARY_TARGET_PATH=""
+
+extract_notary_field() {
+  local field="$1"
+  local json="$2"
+
+  python3 - "$field" "$json" <<'PY'
+import json
+import sys
+
+field = sys.argv[1]
+payload = sys.argv[2]
+data = json.loads(payload)
+value = data.get(field, "")
+if isinstance(value, str):
+    print(value)
+PY
+}
 
 if [[ -z "$APP_PATH" ]]; then
   echo "No macOS app bundle found, skip notarization"
@@ -27,24 +45,41 @@ fi
 
 if [[ -z "$DMG_PATH" ]]; then
   echo "No dmg found, create zip for notarization"
-  ZIP_PATH="$ROOT_DIR/desktop/src-tauri/target/aigate-macos.zip"
-  ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
-  xcrun notarytool submit "$ZIP_PATH" \
-    --key "$APPLE_API_KEY_PATH" \
-    --key-id "$APPLE_API_KEY_ID" \
-    --issuer "$APPLE_API_ISSUER" \
-    --wait
+  NOTARY_TARGET_PATH="$ROOT_DIR/desktop/src-tauri/target/aigate-macos.zip"
+  ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$NOTARY_TARGET_PATH"
 else
-  xcrun notarytool submit "$DMG_PATH" \
-    --key "$APPLE_API_KEY_PATH" \
-    --key-id "$APPLE_API_KEY_ID" \
-    --issuer "$APPLE_API_ISSUER" \
-    --wait
+  NOTARY_TARGET_PATH="$DMG_PATH"
 fi
 
-xcrun stapler staple "$APP_PATH"
+submit_output="$(xcrun notarytool submit "$NOTARY_TARGET_PATH" \
+  --key "$APPLE_API_KEY_PATH" \
+  --key-id "$APPLE_API_KEY_ID" \
+  --issuer "$APPLE_API_ISSUER" \
+  --wait \
+  --output-format json)"
+
+notary_id="$(extract_notary_field id "$submit_output")"
+notary_status="$(extract_notary_field status "$submit_output")"
+
+if [[ -z "$notary_id" || -z "$notary_status" ]]; then
+  echo "Unexpected notarytool response:"
+  echo "$submit_output"
+  exit 1
+fi
+
+if [[ "$notary_status" != "Accepted" ]]; then
+  echo "Notarization failed with status: $notary_status"
+  xcrun notarytool log "$notary_id" \
+    --key "$APPLE_API_KEY_PATH" \
+    --key-id "$APPLE_API_KEY_ID" \
+    --issuer "$APPLE_API_ISSUER"
+  exit 1
+fi
+
 if [[ -n "$DMG_PATH" ]]; then
   xcrun stapler staple "$DMG_PATH"
+  spctl -a -t open -vv "$DMG_PATH"
+else
+  xcrun stapler staple "$APP_PATH"
+  spctl -a -t exec -vv "$APP_PATH"
 fi
-
-spctl -a -t exec -vv "$APP_PATH"
