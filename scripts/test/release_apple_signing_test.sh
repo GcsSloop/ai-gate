@@ -9,6 +9,13 @@ fail() {
   exit 1
 }
 
+assert_not_contains() {
+  local pattern="$1"
+  if grep -Fq "$pattern" "$WORKFLOW_PATH"; then
+    fail "expected release workflow to not contain: $pattern"
+  fi
+}
+
 assert_contains() {
   local pattern="$1"
   if ! grep -Fq "$pattern" "$WORKFLOW_PATH"; then
@@ -24,6 +31,9 @@ assert_contains 'security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD"'
 assert_contains 'security import "$apple_cert_path"'
 assert_contains 'security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD"'
 assert_contains 'security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_KEYCHAIN_PASSWORD"'
+assert_not_contains 'mapfile -t existing_keychains'
+assert_contains 'existing_keychains=()'
+assert_contains 'while IFS= read -r keychain; do'
 assert_contains 'security list-keychains -d user -s'
 assert_contains "name: Notarize macOS bundle"
 

@@ -172,7 +172,10 @@ jobs:
             -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$APPLE_KEYCHAIN_PATH"
 
-          mapfile -t existing_keychains < <(security list-keychains -d user | sed 's/^[[:space:]]*//; s/"//g')
+          existing_keychains=()
+          while IFS= read -r keychain; do
+            existing_keychains+=("$keychain")
+          done < <(security list-keychains -d user | sed 's/^[[:space:]]*//; s/"//g')
           security list-keychains -d user -s "$APPLE_KEYCHAIN_PATH" "${existing_keychains[@]}"
           security default-keychain -d user -s "$APPLE_KEYCHAIN_PATH"
 
