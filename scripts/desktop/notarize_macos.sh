@@ -110,7 +110,7 @@ fi
 
 if [[ -n "$DMG_PATH" ]]; then
   xcrun stapler staple "$DMG_PATH"
-  spctl -a -t open -vv "$DMG_PATH"
+  spctl -a -t open --context context:primary-signature -vv "$DMG_PATH"
 else
   xcrun stapler staple "$APP_PATH"
   spctl -a -t exec -vv "$APP_PATH"
