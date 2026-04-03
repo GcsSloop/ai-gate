@@ -174,6 +174,7 @@ make_fake_bin "$bin_accept"
 
 assert_contains "$log_accept" "xcrun:notarytool submit"
 assert_contains "$log_accept" "hdiutil:create -volname AI Gate -srcfolder $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app -ov -format UDZO -o $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
+assert_contains "$log_accept" "codesign:--force --timestamp --sign Developer ID Application: Example Developer (TEAMID1234) $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
 assert_contains "$log_accept" "stapler:$repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
 assert_not_contains "$log_accept" "stapler:$repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app"
 assert_contains "$log_accept" "spctl:-a -t open --context context:primary-signature -vv $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"

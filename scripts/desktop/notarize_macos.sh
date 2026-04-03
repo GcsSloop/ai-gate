@@ -47,6 +47,14 @@ rebuild_dmg_from_signed_app() {
     -o "$dmg_path"
 }
 
+sign_dmg() {
+  local path="$1"
+
+  codesign --force --timestamp \
+    --sign "$APPLE_SIGNING_IDENTITY" \
+    "$path"
+}
+
 if [[ -z "$APP_PATH" ]]; then
   echo "No macOS app bundle found, skip notarization"
   exit 0
@@ -68,6 +76,9 @@ fi
 
 if [[ -n "$DMG_PATH" ]]; then
   rebuild_dmg_from_signed_app "$APP_PATH" "$DMG_PATH"
+  if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+    sign_dmg "$DMG_PATH"
+  fi
 fi
 
 if [[ -z "${APPLE_API_KEY_PATH:-}" || -z "${APPLE_API_KEY_ID:-}" || -z "${APPLE_API_ISSUER:-}" ]]; then
