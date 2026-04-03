@@ -12,7 +12,7 @@ fail() {
 assert_contains() {
   local file="$1"
   local pattern="$2"
-  if ! grep -Fq "$pattern" "$file"; then
+  if ! grep -Fq -- "$pattern" "$file"; then
     fail "expected $file to contain: $pattern"
   fi
 }
@@ -20,7 +20,7 @@ assert_contains() {
 assert_not_contains() {
   local file="$1"
   local pattern="$2"
-  if grep -Fq "$pattern" "$file"; then
+  if grep -Fq -- "$pattern" "$file"; then
     fail "expected $file to not contain: $pattern"
   fi
 }
@@ -29,7 +29,8 @@ make_repo() {
   local repo_dir="$1"
   mkdir -p "$repo_dir/scripts/desktop" \
     "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos" \
-    "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg"
+    "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg" \
+    "$repo_dir/assets"
   cp "$SOURCE_SCRIPT" "$repo_dir/scripts/desktop/notarize_macos.sh"
   chmod +x "$repo_dir/scripts/desktop/notarize_macos.sh"
   mkdir -p "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/MacOS"
@@ -40,6 +41,7 @@ make_repo() {
     "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/MacOS/aigate-desktop" \
     "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/Resources/bin/routerd-universal-apple-darwin"
   : > "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
+  printf '%s' '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGxAQGyslICYtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAEBAQEAAAAAAAAAAAAAAAAAAQID/8QAFhEBAQEAAAAAAAAAAAAAAAAAABEB/9oADAMBAAIQAxAAAAHhAH//xAAXEAADAQAAAAAAAAAAAAAAAAAAAREh/9oACAEBAAEFAmF//8QAFhEBAQEAAAAAAAAAAAAAAAAAABEB/9oACAEDAQE/AT//xAAVEQEBAAAAAAAAAAAAAAAAAAAAEf/aAAgBAgEBPwF//8QAFhABAQEAAAAAAAAAAAAAAAAAABEh/9oACAEBAAY/Ao//xAAWEAEBAQAAAAAAAAAAAAAAAAABABH/2gAIAQEAAT8hQf/EABYRAQEBAAAAAAAAAAAAAAAAAAABEf/aAAgBAwEBPxB//8QAFhEBAQEAAAAAAAAAAAAAAAAAABEB/9oACAECAQE/EP/EABYQAQEBAAAAAAAAAAAAAAAAAAERAP/aAAgBAQABPxAof//Z' | base64 --decode >"$repo_dir/assets/dmg-bg.jpg"
 }
 
 make_fake_bin() {
@@ -66,6 +68,13 @@ set -euo pipefail
 printf 'ditto:%s\n' "$*" >>"$CALL_LOG"
 EOF
   chmod +x "$bin_dir/ditto"
+
+  cat >"$bin_dir/sips" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'sips:%s\n' "$*" >>"$CALL_LOG"
+EOF
+  chmod +x "$bin_dir/sips"
 
   cat >"$bin_dir/hdiutil" <<'EOF'
 #!/usr/bin/env bash
@@ -127,6 +136,19 @@ EOF
   chmod +x "$bin_dir/xcrun"
 }
 
+make_fake_bundle_dmg_script() {
+  local repo_dir="$1"
+cat >"$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/bundle_dmg.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'bundle_dmg:%s\n' "$*" >>"$CALL_LOG"
+argc=$#
+eval "out=\${$((argc-1))}"
+: >"$out"
+EOF
+  chmod +x "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/bundle_dmg.sh"
+}
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -173,7 +195,7 @@ make_fake_bin "$bin_accept"
 )
 
 assert_contains "$log_accept" "xcrun:notarytool submit"
-assert_contains "$log_accept" "hdiutil:create -volname AI Gate -srcfolder $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app -ov -format UDZO -o $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
+assert_contains "$log_accept" "hdiutil:create -volname AI Gate Installer -srcfolder $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app -ov -format UDZO -o $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
 assert_contains "$log_accept" "codesign:--force --timestamp --sign Developer ID Application: Example Developer (TEAMID1234) $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
 assert_contains "$log_accept" "stapler:$repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
 assert_not_contains "$log_accept" "stapler:$repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app"
@@ -182,5 +204,31 @@ assert_contains "$log_accept" "codesign:--force --options runtime --timestamp --
 assert_contains "$log_accept" "codesign:--force --options runtime --timestamp --sign Developer ID Application: Example Developer (TEAMID1234) $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/Resources/bin/routerd-universal-apple-darwin"
 assert_contains "$log_accept" "codesign:--force --options runtime --timestamp --sign Developer ID Application: Example Developer (TEAMID1234) $repo_accept/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app"
 assert_not_contains "$log_accept" "codesign:--force --deep --options runtime --timestamp"
+
+repo_bundle="$tmp_dir/repo-bundle"
+bin_bundle="$tmp_dir/bin-bundle"
+log_bundle="$tmp_dir/bundle.log"
+make_repo "$repo_bundle"
+make_fake_bin "$bin_bundle"
+make_fake_bundle_dmg_script "$repo_bundle"
+
+(
+  cd "$repo_bundle"
+  CALL_LOG="$log_bundle" \
+  PATH="$bin_bundle:$PATH" \
+  APPLE_SIGNING_IDENTITY="Developer ID Application: Example Developer (TEAMID1234)" \
+  APPLE_API_KEY_PATH="$tmp_dir/AuthKey.p8" \
+  APPLE_API_KEY_ID="ABC123DEFG" \
+  APPLE_API_ISSUER="00000000-0000-0000-0000-000000000000" \
+  NOTARY_STATUS="Accepted" \
+  bash scripts/desktop/notarize_macos.sh
+)
+
+assert_contains "$log_bundle" "bundle_dmg:--volname AI Gate Installer --background"
+assert_contains "$log_bundle" "--window-pos 120 120 --window-size 800 560"
+assert_contains "$log_bundle" "--icon-size 128 --text-size 16"
+assert_contains "$log_bundle" "--icon AI Gate.app 170 350"
+assert_contains "$log_bundle" "--app-drop-link 630 350"
+assert_not_contains "$log_bundle" "hdiutil:create"
 
 echo "PASS: notarize_macos_test"
