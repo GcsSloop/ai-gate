@@ -281,5 +281,4 @@ rm -f "$repo_no_dmg/desktop/src-tauri/target/universal-apple-darwin/release/bund
 assert_contains "$log_no_dmg" "bundle_dmg:--volname AI Gate Installer --background"
 assert_contains "$log_no_dmg" "$repo_no_dmg/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
 assert_not_contains "$log_no_dmg" "No dmg found, create zip for notarization"
-
 echo "PASS: notarize_macos_test"
