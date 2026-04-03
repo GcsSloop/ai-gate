@@ -41,7 +41,7 @@ make_repo() {
     "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/MacOS/aigate-desktop" \
     "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/Resources/bin/routerd-universal-apple-darwin"
   : > "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
-  printf '%s' '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGxAQGyslICYtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAEBAQEAAAAAAAAAAAAAAAAAAQID/8QAFhEBAQEAAAAAAAAAAAAAAAAAABEB/9oADAMBAAIQAxAAAAHhAH//xAAXEAADAQAAAAAAAAAAAAAAAAAAAREh/9oACAEBAAEFAmF//8QAFhEBAQEAAAAAAAAAAAAAAAAAABEB/9oACAEDAQE/AT//xAAVEQEBAAAAAAAAAAAAAAAAAAAAEf/aAAgBAgEBPwF//8QAFhABAQEAAAAAAAAAAAAAAAAAABEh/9oACAEBAAY/Ao//xAAWEAEBAQAAAAAAAAAAAAAAAAABABH/2gAIAQEAAT8hQf/EABYRAQEBAAAAAAAAAAAAAAAAAAABEf/aAAgBAwEBPxB//8QAFhEBAQEAAAAAAAAAAAAAAAAAABEB/9oACAECAQE/EP/EABYQAQEBAAAAAAAAAAAAAAAAAAERAP/aAAgBAQABPxAof//Z' | base64 --decode >"$repo_dir/assets/dmg-bg.jpg"
+  printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+XWZ0AAAAASUVORK5CYII=' | base64 --decode >"$repo_dir/assets/dmg-bg.png"
 }
 
 make_fake_bin() {
@@ -138,7 +138,9 @@ EOF
 
 make_fake_bundle_dmg_script() {
   local repo_dir="$1"
-cat >"$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/bundle_dmg.sh" <<'EOF'
+  local bundle_dir="${2:-$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg}"
+  mkdir -p "$bundle_dir"
+cat >"$bundle_dir/bundle_dmg.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'bundle_dmg:%s\n' "$*" >>"$CALL_LOG"
@@ -146,7 +148,7 @@ argc=$#
 eval "out=\${$((argc-1))}"
 : >"$out"
 EOF
-  chmod +x "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/bundle_dmg.sh"
+  chmod +x "$bundle_dir/bundle_dmg.sh"
 }
 
 tmp_dir="$(mktemp -d)"
@@ -227,8 +229,38 @@ make_fake_bundle_dmg_script "$repo_bundle"
 assert_contains "$log_bundle" "bundle_dmg:--volname AI Gate Installer --background"
 assert_contains "$log_bundle" "--window-pos 120 120 --window-size 800 560"
 assert_contains "$log_bundle" "--icon-size 128 --text-size 16"
-assert_contains "$log_bundle" "--icon AI Gate.app 170 350"
-assert_contains "$log_bundle" "--app-drop-link 630 350"
+assert_contains "$log_bundle" "--icon AI Gate.app 170 275"
+assert_contains "$log_bundle" "--app-drop-link 630 275"
 assert_not_contains "$log_bundle" "hdiutil:create"
+
+repo_native="$tmp_dir/repo-native"
+bin_native="$tmp_dir/bin-native"
+log_native="$tmp_dir/native.log"
+make_repo "$repo_native"
+make_fake_bin "$bin_native"
+
+rm -rf "$repo_native/desktop/src-tauri/target/universal-apple-darwin"
+mkdir -p "$repo_native/desktop/src-tauri/target/release/bundle/macos/AI Gate.app/Contents/MacOS"
+mkdir -p "$repo_native/desktop/src-tauri/target/release/bundle/macos/AI Gate.app/Contents/Resources/bin"
+mkdir -p "$repo_native/desktop/src-tauri/target/release/bundle/dmg"
+make_fake_bundle_dmg_script "$repo_native" "$repo_native/desktop/src-tauri/target/release/bundle/dmg"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$repo_native/desktop/src-tauri/target/release/bundle/macos/AI Gate.app/Contents/MacOS/aigate-desktop"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$repo_native/desktop/src-tauri/target/release/bundle/macos/AI Gate.app/Contents/Resources/bin/routerd-universal-apple-darwin"
+chmod +x \
+  "$repo_native/desktop/src-tauri/target/release/bundle/macos/AI Gate.app/Contents/MacOS/aigate-desktop" \
+  "$repo_native/desktop/src-tauri/target/release/bundle/macos/AI Gate.app/Contents/Resources/bin/routerd-universal-apple-darwin"
+: > "$repo_native/desktop/src-tauri/target/release/bundle/dmg/AI Gate.dmg"
+
+(
+  cd "$repo_native"
+  CALL_LOG="$log_native" \
+  PATH="$bin_native:$PATH" \
+  bash scripts/desktop/notarize_macos.sh
+)
+
+assert_contains "$log_native" "bundle_dmg:--volname AI Gate Installer --background"
+assert_contains "$log_native" "--icon AI Gate.app 170 275"
+assert_contains "$log_native" "--app-drop-link 630 275"
+assert_not_contains "$log_native" "No macOS app bundle found"
 
 echo "PASS: notarize_macos_test"
