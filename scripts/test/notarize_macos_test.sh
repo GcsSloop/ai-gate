@@ -263,4 +263,23 @@ assert_contains "$log_native" "--icon AI Gate.app 170 275"
 assert_contains "$log_native" "--app-drop-link 630 275"
 assert_not_contains "$log_native" "No macOS app bundle found"
 
+repo_no_dmg="$tmp_dir/repo-no-dmg"
+bin_no_dmg="$tmp_dir/bin-no-dmg"
+log_no_dmg="$tmp_dir/no-dmg.log"
+make_repo "$repo_no_dmg"
+make_fake_bin "$bin_no_dmg"
+make_fake_bundle_dmg_script "$repo_no_dmg"
+rm -f "$repo_no_dmg/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
+
+(
+  cd "$repo_no_dmg"
+  CALL_LOG="$log_no_dmg" \
+  PATH="$bin_no_dmg:$PATH" \
+  bash scripts/desktop/notarize_macos.sh
+)
+
+assert_contains "$log_no_dmg" "bundle_dmg:--volname AI Gate Installer --background"
+assert_contains "$log_no_dmg" "$repo_no_dmg/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/AI Gate.dmg"
+assert_not_contains "$log_no_dmg" "No dmg found, create zip for notarization"
+
 echo "PASS: notarize_macos_test"

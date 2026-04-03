@@ -39,6 +39,10 @@ DMG_PATH=""
 if [[ -n "$BUNDLE_DIR" ]]; then
   APP_PATH="$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app" -type d | head -n1 || true)"
   DMG_PATH="$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name "*.dmg" -type f | head -n1 || true)"
+  if [[ -z "$DMG_PATH" && -n "$APP_PATH" ]]; then
+    mkdir -p "$BUNDLE_DIR/dmg"
+    DMG_PATH="$BUNDLE_DIR/dmg/$(basename "${APP_PATH%.app}").dmg"
+  fi
 fi
 
 extract_notary_field() {
