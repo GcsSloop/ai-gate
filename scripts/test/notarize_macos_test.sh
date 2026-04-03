@@ -159,6 +159,7 @@ bin_invalid="$tmp_dir/bin-invalid"
 log_invalid="$tmp_dir/invalid.log"
 make_repo "$repo_invalid"
 make_fake_bin "$bin_invalid"
+make_fake_appdmg "$repo_invalid"
 
 if (
   cd "$repo_invalid"
@@ -294,6 +295,11 @@ bin_fallback="$tmp_dir/bin-fallback"
 log_fallback="$tmp_dir/fallback.log"
 make_repo "$repo_fallback"
 make_fake_bin "$bin_fallback"
+cat >"$bin_fallback/npx" <<'EOF'
+#!/usr/bin/env bash
+exit 127
+EOF
+chmod +x "$bin_fallback/npx"
 
 (
   cd "$repo_fallback"
