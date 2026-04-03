@@ -16,6 +16,7 @@ DMG_APP_ICON_X=170
 DMG_APP_ICON_Y=275
 DMG_APPLICATIONS_ICON_X=630
 DMG_APPLICATIONS_ICON_Y=275
+APPDMG_BIN="$ROOT_DIR/desktop/node_modules/.bin/appdmg"
 
 resolve_bundle_dir() {
   local universal_dir="$TARGET_DIR/universal-apple-darwin/release/bundle"
@@ -85,40 +86,46 @@ prepare_dmg_background() {
 rebuild_dmg_from_signed_app() {
   local app_path="$1"
   local dmg_path="$2"
-  local bundle_script
   local stage_dir
   local background_path
   local app_name
-
-  bundle_script="$BUNDLE_DIR/dmg/bundle_dmg.sh"
+  local spec_path
   app_name="$(basename "$app_path")"
 
   rm -f "$dmg_path"
 
-  if [[ -x "$bundle_script" && -f "$DMG_BACKGROUND_SOURCE" ]]; then
+  if [[ -x "$APPDMG_BIN" && -f "$DMG_BACKGROUND_SOURCE" ]]; then
     stage_dir="$(mktemp -d)"
     mkdir -p "$stage_dir/.background"
     background_path="$stage_dir/.background/dmg-bg.png"
+    spec_path="$stage_dir/appdmg.json"
     prepare_dmg_background "$DMG_BACKGROUND_SOURCE" "$background_path"
     cp -R "$app_path" "$stage_dir/$app_name"
 
-    "$bundle_script" \
-      --volname "$DMG_VOLUME_NAME" \
-      --background "$background_path" \
-      --window-pos "$DMG_WINDOW_POS_X" "$DMG_WINDOW_POS_Y" \
-      --window-size "$DMG_WINDOW_WIDTH" "$DMG_WINDOW_HEIGHT" \
-      --icon-size "$DMG_ICON_SIZE" \
-      --text-size "$DMG_TEXT_SIZE" \
-      --icon "$app_name" "$DMG_APP_ICON_X" "$DMG_APP_ICON_Y" \
-      --hide-extension "$app_name" \
-      --app-drop-link "$DMG_APPLICATIONS_ICON_X" "$DMG_APPLICATIONS_ICON_Y" \
-      "$dmg_path" \
-      "$stage_dir"
+    cat >"$spec_path" <<EOF
+{
+  "title": "$DMG_VOLUME_NAME",
+  "background": ".background/dmg-bg.png",
+  "icon-size": $DMG_ICON_SIZE,
+  "window": {
+    "position": { "x": $DMG_WINDOW_POS_X, "y": $DMG_WINDOW_POS_Y },
+    "size": { "width": $DMG_WINDOW_WIDTH, "height": $DMG_WINDOW_HEIGHT }
+  },
+  "format": "UDZO",
+  "contents": [
+    { "x": $DMG_APP_ICON_X, "y": $DMG_APP_ICON_Y, "type": "file", "path": "$app_name" },
+    { "x": $DMG_APPLICATIONS_ICON_X, "y": $DMG_APPLICATIONS_ICON_Y, "type": "link", "path": "/Applications" }
+  ]
+}
+EOF
+
+    "$APPDMG_BIN" "$spec_path" "$dmg_path"
 
     rm -rf "$stage_dir"
     return
   fi
 
+  echo "appdmg unavailable or background missing; falling back to simple DMG layout" >&2
   hdiutil create \
     -volname "$DMG_VOLUME_NAME" \
     -srcfolder "$app_path" \
