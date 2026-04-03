@@ -9,6 +9,7 @@
     "tauri": "tauri"
   },
   "devDependencies": {
+    "appdmg": "^0.6.6",
     "@tauri-apps/cli": "^2.8.0"
   }
 }
