@@ -6,6 +6,18 @@ BUNDLE_DIR="$ROOT_DIR/desktop/src-tauri/target/universal-apple-darwin/release/bu
 APP_PATH="$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app" -type d | head -n1 || true)"
 DMG_PATH="$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name "*.dmg" -type f | head -n1 || true)"
 NOTARY_TARGET_PATH=""
+DMG_BACKGROUND_SOURCE="$ROOT_DIR/assets/dmg-bg.jpg"
+DMG_VOLUME_NAME="AI Gate Installer"
+DMG_WINDOW_WIDTH=800
+DMG_WINDOW_HEIGHT=560
+DMG_WINDOW_POS_X=120
+DMG_WINDOW_POS_Y=120
+DMG_ICON_SIZE=128
+DMG_TEXT_SIZE=16
+DMG_APP_ICON_X=170
+DMG_APP_ICON_Y=350
+DMG_APPLICATIONS_ICON_X=630
+DMG_APPLICATIONS_ICON_Y=350
 
 extract_notary_field() {
   local field="$1"
@@ -32,15 +44,57 @@ sign_binary() {
     "$path"
 }
 
+prepare_dmg_background() {
+  local source_path="$1"
+  local output_path="$2"
+
+  cp "$source_path" "$output_path"
+
+  if command -v sips >/dev/null 2>&1; then
+    sips --resampleHeight "$DMG_WINDOW_HEIGHT" "$output_path" >/dev/null
+    sips --cropToHeightWidth "$DMG_WINDOW_HEIGHT" "$DMG_WINDOW_WIDTH" "$output_path" >/dev/null
+  fi
+}
+
 rebuild_dmg_from_signed_app() {
   local app_path="$1"
   local dmg_path="$2"
-  local volume_name
+  local bundle_script
+  local stage_dir
+  local background_path
+  local app_name
 
-  volume_name="$(basename "$app_path" .app)"
+  bundle_script="$BUNDLE_DIR/dmg/bundle_dmg.sh"
+  app_name="$(basename "$app_path")"
+
   rm -f "$dmg_path"
+
+  if [[ -x "$bundle_script" && -f "$DMG_BACKGROUND_SOURCE" ]]; then
+    stage_dir="$(mktemp -d)"
+    mkdir -p "$stage_dir/.background"
+    background_path="$stage_dir/.background/dmg-bg.jpg"
+    prepare_dmg_background "$DMG_BACKGROUND_SOURCE" "$background_path"
+    cp -R "$app_path" "$stage_dir/$app_name"
+
+    "$bundle_script" \
+      --volname "$DMG_VOLUME_NAME" \
+      --background "$background_path" \
+      --window-pos "$DMG_WINDOW_POS_X" "$DMG_WINDOW_POS_Y" \
+      --window-size "$DMG_WINDOW_WIDTH" "$DMG_WINDOW_HEIGHT" \
+      --icon-size "$DMG_ICON_SIZE" \
+      --text-size "$DMG_TEXT_SIZE" \
+      --icon "$app_name" "$DMG_APP_ICON_X" "$DMG_APP_ICON_Y" \
+      --hide-extension "$app_name" \
+      --app-drop-link "$DMG_APPLICATIONS_ICON_X" "$DMG_APPLICATIONS_ICON_Y" \
+      "$dmg_path" \
+      "$stage_dir"
+
+    rm -rf "$stage_dir"
+    return
+  fi
+
   hdiutil create \
-    -volname "$volume_name" \
+    -volname "$DMG_VOLUME_NAME" \
     -srcfolder "$app_path" \
     -ov \
     -format UDZO \
