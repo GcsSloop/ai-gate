@@ -2,11 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BUNDLE_DIR="$ROOT_DIR/desktop/src-tauri/target/universal-apple-darwin/release/bundle"
-APP_PATH="$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app" -type d | head -n1 || true)"
-DMG_PATH="$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name "*.dmg" -type f | head -n1 || true)"
+TARGET_DIR="${TARGET_DIR:-$ROOT_DIR/desktop/src-tauri/target}"
 NOTARY_TARGET_PATH=""
-DMG_BACKGROUND_SOURCE="$ROOT_DIR/assets/dmg-bg.jpg"
+DMG_BACKGROUND_SOURCE="$ROOT_DIR/assets/dmg-bg.png"
 DMG_VOLUME_NAME="AI Gate Installer"
 DMG_WINDOW_WIDTH=800
 DMG_WINDOW_HEIGHT=560
@@ -15,9 +13,33 @@ DMG_WINDOW_POS_Y=120
 DMG_ICON_SIZE=128
 DMG_TEXT_SIZE=16
 DMG_APP_ICON_X=170
-DMG_APP_ICON_Y=350
+DMG_APP_ICON_Y=275
 DMG_APPLICATIONS_ICON_X=630
-DMG_APPLICATIONS_ICON_Y=350
+DMG_APPLICATIONS_ICON_Y=275
+
+resolve_bundle_dir() {
+  local universal_dir="$TARGET_DIR/universal-apple-darwin/release/bundle"
+  local native_dir="$TARGET_DIR/release/bundle"
+
+  if [[ -d "$universal_dir" ]]; then
+    printf '%s\n' "$universal_dir"
+    return 0
+  fi
+  if [[ -d "$native_dir" ]]; then
+    printf '%s\n' "$native_dir"
+    return 0
+  fi
+
+  return 1
+}
+
+BUNDLE_DIR="$(resolve_bundle_dir || true)"
+APP_PATH=""
+DMG_PATH=""
+if [[ -n "$BUNDLE_DIR" ]]; then
+  APP_PATH="$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app" -type d | head -n1 || true)"
+  DMG_PATH="$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name "*.dmg" -type f | head -n1 || true)"
+fi
 
 extract_notary_field() {
   local field="$1"
@@ -72,7 +94,7 @@ rebuild_dmg_from_signed_app() {
   if [[ -x "$bundle_script" && -f "$DMG_BACKGROUND_SOURCE" ]]; then
     stage_dir="$(mktemp -d)"
     mkdir -p "$stage_dir/.background"
-    background_path="$stage_dir/.background/dmg-bg.jpg"
+    background_path="$stage_dir/.background/dmg-bg.png"
     prepare_dmg_background "$DMG_BACKGROUND_SOURCE" "$background_path"
     cp -R "$app_path" "$stage_dir/$app_name"
 
