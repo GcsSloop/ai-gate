@@ -91,7 +91,7 @@ chmod +x "$repo_dir/bin/npm"
 assert_file "$tmp_dir/release-assets/artifact.txt"
 assert_contains "$tmp_dir/calls.log" "sync:--tag v2.3.4"
 assert_contains "$tmp_dir/calls.log" "sidecar:macos"
-assert_contains "$tmp_dir/calls.log" "npm:--prefix desktop run tauri build"
+assert_contains "$tmp_dir/calls.log" "npm:--prefix desktop run tauri build -- --bundles app"
 assert_contains "$tmp_dir/calls.log" "notarize"
 assert_contains "$tmp_dir/calls.log" "collect:v2.3.4"
 

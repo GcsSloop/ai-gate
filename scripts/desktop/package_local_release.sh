@@ -42,17 +42,17 @@ bash "$ROOT_DIR/scripts/release/sync_release_metadata.sh" "${sync_args[@]}"
 case "$TARGET_PLATFORM" in
   macos)
     bash "$ROOT_DIR/scripts/desktop/build_sidecar_macos.sh"
+    npm --prefix desktop run tauri build -- --bundles app
     ;;
   windows)
     bash "$ROOT_DIR/scripts/desktop/build_sidecar_windows.sh"
+    npm --prefix desktop run tauri build
     ;;
   *)
     echo "Unsupported release platform: $TARGET_PLATFORM" >&2
     exit 1
     ;;
 esac
-
-npm --prefix desktop run tauri build
 bash "$ROOT_DIR/scripts/desktop/notarize_macos.sh"
 
 collect_env=(RELEASE_VERSION="$TAG" RELEASE_ASSET_DIR="$ASSET_DIR")

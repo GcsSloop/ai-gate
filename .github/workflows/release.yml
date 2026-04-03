@@ -67,7 +67,7 @@ jobs:
           - release_platform: macos
             runner: macos-latest
             tauri_target: universal-apple-darwin
-            bundles: app,dmg
+            bundles: app
             sidecar_script: scripts/desktop/build_sidecar_macos.sh
             artifact_name: release-assets-macos
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
