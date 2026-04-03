@@ -32,6 +32,21 @@ sign_binary() {
     "$path"
 }
 
+rebuild_dmg_from_signed_app() {
+  local app_path="$1"
+  local dmg_path="$2"
+  local volume_name
+
+  volume_name="$(basename "$app_path" .app)"
+  rm -f "$dmg_path"
+  hdiutil create \
+    -volname "$volume_name" \
+    -srcfolder "$app_path" \
+    -ov \
+    -format UDZO \
+    -o "$dmg_path"
+}
+
 if [[ -z "$APP_PATH" ]]; then
   echo "No macOS app bundle found, skip notarization"
   exit 0
@@ -49,6 +64,10 @@ if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   sign_binary "$APP_PATH"
 else
   echo "APPLE_SIGNING_IDENTITY not set, skip explicit codesign"
+fi
+
+if [[ -n "$DMG_PATH" ]]; then
+  rebuild_dmg_from_signed_app "$APP_PATH" "$DMG_PATH"
 fi
 
 if [[ -z "${APPLE_API_KEY_PATH:-}" || -z "${APPLE_API_KEY_ID:-}" || -z "${APPLE_API_ISSUER:-}" ]]; then
