@@ -33,6 +33,7 @@ make_repo() {
     "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg" \
     "$repo_dir/assets"
   cp "$SOURCE_SCRIPT" "$repo_dir/scripts/desktop/notarize_macos.sh"
+  cp "$ROOT_DIR/scripts/desktop/release_version_helpers.sh" "$repo_dir/scripts/desktop/release_version_helpers.sh"
   chmod +x "$repo_dir/scripts/desktop/notarize_macos.sh"
   mkdir -p "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/MacOS"
   mkdir -p "$repo_dir/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/AI Gate.app/Contents/Resources/bin"
@@ -190,6 +191,7 @@ make_fake_appdmg "$repo_accept"
   cd "$repo_accept"
   CALL_LOG="$log_accept" \
   PATH="$bin_accept:$PATH" \
+  RELEASE_VERSION="v1.2.3" \
   APPLE_SIGNING_IDENTITY="Developer ID Application: Example Developer (TEAMID1234)" \
   APPLE_API_KEY_PATH="$tmp_dir/AuthKey.p8" \
   APPLE_API_KEY_ID="ABC123DEFG" \
@@ -200,7 +202,7 @@ make_fake_appdmg "$repo_accept"
 
 assert_contains "$log_accept" "xcrun:notarytool submit"
 assert_contains "$log_accept" "appdmg:"
-assert_contains "$log_accept" "\"title\": \"AI Gate Installer\""
+assert_contains "$log_accept" "\"title\": \"AI Gate Installer 1.2.3\""
 assert_contains "$log_accept" "\"background\": \".background/dmg-bg.png\""
 assert_contains "$log_accept" "\"icon-size\": 128"
 assert_contains "$log_accept" "\"width\": 800"
@@ -229,6 +231,7 @@ make_fake_appdmg "$repo_bundle"
   cd "$repo_bundle"
   CALL_LOG="$log_bundle" \
   PATH="$bin_bundle:$PATH" \
+  RELEASE_VERSION="v1.2.3" \
   APPLE_SIGNING_IDENTITY="Developer ID Application: Example Developer (TEAMID1234)" \
   APPLE_API_KEY_PATH="$tmp_dir/AuthKey.p8" \
   APPLE_API_KEY_ID="ABC123DEFG" \
@@ -238,6 +241,7 @@ make_fake_appdmg "$repo_bundle"
 )
 
 assert_contains "$log_bundle" "appdmg:"
+assert_contains "$log_bundle" "\"title\": \"AI Gate Installer 1.2.3\""
 assert_contains "$log_bundle" "\"x\": 630"
 assert_contains "$log_bundle" "\"path\": \"/Applications\""
 assert_not_contains "$log_bundle" "hdiutil:create"
