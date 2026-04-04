@@ -17,6 +17,15 @@ DMG_APP_ICON_Y=275
 DMG_APPLICATIONS_ICON_X=630
 DMG_APPLICATIONS_ICON_Y=275
 
+if [[ -f "$ROOT_DIR/scripts/desktop/release_version_helpers.sh" ]]; then
+  # shellcheck source=scripts/desktop/release_version_helpers.sh
+  source "$ROOT_DIR/scripts/desktop/release_version_helpers.sh"
+fi
+
+if declare -F resolve_release_version >/dev/null 2>&1 && release_version="$(resolve_release_version 2>/dev/null)"; then
+  DMG_VOLUME_NAME="$DMG_VOLUME_NAME ${release_version#v}"
+fi
+
 resolve_bundle_dir() {
   local universal_dir="$TARGET_DIR/universal-apple-darwin/release/bundle"
   local native_dir="$TARGET_DIR/release/bundle"
