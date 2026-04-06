@@ -36,6 +36,7 @@ static RESUME_RECOVERY_WATCHER: Lazy<Mutex<Option<JoinHandle<()>>>> =
 static RESUME_RECOVERY_WATCHER_STOP: AtomicBool = AtomicBool::new(false);
 static RESUME_RECOVERY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 static RESUME_RECOVERY_LAST_STARTED_MS: AtomicU64 = AtomicU64::new(0);
+static APP_EXITING: AtomicBool = AtomicBool::new(false);
 static DESKTOP_RUNTIME: Lazy<Mutex<DesktopRuntime>> =
     Lazy::new(|| Mutex::new(DesktopRuntime::default()));
 static DESKTOP_RECENT_LOGS: Lazy<Mutex<VecDeque<DesktopLogEntry>>> =
@@ -374,6 +375,7 @@ enum WindowCloseAction {
 }
 
 fn main() {
+    APP_EXITING.store(false, Ordering::SeqCst);
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -429,6 +431,7 @@ fn main() {
                                 }
                                 WindowCloseAction::ExitApp => {
                                     api.prevent_close();
+                                    mark_app_exit_started();
                                     stop_sidecar_exit_watcher();
                                     stop_resume_recovery_watcher();
                                     shutdown_sidecar();
@@ -449,6 +452,7 @@ fn main() {
                 show_main_window(app_handle);
             }
             tauri::RunEvent::Exit => {
+                mark_app_exit_started();
                 stop_sidecar_exit_watcher();
                 stop_resume_recovery_watcher();
                 shutdown_sidecar();
@@ -467,6 +471,7 @@ fn window_close_action(close_to_tray: bool) -> WindowCloseAction {
 
 #[tauri::command]
 fn force_exit_app<R: Runtime>(app: AppHandle<R>) {
+    mark_app_exit_started();
     stop_sidecar_exit_watcher();
     stop_resume_recovery_watcher();
     shutdown_sidecar();
@@ -1253,7 +1258,22 @@ fn refresh_tray_state_from_backend<R: Runtime>(app: &AppHandle<R>) {
 
 #[cfg(target_os = "macos")]
 fn recover_backend_after_reopen<R: Runtime>(app: &AppHandle<R>) {
+    if !should_dispatch_resume_recovery(is_app_exiting()) {
+        return;
+    }
     request_resume_recovery(app.clone(), "reopen".to_string(), None);
+}
+
+fn mark_app_exit_started() {
+    APP_EXITING.store(true, Ordering::SeqCst);
+}
+
+fn is_app_exiting() -> bool {
+    APP_EXITING.load(Ordering::SeqCst)
+}
+
+fn should_dispatch_resume_recovery(app_is_exiting: bool) -> bool {
+    !app_is_exiting
 }
 
 #[cfg(target_os = "macos")]
@@ -1326,6 +1346,9 @@ fn request_resume_recovery<R: Runtime + 'static>(
     trigger: String,
     gap: Option<Duration>,
 ) {
+    if !should_dispatch_resume_recovery(is_app_exiting()) {
+        return;
+    }
     let gap_suffix = gap
         .map(|value| format!(" gap_ms={}", value.as_millis()))
         .unwrap_or_default();
@@ -1350,6 +1373,15 @@ fn request_resume_recovery<R: Runtime + 'static>(
         .spawn(move || {
             let _lease = _lease;
             probe_backend_after_resume(&trigger, gap);
+
+            if !should_dispatch_resume_recovery(is_app_exiting()) {
+                log_desktop_event(
+                    "info",
+                    "recovery",
+                    format!("skip resume recovery dispatch during exit trigger={trigger}"),
+                );
+                return;
+            }
 
             let app_handle = app.clone();
             let _ = app.run_on_main_thread(move || {
@@ -1389,6 +1421,7 @@ fn handle_tray_menu_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
             );
         }
         MENU_QUIT => {
+            mark_app_exit_started();
             stop_resume_recovery_watcher();
             shutdown_sidecar();
             app.exit(0);
@@ -2078,8 +2111,9 @@ mod tests {
         parse_accounts_response, parse_proxy_status_response, persist_runtime_settings,
         proxy_menu_enabled_states, request_backend, resolve_main_window_size,
         restart_sidecar_and_wait_ready, sanitize_main_window_size, should_attempt_sidecar_recovery,
-        should_refresh_tray_after_action, should_restart_sidecar_after_exit,
-        should_retry_sidecar_request, should_trigger_resume_recovery, shutdown_sidecar_with_reason,
+        should_dispatch_resume_recovery, should_refresh_tray_after_action,
+        should_restart_sidecar_after_exit, should_retry_sidecar_request,
+        should_trigger_resume_recovery, shutdown_sidecar_with_reason,
         sidecar_candidate_paths, sidecar_creation_flags, sidecar_request_with_recovery,
         sidecar_request_with_recovery_hooks, sidecar_resource_name, spawn_sidecar,
         tray_icon_bytes_for_platform, tray_icon_is_template_for_platform, update_download_progress,
@@ -2829,6 +2863,19 @@ mod tests {
         assert!(
             try_acquire_resume_recovery_slot(&running, &last_started_ms, 11_500, 10_000).is_some(),
             "trigger after cooldown should be allowed"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resume_recovery_dispatch_skips_when_app_is_exiting() {
+        assert!(
+            !should_dispatch_resume_recovery(true),
+            "resume recovery should not dispatch after exit begins"
+        );
+        assert!(
+            should_dispatch_resume_recovery(false),
+            "resume recovery should still dispatch while app is running"
         );
     }
 
