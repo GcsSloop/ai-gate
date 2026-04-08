@@ -255,6 +255,91 @@ export type DatabaseBackupItem = {
   size_bytes: number;
 };
 
+export type ToolingClientStatus = {
+  app: "codex";
+  label: string;
+  skills_dir: string;
+  mcp_path: string;
+  skills_count: number;
+  mcp_status: "missing" | "ready";
+};
+
+export type ToolingSkillStats = {
+  total: number;
+  by_source: Record<string, number>;
+};
+
+export type ToolingSkillRepo = {
+  owner: string;
+  name: string;
+  branch: string;
+  enabled: boolean;
+  skill_count: number;
+};
+
+export type ToolingRepoSearchResult = {
+  owner: string;
+  name: string;
+  branch: string;
+  url: string;
+  description?: string;
+};
+
+export type ToolingSkillRecord = {
+  name: string;
+  description?: string;
+  directory: string;
+  source_client?: string;
+  source_repo?: string;
+  source_kind: string;
+  managed_path: string;
+  installed_apps: Record<string, boolean>;
+};
+
+export type ToolingMcpTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  type: string;
+  command?: string;
+  args?: string[];
+  url?: string;
+};
+
+export type ToolingMcpServer = {
+  id: string;
+  name: string;
+  description?: string;
+  template_id?: string;
+  enabled_apps: Record<string, boolean>;
+  client_status: Record<string, "missing" | "disabled" | "enabled">;
+  delete_allowed?: boolean;
+  delete_reason?: string;
+  delete_targets?: string[];
+  spec: Record<string, unknown>;
+};
+
+export type ToolingDiscoveredMcpServer = {
+  id: string;
+  name: string;
+  description?: string;
+  source_apps: Record<string, boolean>;
+  client_status: Record<string, "missing" | "enabled">;
+  spec: Record<string, unknown>;
+};
+
+export type ToolingState = {
+  skill_sync_method: "symlink" | "copy";
+  clients: ToolingClientStatus[];
+  skill_stats: ToolingSkillStats;
+  skill_repos: ToolingSkillRepo[];
+  installed_skills: ToolingSkillRecord[];
+  repo_search_results: ToolingRepoSearchResult[];
+  discovered_mcp_servers: ToolingDiscoveredMcpServer[];
+  mcp_templates: ToolingMcpTemplate[];
+  mcp_servers: ToolingMcpServer[];
+};
+
 export async function listAccounts(): Promise<AccountRecord[]> {
   const response = await fetch(apiPath("/accounts"));
   if (!response.ok) {
@@ -822,4 +907,199 @@ export async function disableProxy(options?: {
     throw new Error(details || "failed to disable proxy");
   }
   return response.json();
+}
+
+export async function getToolingState(): Promise<ToolingState> {
+  const response = await fetch(apiPath("/tooling/state"));
+  if (!response.ok) {
+    throw new Error("failed to load tooling state");
+  }
+  return response.json();
+}
+
+export async function saveToolingSkillSyncMethod(skill_sync_method: "symlink" | "copy"): Promise<void> {
+  const response = await fetch(apiPath("/tooling/settings"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skill_sync_method }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to save tooling settings");
+  }
+}
+
+export async function importToolingSkills(source: string): Promise<{ imported: number }> {
+  const response = await fetch(apiPath("/tooling/skills/import"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to import tooling skills");
+  }
+  return response.json();
+}
+
+export async function applyToolingSkills(apps: string[], method?: "symlink" | "copy"): Promise<{ applied: number; skill_sync_method: "symlink" | "copy" }> {
+  const response = await fetch(apiPath("/tooling/skills/apply"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apps, method }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to apply tooling skills");
+  }
+  return response.json();
+}
+
+export async function updateToolingSkill(
+  name: string,
+  payload: { apps?: string[]; method?: "symlink" | "copy"; enabled: boolean },
+): Promise<{ applied: number; enabled: boolean; skill_sync_method?: "symlink" | "copy" }> {
+  const response = await fetch(apiPath(`/tooling/skills/${encodeURIComponent(name)}`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to update tooling skill");
+  }
+  return response.json();
+}
+
+export async function deleteToolingSkill(name: string): Promise<void> {
+  const response = await fetch(apiPath(`/tooling/skills/${encodeURIComponent(name)}`), {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to delete tooling skill");
+  }
+}
+
+export async function listToolingRepos(): Promise<ToolingSkillRepo[]> {
+  const response = await fetch(apiPath("/tooling/skills/repos"));
+  if (!response.ok) {
+    throw new Error("failed to list tooling repos");
+  }
+  return response.json();
+}
+
+export async function addToolingRepo(owner: string, name: string, branch = "main"): Promise<ToolingSkillRepo> {
+  const response = await fetch(apiPath("/tooling/skills/repos"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner, name, branch }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to add tooling repo");
+  }
+  return response.json();
+}
+
+export async function removeToolingRepo(owner: string, name: string): Promise<void> {
+  const response = await fetch(apiPath(`/tooling/skills/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`), {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to remove tooling repo");
+  }
+}
+
+export async function searchToolingRepos(query: string): Promise<{ items: ToolingRepoSearchResult[] }> {
+  const response = await fetch(apiPath(`/tooling/skills/repos/search?q=${encodeURIComponent(query)}`));
+  if (!response.ok) {
+    throw new Error("failed to search tooling repos");
+  }
+  return response.json();
+}
+
+export async function listToolingMcpTemplates(): Promise<ToolingMcpTemplate[]> {
+  const response = await fetch(apiPath("/tooling/mcp/templates"));
+  if (!response.ok) {
+    throw new Error("failed to list mcp templates");
+  }
+  return response.json();
+}
+
+export async function listToolingMcpServers(): Promise<ToolingMcpServer[]> {
+  const response = await fetch(apiPath("/tooling/mcp/servers"));
+  if (!response.ok) {
+    throw new Error("failed to list mcp servers");
+  }
+  return response.json();
+}
+
+export async function importToolingMcpServers(source?: "codex"): Promise<{ imported: number }> {
+  const response = await fetch(apiPath("/tooling/mcp/import"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(source ? { source } : {}),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to import mcp servers");
+  }
+  return response.json();
+}
+
+export async function installToolingMcpServer(payload: {
+  id: string;
+  template_id: string;
+  name?: string;
+  description?: string;
+  enabled_apps?: Record<string, boolean>;
+}): Promise<ToolingMcpServer> {
+  const response = await fetch(apiPath("/tooling/mcp/install"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to install mcp server");
+  }
+  return response.json();
+}
+
+export async function updateToolingMcpServer(id: string, payload: Partial<ToolingMcpServer>): Promise<ToolingMcpServer> {
+  const response = await fetch(apiPath(`/tooling/mcp/servers/${encodeURIComponent(id)}`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to update mcp server");
+  }
+  return response.json();
+}
+
+export async function deleteToolingMcpServer(id: string, cleanupLocalFiles = false): Promise<void> {
+  const search = cleanupLocalFiles ? "?cleanup_local_files=1" : "";
+  const response = await fetch(apiPath(`/tooling/mcp/servers/${encodeURIComponent(id)}${search}`), {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to delete mcp server");
+  }
+}
+
+export async function applyToolingMcpServer(id: string, apps?: string[], enabled?: boolean): Promise<void> {
+  const response = await fetch(apiPath("/tooling/mcp/apply"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, apps, enabled }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to apply mcp server");
+  }
 }
