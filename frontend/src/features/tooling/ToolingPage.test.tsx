@@ -13,8 +13,12 @@ vi.mock("../../lib/api", async () => {
     importToolingSkills: vi.fn(),
     updateToolingSkill: vi.fn(),
     deleteToolingSkill: vi.fn(),
+    getToolingDiscoveredSkills: vi.fn(),
+    refreshToolingDiscoveredSkills: vi.fn(),
+    installToolingDiscoveredSkill: vi.fn(),
     searchToolingRepos: vi.fn(),
     addToolingRepo: vi.fn(),
+    updateToolingRepo: vi.fn(),
     removeToolingRepo: vi.fn(),
     importToolingMcpServers: vi.fn(),
     applyToolingMcpServer: vi.fn(),
@@ -44,6 +48,7 @@ function buildToolingState(): api.ToolingState {
     },
     skill_repos: [
       {
+        platform: "github",
         owner: "openai",
         name: "codex-superpowers",
         branch: "main",
@@ -126,6 +131,44 @@ function buildToolingState(): api.ToolingState {
   };
 }
 
+function buildDiscoveredSkillResponse(overrides?: Partial<api.ToolingSkillDiscoveryResponse>): api.ToolingSkillDiscoveryResponse {
+  return {
+    cached: true,
+    fetched_at: "2026-04-08T10:00:00Z",
+    items: [
+      {
+        id: "github:openai/codex-skills:main:skills/zulu",
+        name: "Zulu Skill",
+        description: "Cached zulu summary",
+        platform: "github",
+        repo_owner: "openai",
+        repo_name: "codex-skills",
+        branch: "main",
+        repo_url: "https://github.com/openai/codex-skills",
+        source_path: "skills/zulu",
+        source_url: "https://github.com/openai/codex-skills/tree/main/skills/zulu",
+        managed_name: "codex-skills-zulu",
+        installed_apps: { codex: false },
+      },
+      {
+        id: "github:openai/codex-skills:main:skills/alpha",
+        name: "Alpha Skill",
+        description: "Cached alpha summary",
+        platform: "github",
+        repo_owner: "openai",
+        repo_name: "codex-skills",
+        branch: "main",
+        repo_url: "https://github.com/openai/codex-skills",
+        source_path: "skills/alpha",
+        source_url: "https://github.com/openai/codex-skills/tree/main/skills/alpha",
+        managed_name: "codex-skills-alpha",
+        installed_apps: { codex: false },
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -143,11 +186,42 @@ describe("ToolingPage", () => {
     vi.mocked(api.importToolingSkills).mockResolvedValue({ imported: 1 });
     vi.mocked(api.updateToolingSkill).mockResolvedValue({ applied: 1, enabled: true, skill_sync_method: "symlink" });
     vi.mocked(api.deleteToolingSkill).mockResolvedValue();
+    vi.mocked((api as typeof api & { getToolingDiscoveredSkills: typeof vi.fn }).getToolingDiscoveredSkills).mockResolvedValue(buildDiscoveredSkillResponse());
+    vi.mocked((api as typeof api & { refreshToolingDiscoveredSkills: typeof vi.fn }).refreshToolingDiscoveredSkills).mockResolvedValue(
+      buildDiscoveredSkillResponse({
+        cached: false,
+        fetched_at: "2026-04-08T10:01:00Z",
+        items: [
+          {
+            ...buildDiscoveredSkillResponse().items[1],
+            description: "Latest alpha summary",
+          },
+          {
+            ...buildDiscoveredSkillResponse().items[0],
+            description: "Latest zulu summary",
+          },
+        ],
+      }),
+    );
+    vi.mocked((api as typeof api & { installToolingDiscoveredSkill: typeof vi.fn }).installToolingDiscoveredSkill).mockResolvedValue({
+      applied: 1,
+      enabled: true,
+      skill_sync_method: "symlink",
+    });
     vi.mocked(api.searchToolingRepos).mockResolvedValue({ items: [] });
     vi.mocked(api.addToolingRepo).mockResolvedValue({
+      platform: "github",
       owner: "openai",
       name: "codex-superpowers",
       branch: "main",
+      enabled: true,
+      skill_count: 12,
+    });
+    vi.mocked((api as typeof api & { updateToolingRepo: typeof vi.fn }).updateToolingRepo).mockResolvedValue({
+      platform: "gitlab",
+      owner: "gitlab-org",
+      name: "codex-superpowers",
+      branch: "develop",
       enabled: true,
       skill_count: 12,
     });
@@ -245,16 +319,109 @@ describe("ToolingPage", () => {
     await waitFor(() => expect(api.deleteToolingSkill).toHaveBeenCalledWith("superpowers"));
   });
 
-  it("shows skills discovery in a modal", async () => {
+  it("shows full-screen skills discovery with cached list by default and silently refreshes it", async () => {
+    const refreshDeferred = createDeferred<api.ToolingSkillDiscoveryResponse>();
+    vi.mocked((api as typeof api & { refreshToolingDiscoveredSkills: typeof vi.fn }).refreshToolingDiscoveredSkills).mockImplementationOnce(() => refreshDeferred.promise);
+
     render(<ToolingPage mode="skills" t={(text) => text} />);
 
     await screen.findByText("Skill 技能");
     fireEvent.click(screen.getByRole("button", { name: /发现技能/ }));
 
     const dialog = await screen.findByRole("dialog", { name: "发现技能" });
-    expect(within(dialog).getByText("仓库搜索")).toBeInTheDocument();
-    expect(within(dialog).getByText("仓库管理")).toBeInTheDocument();
-    expect(within(dialog).getByText("openai/codex-superpowers")).toBeInTheDocument();
+    expect(within(dialog).getByPlaceholderText("搜索发现的技能")).toBeInTheDocument();
+    expect(within(dialog).getByText("使用缓存")).toBeInTheDocument();
+    const skillTitles = within(dialog).getAllByTestId("tooling-discovered-skill-title").map((node) => node.textContent);
+    expect(skillTitles).toEqual(["Alpha Skill", "Zulu Skill"]);
+
+    refreshDeferred.resolve(buildDiscoveredSkillResponse({
+      cached: false,
+      fetched_at: "2026-04-08T10:05:00Z",
+      items: [
+        {
+          ...buildDiscoveredSkillResponse().items[1],
+          description: "Latest alpha summary",
+        },
+        {
+          ...buildDiscoveredSkillResponse().items[0],
+          description: "Latest zulu summary",
+        },
+      ],
+    }));
+
+    expect(await within(dialog).findByText("Latest alpha summary")).toBeInTheDocument();
+    expect(within(dialog).getByText("已更新")).toBeInTheDocument();
+  });
+
+  it("supports manual refresh, viewing source repo, and installing a discovered skill", async () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    render(<ToolingPage mode="skills" t={(text) => text} />);
+
+    await screen.findByText("Skill 技能");
+    fireEvent.click(screen.getByRole("button", { name: /发现技能/ }));
+
+    const dialog = await screen.findByRole("dialog", { name: "发现技能" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "刷新技能索引" }));
+
+    await waitFor(() =>
+      expect(vi.mocked((api as typeof api & { refreshToolingDiscoveredSkills: typeof vi.fn }).refreshToolingDiscoveredSkills)).toHaveBeenCalled(),
+    );
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "查看 Alpha Skill 的仓库页面" }));
+    expect(openSpy).toHaveBeenCalledWith("https://github.com/openai/codex-skills", "_blank", "noopener,noreferrer");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "安装 Alpha Skill" }));
+    await waitFor(() =>
+      expect(vi.mocked((api as typeof api & { installToolingDiscoveredSkill: typeof vi.fn }).installToolingDiscoveredSkill)).toHaveBeenCalledWith({
+        id: "github:openai/codex-skills:main:skills/alpha",
+        apps: ["codex"],
+      }),
+    );
+  });
+
+  it("manages repositories in a secondary modal with create, update, and delete actions", async () => {
+    render(<ToolingPage mode="skills" t={(text) => text} />);
+
+    await screen.findByText("Skill 技能");
+    fireEvent.click(screen.getByRole("button", { name: /发现技能/ }));
+
+    const discoverDialog = await screen.findByRole("dialog", { name: "发现技能" });
+    fireEvent.click(within(discoverDialog).getByRole("button", { name: "仓库管理" }));
+
+    const repoDialog = (await screen.findAllByRole("dialog")).at(-1)!;
+    fireEvent.change(within(repoDialog).getByLabelText("仓库平台"), { target: { value: "gitlab" } });
+    fireEvent.change(within(repoDialog).getByLabelText("仓库归属"), { target: { value: "gitlab-org" } });
+    fireEvent.change(within(repoDialog).getByLabelText("仓库名称"), { target: { value: "codex-superpowers" } });
+    fireEvent.change(within(repoDialog).getByLabelText("分支"), { target: { value: "develop" } });
+    fireEvent.click(within(repoDialog).getByRole("button", { name: "添加仓库" }));
+
+    await waitFor(() => expect(api.addToolingRepo).toHaveBeenCalledWith("gitlab", "gitlab-org", "codex-superpowers", "develop"));
+
+    fireEvent.click(within(repoDialog).getByRole("button", { name: "编辑 openai/codex-superpowers" }));
+    fireEvent.change(within(repoDialog).getByLabelText("仓库平台"), { target: { value: "gitlab" } });
+    fireEvent.change(within(repoDialog).getByLabelText("仓库归属"), { target: { value: "gitlab-org" } });
+    fireEvent.change(within(repoDialog).getByLabelText("分支"), { target: { value: "develop" } });
+    fireEvent.click(within(repoDialog).getByRole("button", { name: "保存仓库" }));
+
+    await waitFor(() =>
+      expect(vi.mocked((api as typeof api & { updateToolingRepo: typeof vi.fn }).updateToolingRepo)).toHaveBeenCalledWith(
+        "github",
+        "openai",
+        "codex-superpowers",
+        {
+          platform: "gitlab",
+          owner: "gitlab-org",
+          name: "codex-superpowers",
+          branch: "develop",
+        },
+      ),
+    );
+
+    const refreshedRepoDialog = (await screen.findAllByRole("dialog")).at(-1)!;
+    await waitFor(() => expect(within(refreshedRepoDialog).getByRole("button", { name: "移除 openai/codex-superpowers" })).not.toBeDisabled());
+    fireEvent.click(within(refreshedRepoDialog).getByRole("button", { name: "移除 openai/codex-superpowers" }));
+    await waitFor(() => expect(api.removeToolingRepo).toHaveBeenCalledWith("github", "openai", "codex-superpowers"));
   });
 
   it("renders the minimal mcp management layout and toggles codex sync", async () => {

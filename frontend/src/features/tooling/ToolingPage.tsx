@@ -2,7 +2,10 @@ import {
   CheckCircleOutlined,
   CloudDownloadOutlined,
   DeleteOutlined,
+  EditOutlined,
+  LinkOutlined,
   PlusOutlined,
+  ReloadOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
 import { Button, Card, Checkbox, Empty, Input, Modal, Space, Spin, Typography, message } from "antd";
@@ -13,15 +16,20 @@ import {
   applyToolingMcpServer,
   deleteToolingMcpServer,
   deleteToolingSkill,
+  getToolingDiscoveredSkills,
   getToolingState,
   importToolingMcpServers,
   importToolingSkills,
+  installToolingDiscoveredSkill,
   removeToolingRepo,
-  searchToolingRepos,
+  refreshToolingDiscoveredSkills,
   updateToolingSkill,
+  updateToolingRepo,
+  type ToolingDiscoveredSkill,
   type ToolingMcpServer,
-  type ToolingRepoSearchResult,
   type ToolingSkillRecord,
+  type ToolingSkillRepo,
+  type ToolingSkillDiscoveryResponse,
   type ToolingState,
 } from "../../lib/api";
 import sourceOpenAIIcon from "../../assets/providers/openai.png";
@@ -31,10 +39,6 @@ type ToolingMode = "skills" | "mcp";
 type ToolingPageProps = {
   mode: ToolingMode;
   t: (text: string) => string;
-};
-
-type RepoSearchRow = ToolingRepoSearchResult & {
-  key: string;
 };
 
 type ManagedClientDescriptor = {
@@ -60,11 +64,27 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   const [loading, setLoading] = useState(true);
   const [state, setState] = useState<ToolingState | null>(null);
   const [skillDiscoverOpen, setSkillDiscoverOpen] = useState(false);
-  const [repoQuery, setRepoQuery] = useState("");
-  const [repoSearchLoading, setRepoSearchLoading] = useState(false);
-  const [repoSearchResults, setRepoSearchResults] = useState<RepoSearchRow[]>([]);
+  const [repoManagerOpen, setRepoManagerOpen] = useState(false);
+  const [discoveryQuery, setDiscoveryQuery] = useState("");
+  const [discoveryResponse, setDiscoveryResponse] = useState<ToolingSkillDiscoveryResponse | null>(null);
+  const [discoveryLoading, setDiscoveryLoading] = useState(false);
+  const [discoveryRefreshing, setDiscoveryRefreshing] = useState(false);
+  const [discoveryStatus, setDiscoveryStatus] = useState("");
+  const [discoveryBusyId, setDiscoveryBusyId] = useState<string | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [repoBusyKey, setRepoBusyKey] = useState<string | null>(null);
+  const [repoForm, setRepoForm] = useState<{
+    platform: "github" | "gitlab";
+    owner: string;
+    name: string;
+    branch: string;
+  }>({
+    platform: "github",
+    owner: "",
+    name: "",
+    branch: "main",
+  });
+  const [repoEditing, setRepoEditing] = useState<ToolingSkillRepo | null>(null);
   const [skillBusyName, setSkillBusyName] = useState<string | null>(null);
   const [mcpBusyId, setMcpBusyId] = useState<string | null>(null);
 
@@ -89,14 +109,78 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     void reload();
   }, []);
 
+  useEffect(() => {
+    if (!skillDiscoverOpen || mode !== "skills") {
+      return;
+    }
+    let active = true;
+    setDiscoveryLoading(true);
+    void getToolingDiscoveredSkills()
+      .then((response) => {
+        if (!active) {
+          return;
+        }
+        setDiscoveryResponse(sortDiscoveryResponse(response));
+        setDiscoveryStatus(response.cached ? t("使用缓存") : t("最新索引"));
+      })
+      .catch((error) => {
+        if (!active) {
+          return;
+        }
+        void messageApi.error(error instanceof Error ? error.message : t("加载发现技能失败"));
+      })
+      .finally(() => {
+        if (active) {
+          setDiscoveryLoading(false);
+        }
+      });
+
+    setDiscoveryRefreshing(true);
+    void refreshToolingDiscoveredSkills()
+      .then((response) => {
+        if (!active) {
+          return;
+        }
+        setDiscoveryResponse(sortDiscoveryResponse(response));
+        setDiscoveryStatus(t("已更新"));
+      })
+      .catch((error) => {
+        if (!active) {
+          return;
+        }
+        if (!discoveryResponse) {
+          void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setDiscoveryRefreshing(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [skillDiscoverOpen, mode]);
+
   const skillCount = state?.skill_stats.by_source.codex ?? 0;
   const mcpCount = state?.mcp_servers.length ?? 0;
-  const repoRows = repoSearchResults.length > 0
-    ? repoSearchResults
-    : (state?.repo_search_results ?? []).map((item) => ({ ...item, key: `${item.owner}/${item.name}` }));
-
   const skills = useMemo(() => state?.installed_skills ?? [], [state?.installed_skills]);
+  const skillRepos = useMemo(
+    () => [...(state?.skill_repos ?? [])].sort((a, b) => `${a.platform ?? "github"}:${a.owner}/${a.name}`.localeCompare(`${b.platform ?? "github"}:${b.owner}/${b.name}`)),
+    [state?.skill_repos],
+  );
   const mcpServers = useMemo(() => state?.mcp_servers ?? [], [state?.mcp_servers]);
+  const discoveredSkills = useMemo(() => {
+    const items = [...(discoveryResponse?.items ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+    const query = discoveryQuery.trim().toLowerCase();
+    if (!query) {
+      return items;
+    }
+    return items.filter((item) =>
+      [item.name, item.description ?? "", item.repo_owner, item.repo_name, item.source_path].join(" ").toLowerCase().includes(query),
+    );
+  }, [discoveryQuery, discoveryResponse?.items]);
 
   async function handleImportSkills() {
     setImportBusy(true);
@@ -217,30 +301,50 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     });
   }
 
-  async function handleRepoSearch() {
-    const query = repoQuery.trim();
-    if (!query) {
-      setRepoSearchResults([]);
-      return;
-    }
-    setRepoSearchLoading(true);
+  async function handleDiscoveryRefresh() {
+    setDiscoveryLoading(true);
     try {
-      const result = await searchToolingRepos(query);
-      setRepoSearchResults(result.items.map((item) => ({ ...item, key: `${item.owner}/${item.name}` })));
+      const response = await refreshToolingDiscoveredSkills();
+      setDiscoveryResponse(sortDiscoveryResponse(response));
+      setDiscoveryStatus(t("已更新"));
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : t("搜索失败"));
+      void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
     } finally {
-      setRepoSearchLoading(false);
+      setDiscoveryLoading(false);
     }
   }
 
-  async function handleRepoAdd(owner: string, name: string, branch = "main") {
-    const key = `${owner}/${name}`;
+  async function handleDiscoveredSkillInstall(skill: ToolingDiscoveredSkill) {
+    setDiscoveryBusyId(skill.id);
+    try {
+      await installToolingDiscoveredSkill({ id: skill.id, apps: ["codex"] });
+      void messageApi.success(t("安装成功"));
+      await reload({ background: true });
+      const response = await refreshToolingDiscoveredSkills();
+      setDiscoveryResponse(sortDiscoveryResponse(response));
+      setDiscoveryStatus(t("已更新"));
+    } catch (error) {
+      void messageApi.error(error instanceof Error ? error.message : t("安装失败"));
+    } finally {
+      setDiscoveryBusyId(null);
+    }
+  }
+
+  function handleViewDiscoveredSkill(skill: ToolingDiscoveredSkill) {
+    window.open(skill.repo_url, "_blank", "noopener,noreferrer");
+  }
+
+  async function handleRepoAdd() {
+    const key = repoRecordKey(repoForm.platform, repoForm.owner, repoForm.name);
     setRepoBusyKey(key);
     try {
-      await addToolingRepo(owner, name, branch);
+      await addToolingRepo(repoForm.platform, repoForm.owner, repoForm.name, repoForm.branch);
       void messageApi.success(t("仓库已添加"));
+      resetRepoForm();
       await reload({ background: true });
+      const response = await refreshToolingDiscoveredSkills();
+      setDiscoveryResponse(sortDiscoveryResponse(response));
+      setDiscoveryStatus(t("已更新"));
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("添加失败"));
     } finally {
@@ -248,13 +352,58 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     }
   }
 
-  async function handleRepoRemove(owner: string, name: string) {
-    const key = `${owner}/${name}`;
+  async function handleRepoSave() {
+    if (!repoEditing) {
+      await handleRepoAdd();
+      return;
+    }
+    const key = repoRecordKey(repoEditing.platform ?? "github", repoEditing.owner, repoEditing.name);
     setRepoBusyKey(key);
     try {
-      await removeToolingRepo(owner, name);
+      await updateToolingRepo(repoEditing.platform ?? "github", repoEditing.owner, repoEditing.name, repoForm);
+      void messageApi.success(t("仓库已更新"));
+      resetRepoForm();
+      await reload({ background: true });
+      const response = await refreshToolingDiscoveredSkills();
+      setDiscoveryResponse(sortDiscoveryResponse(response));
+      setDiscoveryStatus(t("已更新"));
+    } catch (error) {
+      void messageApi.error(error instanceof Error ? error.message : t("更新失败"));
+    } finally {
+      setRepoBusyKey(null);
+    }
+  }
+
+  function startRepoEdit(repo: ToolingSkillRepo) {
+    setRepoEditing(repo);
+    setRepoForm({
+      platform: repo.platform ?? "github",
+      owner: repo.owner,
+      name: repo.name,
+      branch: repo.branch,
+    });
+  }
+
+  function resetRepoForm() {
+    setRepoEditing(null);
+    setRepoForm({
+      platform: "github",
+      owner: "",
+      name: "",
+      branch: "main",
+    });
+  }
+
+  async function handleRepoRemove(repo: ToolingSkillRepo) {
+    const key = repoRecordKey(repo.platform ?? "github", repo.owner, repo.name);
+    setRepoBusyKey(key);
+    try {
+      await removeToolingRepo(repo.platform ?? "github", repo.owner, repo.name);
       void messageApi.success(t("仓库已删除"));
       await reload({ background: true });
+      const response = await refreshToolingDiscoveredSkills();
+      setDiscoveryResponse(sortDiscoveryResponse(response));
+      setDiscoveryStatus(t("已更新"));
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("删除失败"));
     } finally {
@@ -354,52 +503,137 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
         title={t("发现技能")}
         onCancel={() => setSkillDiscoverOpen(false)}
         footer={null}
-        centered
+        width="100vw"
+        style={{ top: 0, paddingBottom: 0 }}
+        className="tooling-discovery-modal"
         destroyOnHidden
       >
-        <Space orientation="vertical" size={16} style={{ width: "100%" }}>
-          <div>
-            <div className="tooling-modal-section-title">{t("仓库搜索")}</div>
-            <Space.Compact className="tooling-search-bar">
-              <Input value={repoQuery} onChange={(event) => setRepoQuery(event.target.value)} placeholder={t("输入仓库关键词")} />
-              <Button icon={<SearchOutlined />} loading={repoSearchLoading} onClick={() => void handleRepoSearch()}>
-                {t("搜索")}
+        <div className="tooling-discovery-shell">
+          <div className="tooling-discovery-toolbar">
+            <Input
+              value={discoveryQuery}
+              onChange={(event) => setDiscoveryQuery(event.target.value)}
+              placeholder={t("搜索发现的技能")}
+              className="tooling-discovery-search"
+            />
+            <Space wrap size={10}>
+              <Typography.Text type="secondary">{discoveryStatus || (discoveryRefreshing ? t("正在更新") : "")}</Typography.Text>
+              <Button icon={<ReloadOutlined />} loading={discoveryLoading} aria-label={t("刷新技能索引")} onClick={() => void handleDiscoveryRefresh()}>
+                {t("刷新")}
               </Button>
-            </Space.Compact>
-            <div className="tooling-discovery-list">
-              {repoRows.length > 0 ? repoRows.map((repo) => (
-                <DiscoveryRow
-                  key={repo.key}
-                  title={`${repo.owner}/${repo.name}`}
-                  description={repo.description || repo.branch}
-                  actionLabel={t("添加")}
-                  actionBusy={repoBusyKey === `${repo.owner}/${repo.name}`}
-                  onAction={() => void handleRepoAdd(repo.owner, repo.name, repo.branch)}
-                />
-              )) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("暂无搜索结果")} />}
-            </div>
+              <Button aria-label={t("仓库管理")} onClick={() => setRepoManagerOpen(true)}>
+                {t("仓库管理")}
+              </Button>
+            </Space>
           </div>
 
-          <div>
-            <div className="tooling-modal-section-title">{t("仓库管理")}</div>
-            <div className="tooling-discovery-list">
-              {state.skill_repos.length > 0 ? state.skill_repos.map((repo) => (
-                <DiscoveryRow
-                  key={`${repo.owner}/${repo.name}`}
-                  title={`${repo.owner}/${repo.name}`}
-                  description={`${repo.branch} · ${repo.skill_count} skills`}
-                  actionLabel={t("移除")}
-                  danger
-                  actionBusy={repoBusyKey === `${repo.owner}/${repo.name}`}
-                  onAction={() => void handleRepoRemove(repo.owner, repo.name)}
+          <div className="tooling-discovery-list tooling-discovery-grid">
+            {discoveryLoading && !discoveryResponse ? (
+              <div className="tooling-discovery-loading">
+                <Spin size="large" />
+              </div>
+            ) : discoveredSkills.length > 0 ? (
+              discoveredSkills.map((skill) => (
+                <DiscoveredSkillCard
+                  key={skill.id}
+                  skill={skill}
+                  busy={discoveryBusyId === skill.id}
+                  onView={() => handleViewDiscoveredSkill(skill)}
+                  onInstall={() => void handleDiscoveredSkillInstall(skill)}
                 />
-              )) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("暂无已管理仓库")} />}
-            </div>
+              ))
+            ) : (
+              <Empty description={t("暂无发现技能")} />
+            )}
           </div>
-        </Space>
+        </div>
+      </Modal>
+
+      <Modal
+        open={repoManagerOpen}
+        title={t("仓库管理")}
+        onCancel={() => {
+          setRepoManagerOpen(false);
+          resetRepoForm();
+        }}
+        footer={null}
+        destroyOnHidden
+      >
+        <div className="tooling-repo-manager-shell">
+          <div className="tooling-repo-form-grid">
+            <label className="tooling-repo-field">
+              <span>{t("仓库平台")}</span>
+              <select
+                aria-label={t("仓库平台")}
+                value={repoForm.platform}
+                onChange={(event) => setRepoForm((current) => ({ ...current, platform: event.target.value as "github" | "gitlab" }))}
+              >
+                <option value="github">GitHub</option>
+                <option value="gitlab">GitLab</option>
+              </select>
+            </label>
+            <label className="tooling-repo-field">
+              <span>{t("仓库归属")}</span>
+              <input
+                aria-label={t("仓库归属")}
+                value={repoForm.owner}
+                onChange={(event) => setRepoForm((current) => ({ ...current, owner: event.target.value }))}
+              />
+            </label>
+            <label className="tooling-repo-field">
+              <span>{t("仓库名称")}</span>
+              <input
+                aria-label={t("仓库名称")}
+                value={repoForm.name}
+                onChange={(event) => setRepoForm((current) => ({ ...current, name: event.target.value }))}
+              />
+            </label>
+            <label className="tooling-repo-field">
+              <span>{t("分支")}</span>
+              <input
+                aria-label={t("分支")}
+                value={repoForm.branch}
+                onChange={(event) => setRepoForm((current) => ({ ...current, branch: event.target.value }))}
+              />
+            </label>
+          </div>
+          <Space wrap size={10}>
+            <Button type="primary" onClick={() => void handleRepoSave()}>
+              {repoEditing ? t("保存仓库") : t("添加仓库")}
+            </Button>
+            {repoEditing ? (
+              <Button onClick={() => resetRepoForm()}>
+                {t("取消编辑")}
+              </Button>
+            ) : null}
+          </Space>
+
+          <div className="tooling-discovery-list">
+            {skillRepos.length > 0 ? skillRepos.map((repo) => (
+              <RepoManageRow
+                key={repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
+                repo={repo}
+                busy={repoBusyKey === repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
+                onEdit={() => startRepoEdit(repo)}
+                onDelete={() => void handleRepoRemove(repo)}
+              />
+            )) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("暂无已管理仓库")} />}
+          </div>
+        </div>
       </Modal>
     </div>
   );
+}
+
+function sortDiscoveryResponse(response: ToolingSkillDiscoveryResponse): ToolingSkillDiscoveryResponse {
+  return {
+    ...response,
+    items: [...response.items].sort((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+function repoRecordKey(platform: string, owner: string, name: string): string {
+  return `${platform}:${owner}/${name}`;
 }
 
 function DeleteMcpConfirmContent({
@@ -444,6 +678,69 @@ function DeleteMcpConfirmContent({
         </div>
       ) : null}
     </Space>
+  );
+}
+
+function DiscoveredSkillCard({
+  skill,
+  busy,
+  onView,
+  onInstall,
+}: {
+  skill: ToolingDiscoveredSkill;
+  busy?: boolean;
+  onView: () => void;
+  onInstall: () => void;
+}) {
+  const installed = Boolean(skill.installed_apps?.codex);
+  return (
+    <div className="tooling-discovered-card">
+      <div className="tooling-discovered-card-main">
+        <div className="tooling-discovered-card-meta">
+          <span className="tooling-discovered-platform">{skill.platform.toUpperCase()}</span>
+          <span className="tooling-discovered-repo">{`${skill.repo_owner}/${skill.repo_name}`}</span>
+        </div>
+        <div className="tooling-item-title" data-testid="tooling-discovered-skill-title">{skill.name}</div>
+        {skill.description ? <div className="tooling-item-description is-default">{skill.description}</div> : null}
+      </div>
+      <div className="tooling-discovered-card-actions">
+        <Button icon={<LinkOutlined />} aria-label={`查看 ${skill.name} 的仓库页面`} onClick={onView}>
+          查看
+        </Button>
+        <Button type="primary" icon={<PlusOutlined />} loading={busy} disabled={installed} aria-label={`安装 ${skill.name}`} onClick={onInstall}>
+          {installed ? "已安装" : "安装"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function RepoManageRow({
+  repo,
+  busy,
+  onEdit,
+  onDelete,
+}: {
+  repo: ToolingSkillRepo;
+  busy?: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="tooling-repo-row">
+      <div className="tooling-repo-main">
+        <div className="tooling-repo-title">{`${repo.owner}/${repo.name}`}</div>
+        <div className="stats-subtitle">{`${(repo.platform ?? "github").toUpperCase()} · ${repo.branch} · ${repo.skill_count} skills`}</div>
+      </div>
+      <Space size={8}>
+        <Button size="small" icon={<EditOutlined />} aria-label={`编辑 ${repo.owner}/${repo.name}`} onClick={onEdit}>
+          编辑
+        </Button>
+        <Button size="small" danger loading={busy} icon={<DeleteOutlined />} aria-label={`移除 ${repo.owner}/${repo.name}`} onClick={onDelete}>
+          移除
+        </Button>
+      </Space>
+    </div>
   );
 }
 
