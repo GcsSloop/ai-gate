@@ -162,6 +162,105 @@ func TestToolingHandlerIgnoresDotSystemSkillCollectionsOnImport(t *testing.T) {
 	}
 }
 
+func TestToolingHandlerImportSkipsExistingManagedSkillCollection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	managedDir := filepath.Join(home, ".aigate", "data", "tooling", "skills", "Humanizer-zh")
+	seedSkill(t, managedDir, "Managed humanizer skill")
+	seedSkill(t, filepath.Join(home, ".codex", "skills", "Humanizer-zh"), "Codex humanizer skill")
+	handler := api.NewToolingHandler()
+
+	imported := doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/import", bytes.NewBufferString(`{"source":"codex"}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
+	if !strings.Contains(string(imported), `"imported":0`) {
+		t.Fatalf("import response = %s, want imported 0", string(imported))
+	}
+
+	raw, err := os.ReadFile(filepath.Join(managedDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("ReadFile managed skill: %v", err)
+	}
+	if string(raw) != "Managed humanizer skill" {
+		t.Fatalf("managed skill body = %q, want preserved managed content", string(raw))
+	}
+}
+
+func TestToolingHandlerImportSkipsCodexSymlinkedManagedSkillCollection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	managedDir := filepath.Join(home, ".aigate", "data", "tooling", "skills", "Humanizer-zh")
+	seedSkill(t, managedDir, "Managed humanizer skill")
+	codexSkillsRoot := filepath.Join(home, ".codex", "skills")
+	if err := os.MkdirAll(codexSkillsRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll codex skills root: %v", err)
+	}
+	if err := os.Symlink(managedDir, filepath.Join(codexSkillsRoot, "Humanizer-zh")); err != nil {
+		t.Fatalf("Symlink managed skill into codex: %v", err)
+	}
+	handler := api.NewToolingHandler()
+
+	imported := doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/import", bytes.NewBufferString(`{"source":"codex"}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
+	if !strings.Contains(string(imported), `"imported":0`) {
+		t.Fatalf("import response = %s, want imported 0", string(imported))
+	}
+
+	raw, err := os.ReadFile(filepath.Join(managedDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("ReadFile managed skill: %v", err)
+	}
+	if string(raw) != "Managed humanizer skill" {
+		t.Fatalf("managed skill body = %q, want preserved managed content", string(raw))
+	}
+}
+
+func TestToolingHandlerImportCopiesExternalSymlinkedSkillCollection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	externalDir := filepath.Join(home, "external-skills", "Humanizer-zh")
+	seedSkill(t, externalDir, "External humanizer skill")
+	if err := os.WriteFile(filepath.Join(externalDir, "notes.txt"), []byte("keep me\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile extra file: %v", err)
+	}
+	codexSkillsRoot := filepath.Join(home, ".codex", "skills")
+	if err := os.MkdirAll(codexSkillsRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll codex skills root: %v", err)
+	}
+	if err := os.Symlink(externalDir, filepath.Join(codexSkillsRoot, "Humanizer-zh")); err != nil {
+		t.Fatalf("Symlink external skill into codex: %v", err)
+	}
+	handler := api.NewToolingHandler()
+
+	imported := doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/import", bytes.NewBufferString(`{"source":"codex"}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
+	if !strings.Contains(string(imported), `"imported":1`) {
+		t.Fatalf("import response = %s, want imported 1", string(imported))
+	}
+
+	managedDir := filepath.Join(home, ".aigate", "data", "tooling", "skills", "Humanizer-zh")
+	info, err := os.Lstat(managedDir)
+	if err != nil {
+		t.Fatalf("Lstat managed dir: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("managed dir should be copied directory, got symlink")
+	}
+	raw, err := os.ReadFile(filepath.Join(managedDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("ReadFile managed skill: %v", err)
+	}
+	if string(raw) != "External humanizer skill" {
+		t.Fatalf("managed skill body = %q, want external content", string(raw))
+	}
+	extra, err := os.ReadFile(filepath.Join(managedDir, "notes.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile copied extra file: %v", err)
+	}
+	if string(extra) != "keep me\n" {
+		t.Fatalf("copied extra file = %q, want preserved extra file", string(extra))
+	}
+}
+
 func TestToolingHandlerStateSkipsHiddenManagedSkillCollections(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -503,6 +602,75 @@ args = ["`+artifactFile+`"]
 	}
 	if _, err := os.Stat(unrelatedRoot); err != nil {
 		t.Fatalf("expected unrelated artifact kept, stat err = %v", err)
+	}
+}
+
+func TestToolingHandlerDeleteMcpServerDoesNotPromoteSharedCodexParentDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	handler := api.NewToolingHandler()
+	sharedRoot := filepath.Join(home, ".codex", "mcp", "servers")
+	binFile := filepath.Join(sharedRoot, "node_modules", ".bin", "mcp-server-github")
+	otherFile := filepath.Join(sharedRoot, "node_modules", ".bin", "mcp-server-time")
+	if err := os.MkdirAll(filepath.Dir(binFile), 0o755); err != nil {
+		t.Fatalf("MkdirAll shared bin dir: %v", err)
+	}
+	if err := os.WriteFile(binFile, []byte("github\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile github bin: %v", err)
+	}
+	if err := os.WriteFile(otherFile, []byte("time\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile other bin: %v", err)
+	}
+	writeToolingConfig(t, home, map[string]any{
+		"skill_sync_method": "symlink",
+		"skill_repos":       []any{},
+		"mcp_servers": []map[string]any{
+			{
+				"id":           "github",
+				"name":         "mcp-server-github",
+				"enabled_apps": map[string]bool{"codex": true},
+				"spec": map[string]any{
+					"type":    "stdio",
+					"command": binFile,
+				},
+			},
+		},
+	})
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatalf("MkdirAll codex: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(`[mcp_servers.github]
+type = "stdio"
+command = "`+binFile+`"
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile codex config: %v", err)
+	}
+
+	state := doToolingRequest(t, handler, http.MethodGet, "/tooling/state", nil, nil, http.StatusOK)
+	var payload map[string]any
+	if err := json.Unmarshal(state, &payload); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	servers := payload["mcp_servers"].([]any)
+	server := servers[0].(map[string]any)
+	deleteTargets, ok := server["delete_targets"].([]any)
+	if !ok || len(deleteTargets) != 1 || deleteTargets[0] != binFile {
+		t.Fatalf("delete_targets = %v, want only executable file path", server["delete_targets"])
+	}
+
+	deleted := doToolingRequest(t, handler, http.MethodDelete, "/tooling/mcp/servers/github?cleanup_local_files=1", nil, nil, http.StatusOK)
+	if !strings.Contains(string(deleted), `"deleted":true`) {
+		t.Fatalf("delete response = %s, want deleted true", string(deleted))
+	}
+	if _, err := os.Stat(binFile); !os.IsNotExist(err) {
+		t.Fatalf("expected github executable removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(sharedRoot); err != nil {
+		t.Fatalf("expected shared root kept, stat err = %v", err)
+	}
+	if _, err := os.Stat(otherFile); err != nil {
+		t.Fatalf("expected sibling executable kept, stat err = %v", err)
 	}
 }
 
