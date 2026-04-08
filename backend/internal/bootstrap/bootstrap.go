@@ -135,6 +135,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		api.WithSettingsAccounts(accountRepo),
 		api.WithSettingsCredentialCipher(credentialCipher),
 	)
+	toolingHandler := api.NewToolingHandler()
 	apiMux.Handle("/settings/codex/backup", settingsHandler)
 	apiMux.Handle("/settings/codex/backups", settingsHandler)
 	apiMux.Handle("/settings/codex/backups/", settingsHandler)
@@ -153,6 +154,20 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/settings/proxy/status", settingsHandler)
 	apiMux.Handle("/settings/proxy/enable", settingsHandler)
 	apiMux.Handle("/settings/proxy/disable", settingsHandler)
+	apiMux.Handle("/tooling/state", toolingHandler)
+	apiMux.Handle("/tooling/settings", toolingHandler)
+	apiMux.Handle("/tooling/skills/import", toolingHandler)
+	apiMux.Handle("/tooling/skills/apply", toolingHandler)
+	apiMux.Handle("/tooling/skills/", toolingHandler)
+	apiMux.Handle("/tooling/skills/repos", toolingHandler)
+	apiMux.Handle("/tooling/skills/repos/search", toolingHandler)
+	apiMux.Handle("/tooling/skills/repos/", toolingHandler)
+	apiMux.Handle("/tooling/mcp/templates", toolingHandler)
+	apiMux.Handle("/tooling/mcp/servers", toolingHandler)
+	apiMux.Handle("/tooling/mcp/servers/", toolingHandler)
+	apiMux.Handle("/tooling/mcp/import", toolingHandler)
+	apiMux.Handle("/tooling/mcp/install", toolingHandler)
+	apiMux.Handle("/tooling/mcp/apply", toolingHandler)
 	gatewayHandler := api.NewGatewayHandler(
 		accountRepo,
 		usageRepo,

@@ -17,7 +17,8 @@ import (
 )
 
 func TestNewApp(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
 	app, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
 		ListenAddr:   "127.0.0.1:0",
@@ -77,6 +78,28 @@ func TestNewApp(t *testing.T) {
 	app.Handler().ServeHTTP(deleteRec, deleteReq)
 	if deleteRec.Code == http.StatusNotFound {
 		t.Fatalf("DELETE /ai-router/api/settings/database/backups/{id} unexpectedly returned 404; body=%s", deleteRec.Body.String())
+	}
+
+	if err := os.MkdirAll(filepath.Join(home, ".aigate", "data", "tooling", "skills", "Humanizer-zh"), 0o755); err != nil {
+		t.Fatalf("MkdirAll managed skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".aigate", "data", "tooling", "skills", "Humanizer-zh", "SKILL.md"), []byte("Humanizer"), 0o644); err != nil {
+		t.Fatalf("WriteFile managed skill: %v", err)
+	}
+	toolingReq := httptest.NewRequest(http.MethodPut, "/ai-router/api/tooling/skills/Humanizer-zh", bytes.NewBufferString(`{"apps":["codex"],"enabled":false}`))
+	toolingReq.Header.Set("Content-Type", "application/json")
+	toolingRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(toolingRec, toolingReq)
+	if toolingRec.Code != http.StatusOK {
+		t.Fatalf("PUT /ai-router/api/tooling/skills/Humanizer-zh status = %d, want %d; body=%s", toolingRec.Code, http.StatusOK, toolingRec.Body.String())
+	}
+
+	mcpImportReq := httptest.NewRequest(http.MethodPost, "/ai-router/api/tooling/mcp/import", bytes.NewBufferString(`{"source":"codex"}`))
+	mcpImportReq.Header.Set("Content-Type", "application/json")
+	mcpImportRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(mcpImportRec, mcpImportReq)
+	if mcpImportRec.Code == http.StatusNotFound {
+		t.Fatalf("POST /ai-router/api/tooling/mcp/import unexpectedly returned 404; body=%s", mcpImportRec.Body.String())
 	}
 }
 
