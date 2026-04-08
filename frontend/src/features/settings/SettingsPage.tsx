@@ -37,6 +37,8 @@ import {
   listDatabaseBackups,
   restoreDatabaseBackup,
   saveAppSettings,
+  getToolingState,
+  saveToolingSkillSyncMethod,
 } from "../../lib/api";
 import {
   applyDesktopAppSettings,
@@ -195,6 +197,8 @@ export function SettingsPage({
   const [whitelistModalValue, setWhitelistModalValue] = useState("");
   const [editingWhitelistIndex, setEditingWhitelistIndex] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabKey>(initialTab);
+  const [skillSyncMethod, setSkillSyncMethod] = useState<"symlink" | "copy">("symlink");
+  const [savingSkillSyncMethod, setSavingSkillSyncMethod] = useState(false);
 
   useEffect(() => {
     setDraftSettings({
@@ -227,6 +231,13 @@ export function SettingsPage({
         setAccounts(accountList);
       } catch (error) {
         void messageApi.error(error instanceof Error ? t(error.message) : t("加载设置数据失败"));
+      }
+
+      try {
+        const toolingState = await getToolingState();
+        setSkillSyncMethod(toolingState.skill_sync_method ?? "symlink");
+      } catch {
+        setSkillSyncMethod("symlink");
       }
     }
 
@@ -474,6 +485,24 @@ export function SettingsPage({
       void messageApi.error(error instanceof Error ? t(error.message) : t("创建数据库备份失败"));
     } finally {
       setBackupBusy("");
+    }
+  }
+
+  async function handleSkillSyncMethodChange(nextMethod: "symlink" | "copy") {
+    if (nextMethod === skillSyncMethod || savingSkillSyncMethod) {
+      return;
+    }
+    const previousMethod = skillSyncMethod;
+    setSkillSyncMethod(nextMethod);
+    setSavingSkillSyncMethod(true);
+    try {
+      await saveToolingSkillSyncMethod(nextMethod);
+      void messageApi.success(t("设置已保存"));
+    } catch (error) {
+      setSkillSyncMethod(previousMethod);
+      void messageApi.error(error instanceof Error ? t(error.message) : t("保存 Skill 同步方式失败"));
+    } finally {
+      setSavingSkillSyncMethod(false);
     }
   }
 
@@ -787,6 +816,30 @@ export function SettingsPage({
       label: t("数据"),
       content: (
         <div className="settings-grid">
+          <Card className="settings-card" variant="borderless">
+            <SectionHeader
+              icon={<SwapOutlined />}
+              title={t("Skill 同步方式")}
+              description={t("控制 Codex 启用技能时使用软链接还是复制方式。")}
+            />
+            <div className="settings-stack">
+              <Radio.Group
+                aria-label={t("Skill 同步方式")}
+                buttonStyle="solid"
+                optionType="button"
+                options={[
+                  { label: t("软链接"), value: "symlink" },
+                  { label: t("复制"), value: "copy" },
+                ]}
+                value={skillSyncMethod}
+                onChange={(event) => void handleSkillSyncMethodChange(event.target.value)}
+                disabled={savingSkillSyncMethod}
+              />
+              <Text type="secondary">{t("软链接：更新快、占用空间少，但依赖源目录。")}</Text>
+              <Text type="secondary">{t("复制：生成独立副本，更稳定，但会占用更多空间。")}</Text>
+            </div>
+          </Card>
+
           <Card className="settings-card" variant="borderless">
             <SectionHeader icon={<DatabaseOutlined />} title={t("数据管理")} description={t("导出与导入均为明文 JSON（仅账户域数据）。")} />
             <div className="settings-action-row">

@@ -325,19 +325,24 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
               <Empty description={t("暂无技能")} />
             )
           ) : mcpServers.length > 0 ? (
-            mcpServers.map((server) => (
-              <ManagedCard
-                key={server.id}
-                title={server.name}
-                description={server.description || server.id}
-                statuses={buildManagedStatuses(server.enabled_apps)}
-                busy={mcpBusyId === server.id}
-                toggleLabel={server.enabled_apps?.codex ? t(`停用 ${server.name} 于 Codex`) : t(`启用 ${server.name} 到 Codex`)}
-                deleteLabel={t(`删除 ${server.name}`)}
-                onToggle={() => void handleMcpToggle(server)}
-                onDelete={() => confirmDeleteMcp(server)}
-              />
-            ))
+            mcpServers.map((server) => {
+              const display = describeMcpCard(server);
+              return (
+                <ManagedCard
+                  key={server.id}
+                  title={display.title}
+                  description={display.subtitle}
+                  titleVariant="account"
+                  descriptionVariant="account"
+                  statuses={buildManagedStatuses(server.enabled_apps)}
+                  busy={mcpBusyId === server.id}
+                  toggleLabel={server.enabled_apps?.codex ? t(`停用 ${display.title} 于 Codex`) : t(`启用 ${display.title} 到 Codex`)}
+                  deleteLabel={t(`删除 ${display.title}`)}
+                  onToggle={() => void handleMcpToggle(server)}
+                  onDelete={() => confirmDeleteMcp(server)}
+                />
+              );
+            })
           ) : (
             <Empty description={t("暂无 MCP")} />
           )}
@@ -455,9 +460,105 @@ function buildManagedStatuses(enabledApps?: Record<string, boolean>): ManagedCli
   }));
 }
 
+function describeMcpCard(server: ToolingMcpServer): { title: string; subtitle?: string } {
+  const displayPath = getMcpDisplayPath(server);
+  if (!displayPath) {
+    return { title: normalizeMcpTitle(server.name) };
+  }
+  const friendlyTitle = normalizeMcpTitle(displayPath);
+  return {
+    title: friendlyTitle,
+    subtitle: displayPath,
+  };
+}
+
+function getMcpDisplayPath(server: ToolingMcpServer): string | undefined {
+  if (looksLikeLocalPath(server.name)) {
+    return server.name.trim();
+  }
+  const command = server.spec?.command;
+  if (typeof command === "string" && looksLikeLocalPath(command)) {
+    return command.trim();
+  }
+  return undefined;
+}
+
+function looksLikeLocalPath(value?: string): boolean {
+  if (!value) {
+    return false;
+  }
+  const trimmed = value.trim();
+  return (
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("~/") ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith("../") ||
+    trimmed.startsWith("\\\\") ||
+    /^[A-Za-z]:[\\/]/.test(trimmed)
+  );
+}
+
+function normalizeMcpTitle(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return value;
+  }
+
+  const fromPath = normalizeMcpToken(pathLikeBaseName(trimmed));
+  if (fromPath) {
+    return fromPath;
+  }
+
+  const fromBundle = inferAppBundleName(trimmed);
+  if (fromBundle) {
+    return fromBundle;
+  }
+
+  const fromRaw = normalizeMcpToken(trimmed);
+  if (fromRaw) {
+    return fromRaw;
+  }
+
+  return trimmed;
+}
+
+function pathLikeBaseName(value: string): string {
+  return value.split(/[\\/]/).filter(Boolean).at(-1) ?? value;
+}
+
+function inferAppBundleName(value: string): string | undefined {
+  const segment = value
+    .split(/[\\/]/)
+    .find((part) => part.toLowerCase().endsWith(".app"));
+  if (!segment) {
+    return undefined;
+  }
+  const appName = segment.slice(0, -4).trim();
+  return appName ? appName.toLowerCase() : undefined;
+}
+
+function normalizeMcpToken(value: string): string | undefined {
+  const scopedBase = value.trim().split("/").filter(Boolean).at(-1) ?? value.trim();
+  let normalized = scopedBase.toLowerCase();
+  normalized = normalized.replace(/\.(exe|cmd|bat|sh)$/i, "");
+  normalized = normalized.replace(/[-_](darwin|linux|windows)([-_](amd64|arm64|x64|x86_64|aarch64))?$/i, "");
+  normalized = normalized.replace(/^@[^/]+\//, "");
+  normalized = normalized.replace(/^(?:mcp[-_]?server[-_]?|server[-_]?|mcp[-_]?)+/i, "");
+  normalized = normalized.replace(/[-_]?server$/i, "");
+  normalized = normalized.replace(/\s+server$/i, "");
+  normalized = normalized.replace(/^[-_.\s]+|[-_.\s]+$/g, "");
+
+  if (!normalized || normalized === "mcp") {
+    return undefined;
+  }
+  return normalized;
+}
+
 function ManagedCard({
   title,
   description,
+  titleVariant = "default",
+  descriptionVariant = "default",
   statuses,
   busy,
   toggleLabel,
@@ -466,7 +567,9 @@ function ManagedCard({
   onDelete,
 }: {
   title: string;
-  description: string;
+  description?: string;
+  titleVariant?: "default" | "account";
+  descriptionVariant?: "default" | "account";
   statuses: ManagedClientStatus[];
   busy?: boolean;
   toggleLabel: string;
@@ -479,10 +582,12 @@ function ManagedCard({
   return (
     <div className="tooling-item-card">
       <div className="tooling-item-main">
-        <div className="tooling-item-title">{title}</div>
-        <Typography.Paragraph className="tooling-item-description" ellipsis={{ rows: 2, expandable: false }}>
-          {description}
-        </Typography.Paragraph>
+        <div className={`tooling-item-title ${titleVariant === "account" ? "is-account" : ""}`}>{title}</div>
+        {description ? (
+          <div className={`tooling-item-description ${descriptionVariant === "account" ? "is-account" : "is-default"}`}>
+            {description}
+          </div>
+        ) : null}
       </div>
       <div className="tooling-item-aside">
         <div className="tooling-item-statuses" aria-label="安装目标状态">

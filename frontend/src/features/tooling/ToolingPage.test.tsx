@@ -264,7 +264,7 @@ describe("ToolingPage", () => {
     expect(screen.getByText("Codex 2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /导入已有/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /发现服务/ })).not.toBeInTheDocument();
-    expect(screen.getByText("Fetch Server")).toBeInTheDocument();
+    expect(screen.getByText("fetch")).toBeInTheDocument();
     expect(screen.getAllByLabelText("Codex 已激活").length).toBeGreaterThan(0);
     expect(screen.getByLabelText("Codex 未激活")).toBeInTheDocument();
     expect(screen.queryByText("MCP 管理")).not.toBeInTheDocument();
@@ -272,12 +272,37 @@ describe("ToolingPage", () => {
     expect(screen.queryByText("来源统计")).not.toBeInTheDocument();
     expect(screen.queryByText("当前安装服务列表")).not.toBeInTheDocument();
     expect(screen.queryByText("快速模板")).not.toBeInTheDocument();
+    expect(screen.queryByText("Fetch MCP")).not.toBeInTheDocument();
+    expect(screen.queryByText("Time MCP")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "停用 Fetch Server 于 Codex" }));
+    fireEvent.click(screen.getByRole("button", { name: "停用 fetch 于 Codex" }));
 
     await waitFor(() =>
       expect(api.applyToolingMcpServer).toHaveBeenCalledWith("fetch", ["codex"], false),
     );
+  });
+
+  it("shows binary mcp servers with friendly title and path as subtitle", async () => {
+    const binaryPath = "/Applications/Pencil.app/Contents/Resources/app.asar.unpacked/out/mcp-server-darwin-arm64";
+    vi.mocked(api.getToolingState).mockResolvedValue({
+      ...buildToolingState(),
+      mcp_servers: [
+        {
+          id: "pencil",
+          name: binaryPath,
+          enabled_apps: { codex: true },
+          client_status: { codex: "enabled" },
+          spec: { type: "stdio", command: binaryPath },
+          delete_allowed: true,
+          delete_targets: ["/tmp/home/.codex/mcp/pencil"],
+        },
+      ],
+    });
+
+    render(<ToolingPage mode="mcp" t={(text) => text} />);
+
+    expect(await screen.findByText("pencil")).toBeInTheDocument();
+    expect(screen.getByText(binaryPath)).toBeInTheDocument();
   });
 
   it("confirms mcp deletion with local cleanup checked by default", async () => {
@@ -294,7 +319,7 @@ describe("ToolingPage", () => {
     render(<ToolingPage mode="mcp" t={(text) => text} />);
 
     await screen.findByText("MCP 服务");
-    fireEvent.click(screen.getByRole("button", { name: "删除 Fetch Server" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除 fetch" }));
 
     await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
     render(<>{cleanupContent}</>);
@@ -316,7 +341,7 @@ describe("ToolingPage", () => {
     render(<ToolingPage mode="mcp" t={(text) => text} />);
 
     await screen.findByText("MCP 服务");
-    fireEvent.click(screen.getByRole("button", { name: "删除 Time Server" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除 time" }));
 
     await waitFor(() => expect(warningSpy).toHaveBeenCalled());
     expect(api.deleteToolingMcpServer).not.toHaveBeenCalled();

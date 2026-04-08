@@ -476,11 +476,27 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   color: var(--text-primary);
 }
 
-.tooling-item-description.ant-typography {
+.tooling-item-title.is-account {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.tooling-item-description {
+  max-width: 100%;
+  word-break: break-all;
+}
+
+.tooling-item-description.is-default {
   margin: 4px 0 0;
   font-size: 13px;
   color: var(--text-secondary);
-  max-width: 100%;
+}
+
+.tooling-item-description.is-account {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-secondary);
 }
 
 .tooling-item-aside {
