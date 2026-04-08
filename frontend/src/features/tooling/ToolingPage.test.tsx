@@ -280,20 +280,29 @@ describe("ToolingPage", () => {
   });
 
   it("uses the managed collection directory when toggling and deleting skills", async () => {
-    vi.mocked(api.getToolingState).mockResolvedValue({
-      ...buildToolingState(),
-      installed_skills: [
-        {
-          name: "Superpowers Collection",
-          description: "包含 2 个技能",
-          directory: "/tmp/aigate/tooling/skills/superpowers",
-          source_client: "codex",
-          source_kind: "codex",
-          managed_path: "/tmp/aigate/tooling/skills/superpowers",
-          installed_apps: { codex: true },
-        },
-      ],
-    });
+    const managedCollection: api.ToolingSkillRecord = {
+      name: "Superpowers Collection",
+      description: "包含 2 个技能",
+      directory: "/tmp/aigate/tooling/skills/superpowers",
+      source_client: "codex",
+      source_kind: "codex",
+      managed_path: "/tmp/aigate/tooling/skills/superpowers",
+      installed_apps: { codex: true },
+    };
+    vi.mocked(api.getToolingState)
+      .mockResolvedValueOnce({
+        ...buildToolingState(),
+        installed_skills: [managedCollection],
+      })
+      .mockResolvedValue({
+        ...buildToolingState(),
+        installed_skills: [
+          {
+            ...managedCollection,
+            installed_apps: { codex: false },
+          },
+        ],
+      });
 
     const confirmSpy = vi.spyOn(Modal, "confirm").mockImplementation((config) => {
       void config.onOk?.();
@@ -314,7 +323,10 @@ describe("ToolingPage", () => {
       }),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "删除 Superpowers Collection" }));
+    await screen.findByRole("button", { name: "启用 Superpowers Collection 到 Codex" });
+    const deleteButton = screen.getByRole("button", { name: "删除 Superpowers Collection" });
+    await waitFor(() => expect(deleteButton).toBeEnabled());
+    fireEvent.click(deleteButton);
     await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
     await waitFor(() => expect(api.deleteToolingSkill).toHaveBeenCalledWith("superpowers"));
   });
