@@ -13,6 +13,7 @@ desktop/src-tauri/target/
 *.sqlite
 *.sqlite3
 backend/data/
+.crash/
 
 # Local one-off/generated artifacts
 .tmp-app-server-hooks.prettier.js
