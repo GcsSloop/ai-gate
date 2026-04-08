@@ -1195,7 +1195,14 @@ func importSkillsFromClient(home string, source string) (int, error) {
 	count := 0
 	for _, entry := range records {
 		dstDir := filepath.Join(targetRoot, filepath.FromSlash(entry.RelativePath))
-		if err := copyOrSymlinkDir(entry.FullPath, dstDir, "copy"); err != nil {
+		importSource, skip, err := prepareSkillImportSource(home, entry.FullPath, dstDir)
+		if err != nil {
+			return count, err
+		}
+		if skip {
+			continue
+		}
+		if err := copyOrSymlinkDir(importSource, dstDir, "copy"); err != nil {
 			return count, err
 		}
 		meta := skillMetadata{Name: entry.RelativePath, SourceClient: source, SourceKind: source}
@@ -1205,6 +1212,37 @@ func importSkillsFromClient(home string, source string) (int, error) {
 		count++
 	}
 	return count, nil
+}
+
+func prepareSkillImportSource(home string, source string, target string) (string, bool, error) {
+	if pathExists(target) {
+		return "", true, nil
+	}
+	info, err := os.Lstat(source)
+	if err != nil {
+		return "", false, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return source, false, nil
+	}
+	resolvedSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		return "", false, err
+	}
+	if pathWithinRoot(managedSkillsRoot(home), resolvedSource) {
+		return "", true, nil
+	}
+	return resolvedSource, false, nil
+}
+
+func pathWithinRoot(root string, path string) bool {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
 }
 
 func applyManagedSkills(home string, method string, apps []string) (int, error) {
@@ -1652,7 +1690,7 @@ func buildMcpDeletePlan(home string, server managedMcpServer) toolingMcpDeletePl
 			Reason:  "该 MCP 由 AI Gate 提供，需在来源侧管理，不能在这里删除。",
 		}
 	}
-	cleanupRoots := codexManagedMcpCleanupRoots(home, server.Spec)
+	cleanupRoots := codexManagedMcpCleanupRoots(home, server)
 	if len(cleanupRoots) > 0 {
 		return toolingMcpDeletePlan{
 			Allowed:      true,
@@ -1665,14 +1703,15 @@ func buildMcpDeletePlan(home string, server managedMcpServer) toolingMcpDeletePl
 	}
 }
 
-func codexManagedMcpCleanupRoots(home string, spec map[string]any) []string {
+func codexManagedMcpCleanupRoots(home string, server managedMcpServer) []string {
 	managedRoot := filepath.Clean(filepath.Join(home, ".codex", "mcp"))
 	values := make([]string, 0, 8)
-	collectSpecStrings(spec, &values)
+	collectSpecStrings(server.Spec, &values)
+	tokens := mcpCleanupTokens(server)
 	seen := map[string]struct{}{}
 	roots := make([]string, 0, len(values))
 	for _, raw := range values {
-		root, ok := codexManagedMcpRootFromValue(home, managedRoot, raw)
+		root, ok := codexManagedMcpRootFromValue(home, managedRoot, raw, tokens)
 		if !ok {
 			continue
 		}
@@ -1684,6 +1723,32 @@ func codexManagedMcpCleanupRoots(home string, spec map[string]any) []string {
 	}
 	sort.Strings(roots)
 	return roots
+}
+
+func mcpCleanupTokens(server managedMcpServer) []string {
+	seen := map[string]struct{}{}
+	add := func(value string) {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+	}
+	add(server.ID)
+	add(server.Name)
+	add(filepath.Base(strings.TrimSpace(server.Name)))
+	if command, ok := server.Spec["command"].(string); ok {
+		add(filepath.Base(strings.TrimSpace(command)))
+	}
+	result := make([]string, 0, len(seen))
+	for token := range seen {
+		result = append(result, token)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func collectSpecStrings(value any, out *[]string) {
@@ -1703,7 +1768,7 @@ func collectSpecStrings(value any, out *[]string) {
 	}
 }
 
-func codexManagedMcpRootFromValue(home string, managedRoot string, raw string) (string, bool) {
+func codexManagedMcpRootFromValue(home string, managedRoot string, raw string, tokens []string) (string, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", false
@@ -1725,13 +1790,53 @@ func codexManagedMcpRootFromValue(home string, managedRoot string, raw string) (
 		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 			continue
 		}
-		parts := strings.Split(rel, string(filepath.Separator))
-		if len(parts) == 0 || parts[0] == "" || parts[0] == "." || parts[0] == ".." {
-			continue
+		match := codexManagedMcpMatchPath(cleaned, managedRoot, tokens)
+		if match != "" {
+			return match, true
 		}
-		return filepath.Join(managedRoot, parts[0]), true
 	}
 	return "", false
+}
+
+func codexManagedMcpMatchPath(cleaned string, managedRoot string, tokens []string) string {
+	current := cleaned
+	for {
+		rel, err := filepath.Rel(managedRoot, current)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			return ""
+		}
+		base := strings.ToLower(strings.TrimSpace(filepath.Base(current)))
+		if !isSharedMcpPathSegment(base) && matchesMcpCleanupToken(base, tokens) {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current || parent == managedRoot {
+			return ""
+		}
+		current = parent
+	}
+}
+
+func matchesMcpCleanupToken(base string, tokens []string) bool {
+	for _, token := range tokens {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if token == "" {
+			continue
+		}
+		if base == token || strings.Contains(base, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSharedMcpPathSegment(base string) bool {
+	switch base {
+	case "", ".", "..", "mcp", "servers", "node_modules", ".bin", "bin", "lib", "dist", "out", "build":
+		return true
+	default:
+		return false
+	}
 }
 
 func removeManagedMcpRoots(roots []string) error {
