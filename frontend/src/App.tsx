@@ -1,9 +1,10 @@
-import { CloudDownloadOutlined, PlusOutlined } from "@ant-design/icons";
-import { App as AntApp, Button, ConfigProvider, Dropdown, Modal, Spin, Switch, message, theme as antdTheme } from "antd";
+import { BarChartOutlined, CloudDownloadOutlined, DeploymentUnitOutlined, PlusOutlined, ReadOutlined, SettingOutlined, UserOutlined } from "@ant-design/icons";
+import { App as AntApp, Button, ConfigProvider, Dropdown, Modal, Spin, Switch, Tooltip, message, theme as antdTheme } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { AccountsPage } from "./features/accounts/AccountsPage";
+import { ToolingPage } from "./features/tooling/ToolingPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import { StatsPage } from "./features/stats/StatsPage";
 import { HomeUpdatePanel } from "./features/updates/HomeUpdatePanel";
@@ -23,7 +24,7 @@ const resumeGapWatchIntervalMs = 5_000;
 const resumeGapThresholdMs = 30_000;
 const hiddenResumeThresholdMs = 15_000;
 
-type AppView = "accounts" | "stats" | "settings";
+type AppView = "accounts" | "stats" | "skills" | "mcp" | "settings";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -427,41 +428,74 @@ export function App() {
             <div className="app-shell">
               <header className="top-menu">
                 <div className="top-menu-section top-menu-section-left">
-                  <div className="brand-block">
+                  <a href="https://github.com/GcsSloop/ai-gate" target="_blank" rel="noreferrer" className="brand-block" aria-label="AI Gate">
                     <img src={appLogo} alt="AI Gate" className="brand-logo" />
                     <div className="brand">AI Gate</div>
-                  </div>
+                  </a>
                   <div className="menu-pill-group top-view-switcher" role="tablist" aria-label={t("主导航")}>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={view === "accounts"}
-                      className={view === "accounts" ? "menu-pill-button is-active" : "menu-pill-button"}
-                      onClick={() => setView("accounts")}
-                    >
-                      {t("账户")}
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={view === "stats"}
-                      className={view === "stats" ? "menu-pill-button is-active" : "menu-pill-button"}
-                      onClick={() => setView("stats")}
-                    >
-                      {t("统计")}
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={view === "settings"}
-                      className={view === "settings" ? "menu-pill-button is-active" : "menu-pill-button"}
-                      onClick={() => {
-                        setSettingsInitialTab("general");
-                        setView("settings");
-                      }}
-                    >
-                      {t("设置")}
-                    </button>
+                    <Tooltip title={t("账户")} placement="bottom">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-label={t("账户")}
+                        aria-selected={view === "accounts"}
+                        className={view === "accounts" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
+                        onClick={() => setView("accounts")}
+                      >
+                        <UserOutlined />
+                      </button>
+                    </Tooltip>
+                    <Tooltip title={t("统计")} placement="bottom">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-label={t("统计")}
+                        aria-selected={view === "stats"}
+                        className={view === "stats" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
+                        onClick={() => setView("stats")}
+                      >
+                        <BarChartOutlined />
+                      </button>
+                    </Tooltip>
+                    <Tooltip title="Skill" placement="bottom">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-label="Skill"
+                        aria-selected={view === "skills"}
+                        className={view === "skills" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
+                        onClick={() => setView("skills")}
+                      >
+                        <ReadOutlined />
+                      </button>
+                    </Tooltip>
+                    <Tooltip title="MCP" placement="bottom">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-label="MCP"
+                        aria-selected={view === "mcp"}
+                        className={view === "mcp" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
+                        onClick={() => setView("mcp")}
+                      >
+                        <DeploymentUnitOutlined />
+                      </button>
+                    </Tooltip>
+                    <Tooltip title={t("设置")} placement="bottom">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-label={t("设置")}
+                        aria-selected={view === "settings"}
+                        className={view === "settings" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
+                        onClick={() => {
+                          setSettingsInitialTab("general");
+                          setView("settings");
+                        }}
+                      >
+                        <SettingOutlined />
+                      </button>
+                    </Tooltip>
                   </div>
                 </div>
 
@@ -505,6 +539,10 @@ export function App() {
               <div className="app-content-scroll">
                 {view === "stats" ? (
                   <StatsPage language={language} t={t} />
+                ) : view === "skills" ? (
+                  <ToolingPage mode="skills" t={t} />
+                ) : view === "mcp" ? (
+                  <ToolingPage mode="mcp" t={t} />
                 ) : view === "settings" ? (
                   <SettingsPage
                     initialSettings={appSettings}

@@ -43,6 +43,10 @@ vi.mock("./features/stats/StatsPage", () => ({
   StatsPage: () => <div>stats-page</div>,
 }));
 
+vi.mock("./features/tooling/ToolingPage", () => ({
+  ToolingPage: ({ mode }: { mode: string }) => <div>tooling-page:{mode}</div>,
+}));
+
 vi.mock("./lib/desktop-shell", () => ({
   loadDesktopShellContext: vi.fn(),
   refreshDesktopTrayState: vi.fn(),
@@ -272,6 +276,65 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.getByText(/add-mode:shared_import/)).toBeInTheDocument();
     });
+  });
+
+  it("opens the tooling pages from the new top menu", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                show_home_update_indicator: false,
+                status_refresh_interval_seconds: 3600,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: true,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+                audit_limit_message: 200,
+                audit_limit_function_call: 100,
+                audit_limit_function_call_output: 100,
+                audit_limit_reasoning: 40,
+                audit_limit_custom_tool_call: 100,
+                audit_limit_custom_tool_call_output: 100,
+                language: "zh-CN",
+                theme_mode: "system",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    const skillsButton = await screen.findByRole("tab", { name: "Skill" });
+    const mcpButton = await screen.findByRole("tab", { name: "MCP" });
+
+    fireEvent.click(skillsButton);
+    expect(await screen.findByText("tooling-page:skills")).toBeInTheDocument();
+
+    fireEvent.click(mcpButton);
+    expect(await screen.findByText("tooling-page:mcp")).toBeInTheDocument();
   });
 
   it("checks for home updates every hour when the indicator is enabled", async () => {
@@ -740,7 +803,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
-    expect(screen.getByText("AI Gate")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "AI Gate" })).toHaveAttribute("href", "https://github.com/GcsSloop/ai-gate");
     expect(screen.queryByText("开启代理")).not.toBeInTheDocument();
   });
 
