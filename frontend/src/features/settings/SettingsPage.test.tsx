@@ -706,4 +706,61 @@ describe("SettingsPage", () => {
       expect(screen.queryByText("删除此备份")).not.toBeInTheDocument();
     });
   });
+
+  it("shows and updates the skill sync method in data settings", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/database/backups") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/tooling/state") {
+        return Promise.resolve(
+          new Response(JSON.stringify({
+            skill_sync_method: "symlink",
+            clients: [],
+            skill_stats: { total: 0, by_source: {} },
+            skill_repos: [],
+            installed_skills: [],
+            repo_search_results: [],
+            discovered_mcp_servers: [],
+            mcp_templates: [],
+            mcp_servers: [],
+          }), { status: 200, headers: { "Content-Type": "application/json" } }),
+        );
+      }
+      if (url === "/ai-router/api/tooling/settings" && init?.method === "PUT") {
+        return Promise.resolve(new Response(JSON.stringify({ skill_sync_method: "copy" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(getAppMetadata).mockResolvedValue({
+      name: "AI Gate",
+      version: "0.1.0",
+      description: "桌面代理与路由控制台",
+      author: "GcsSloop",
+    });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
+
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "数据" }));
+    expect(await screen.findByText("Skill 同步方式")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "软链接" })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("radio", { name: "复制" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/tooling/settings",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ skill_sync_method: "copy" }),
+        }),
+      );
+    });
+  });
 });
