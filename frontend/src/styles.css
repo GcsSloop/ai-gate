@@ -671,6 +671,132 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   gap: 10px;
 }
 
+.tooling-discovery-modal .ant-modal-content {
+  min-height: 100vh;
+  border-radius: 0;
+  padding: 20px 24px 24px;
+}
+
+.tooling-discovery-modal .ant-modal-body {
+  height: calc(100vh - 92px);
+}
+
+.tooling-discovery-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  height: 100%;
+}
+
+.tooling-discovery-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.tooling-discovery-search {
+  max-width: 420px;
+}
+
+.tooling-discovery-grid {
+  flex: 1;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+
+.tooling-discovery-loading {
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tooling-discovered-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid var(--panel-border);
+  background: #ffffff;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+}
+
+.tooling-discovered-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tooling-discovered-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tooling-discovered-platform {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(62, 91, 232, 0.08);
+  color: #2f49c8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tooling-discovered-repo {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.tooling-discovered-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tooling-repo-manager-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.tooling-repo-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tooling-repo-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.tooling-repo-field input,
+.tooling-repo-field select {
+  width: 100%;
+  min-height: 38px;
+  border-radius: 12px;
+  border: 1px solid var(--panel-border);
+  padding: 0 12px;
+  background: #ffffff;
+  color: var(--text-primary);
+}
+
 .tooling-card {
   border-radius: 18px;
   border: 1px solid var(--panel-border);
@@ -856,6 +982,21 @@ html[data-theme-mode="dark"] .top-home-update-dot {
 .tooling-template-main {
   min-width: 0;
   text-align: left;
+}
+
+@media (max-width: 840px) {
+  .tooling-discovery-toolbar {
+    align-items: stretch;
+  }
+
+  .tooling-discovery-search {
+    max-width: none;
+    width: 100%;
+  }
+
+  .tooling-repo-form-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .tooling-template-title {

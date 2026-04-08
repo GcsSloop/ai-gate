@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,12 +10,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -38,6 +41,7 @@ type toolingConfig struct {
 }
 
 type skillRepoRecord struct {
+	Platform   string `json:"platform,omitempty"`
 	Owner      string `json:"owner"`
 	Name       string `json:"name"`
 	Branch     string `json:"branch"`
@@ -92,11 +96,38 @@ type managedSkillRecord struct {
 }
 
 type repoSearchResult struct {
+	Platform    string `json:"platform,omitempty"`
 	Owner       string `json:"owner"`
 	Name        string `json:"name"`
 	Branch      string `json:"branch"`
 	URL         string `json:"url"`
 	Description string `json:"description,omitempty"`
+}
+
+type discoveredSkillRecord struct {
+	ID            string          `json:"id"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description,omitempty"`
+	Platform      string          `json:"platform"`
+	RepoOwner     string          `json:"repo_owner"`
+	RepoName      string          `json:"repo_name"`
+	Branch        string          `json:"branch"`
+	RepoURL       string          `json:"repo_url"`
+	SourcePath    string          `json:"source_path"`
+	SourceURL     string          `json:"source_url"`
+	ManagedName   string          `json:"managed_name"`
+	InstalledApps map[string]bool `json:"installed_apps"`
+}
+
+type skillDiscoveryCache struct {
+	FetchedAt string                 `json:"fetched_at"`
+	Items     []discoveredSkillRecord `json:"items"`
+}
+
+type toolingSkillDiscoverResponse struct {
+	Cached    bool                  `json:"cached"`
+	FetchedAt string                `json:"fetched_at,omitempty"`
+	Items     []discoveredSkillRecord `json:"items"`
 }
 
 type mcpTemplateRecord struct {
@@ -152,7 +183,13 @@ type toolingSkillUpdateRequest struct {
 	Enabled bool     `json:"enabled"`
 }
 
+type toolingDiscoveredSkillInstallRequest struct {
+	ID   string   `json:"id"`
+	Apps []string `json:"apps"`
+}
+
 type toolingRepoRequest struct {
+	Platform string `json:"platform"`
 	Owner  string `json:"owner"`
 	Name   string `json:"name"`
 	Branch string `json:"branch"`
@@ -191,18 +228,26 @@ func (h *ToolingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.getState(w)
 	case r.Method == http.MethodPut && r.URL.Path == "/tooling/settings":
 		h.updateSettings(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/tooling/skills/discover":
+		h.getDiscoveredSkills(w)
+	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/discover/install":
+		h.installDiscoveredSkill(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/discover/refresh":
+		h.refreshDiscoveredSkills(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/import":
 		h.importSkills(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/apply":
 		h.applySkills(w, r)
-	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/tooling/skills/"):
-		h.updateSkill(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/tooling/skills/repos":
 		h.listSkillRepos(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/repos":
 		h.addSkillRepo(w, r)
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/tooling/skills/repos/"):
+		h.updateSkillRepo(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/tooling/skills/repos/"):
 		h.removeSkillRepo(w, r)
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/tooling/skills/"):
+		h.updateSkill(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/tooling/skills/"):
 		h.deleteSkill(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/tooling/skills/repos/search":
@@ -274,6 +319,72 @@ func (h *ToolingHandler) updateSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"skill_sync_method": cfg.SkillSyncMethod})
+}
+
+func (h *ToolingHandler) getDiscoveredSkills(w http.ResponseWriter) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	cache, ok := loadSkillDiscoveryCache(home)
+	if ok {
+		writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
+			Cached:    true,
+			FetchedAt: cache.FetchedAt,
+			Items:     cache.Items,
+		})
+		return
+	}
+	items, fetchedAt, err := h.refreshSkillDiscovery(home)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
+		Cached:    false,
+		FetchedAt: fetchedAt,
+		Items:     items,
+	})
+}
+
+func (h *ToolingHandler) refreshDiscoveredSkills(w http.ResponseWriter) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	items, fetchedAt, err := h.refreshSkillDiscovery(home)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
+		Cached:    false,
+		FetchedAt: fetchedAt,
+		Items:     items,
+	})
+}
+
+func (h *ToolingHandler) installDiscoveredSkill(w http.ResponseWriter, r *http.Request) {
+	var req toolingDiscoveredSkillInstallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	cfg := h.loadConfig(home)
+	method := normalizeSkillSyncMethod(cfg.SkillSyncMethod)
+	applied, err := installDiscoveredSkillCollection(home, req.ID, method, reqApps(req.Apps))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"applied": applied, "enabled": true, "skill_sync_method": method})
 }
 
 func (h *ToolingHandler) importSkills(w http.ResponseWriter, r *http.Request) {
@@ -421,13 +532,15 @@ func (h *ToolingHandler) addSkillRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := h.loadConfig(home)
-	branch := strings.TrimSpace(req.Branch)
-	if branch == "" {
-		branch = "main"
-	}
-	next := skillRepoRecord{Owner: strings.TrimSpace(req.Owner), Name: strings.TrimSpace(req.Name), Branch: branch, Enabled: true}
+	next := normalizeSkillRepoRecord(skillRepoRecord{
+		Platform: req.Platform,
+		Owner:    strings.TrimSpace(req.Owner),
+		Name:     strings.TrimSpace(req.Name),
+		Branch:   strings.TrimSpace(req.Branch),
+		Enabled:  true,
+	})
 	for idx, repo := range cfg.SkillRepos {
-		if strings.EqualFold(repo.Owner, next.Owner) && strings.EqualFold(repo.Name, next.Name) {
+		if skillRepoMatches(repo, next.Platform, next.Owner, next.Name) {
 			cfg.SkillRepos[idx] = next
 			if err := h.saveConfig(home, cfg); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -445,15 +558,53 @@ func (h *ToolingHandler) addSkillRepo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, next)
 }
 
-func (h *ToolingHandler) removeSkillRepo(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/tooling/skills/repos/")
-	parts := strings.Split(trimmed, "/")
-	if len(parts) < 2 {
-		http.Error(w, "invalid repo path", http.StatusBadRequest)
+func (h *ToolingHandler) updateSkillRepo(w http.ResponseWriter, r *http.Request) {
+	platform, owner, name, err := decodeToolingRepoPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	owner := parts[0]
-	name := parts[1]
+	var req toolingRepoRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	cfg := h.loadConfig(home)
+	next := normalizeSkillRepoRecord(skillRepoRecord{
+		Platform: firstNonEmpty(req.Platform, platform),
+		Owner:    firstNonEmpty(req.Owner, owner),
+		Name:     firstNonEmpty(req.Name, name),
+		Branch:   strings.TrimSpace(req.Branch),
+		Enabled:  true,
+	})
+	for idx, repo := range cfg.SkillRepos {
+		if !skillRepoMatches(repo, platform, owner, name) {
+			continue
+		}
+		next.SkillCount = repo.SkillCount
+		next.Enabled = repo.Enabled
+		cfg.SkillRepos[idx] = next
+		if err := h.saveConfig(home, cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, next)
+		return
+	}
+	http.Error(w, "repo not found", http.StatusNotFound)
+}
+
+func (h *ToolingHandler) removeSkillRepo(w http.ResponseWriter, r *http.Request) {
+	platform, owner, name, err := decodeToolingRepoPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -463,7 +614,7 @@ func (h *ToolingHandler) removeSkillRepo(w http.ResponseWriter, r *http.Request)
 	next := make([]skillRepoRecord, 0, len(cfg.SkillRepos))
 	removed := false
 	for _, repo := range cfg.SkillRepos {
-		if strings.EqualFold(repo.Owner, owner) && strings.EqualFold(repo.Name, name) {
+		if skillRepoMatches(repo, platform, owner, name) {
 			removed = true
 			continue
 		}
@@ -481,11 +632,21 @@ func (h *ToolingHandler) removeSkillRepo(w http.ResponseWriter, r *http.Request)
 
 func (h *ToolingHandler) searchSkillRepos(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	platform := normalizeSkillRepoPlatform(r.URL.Query().Get("platform"))
 	if query == "" {
 		writeJSON(w, http.StatusOK, toolingRepoSearchResponse{Items: defaultRepoSearchResults()})
 		return
 	}
-	items, err := searchGitHubRepos(query)
+	var (
+		items []repoSearchResult
+		err error
+	)
+	switch platform {
+	case "gitlab":
+		items, err = searchGitLabRepos(query)
+	default:
+		items, err = searchGitHubRepos(query)
+	}
 	if err != nil {
 		writeJSON(w, http.StatusOK, toolingRepoSearchResponse{Items: defaultRepoSearchResults()})
 		return
@@ -835,6 +996,10 @@ func (h *ToolingHandler) loadConfig(home string) toolingConfig {
 	cfg.SkillSyncMethod = normalizeSkillSyncMethod(cfg.SkillSyncMethod)
 	if len(cfg.SkillRepos) == 0 {
 		cfg.SkillRepos = append([]skillRepoRecord{}, toolingDefaultRepos...)
+	} else {
+		for idx := range cfg.SkillRepos {
+			cfg.SkillRepos[idx] = normalizeSkillRepoRecord(cfg.SkillRepos[idx])
+		}
 	}
 	return cfg
 }
@@ -843,6 +1008,10 @@ func (h *ToolingHandler) saveConfig(home string, cfg toolingConfig) error {
 	cfg.SkillSyncMethod = normalizeSkillSyncMethod(cfg.SkillSyncMethod)
 	if len(cfg.SkillRepos) == 0 {
 		cfg.SkillRepos = append([]skillRepoRecord{}, toolingDefaultRepos...)
+	} else {
+		for idx := range cfg.SkillRepos {
+			cfg.SkillRepos[idx] = normalizeSkillRepoRecord(cfg.SkillRepos[idx])
+		}
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -905,6 +1074,47 @@ func normalizeSkillSyncMethod(method string) string {
 		return "copy"
 	default:
 		return "symlink"
+	}
+}
+
+func normalizeSkillRepoPlatform(platform string) string {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "gitlab":
+		return "gitlab"
+	default:
+		return "github"
+	}
+}
+
+func normalizeSkillRepoRecord(repo skillRepoRecord) skillRepoRecord {
+	repo.Platform = normalizeSkillRepoPlatform(repo.Platform)
+	repo.Owner = strings.TrimSpace(repo.Owner)
+	repo.Name = strings.TrimSpace(repo.Name)
+	repo.Branch = strings.TrimSpace(repo.Branch)
+	if repo.Branch == "" {
+		repo.Branch = "main"
+	}
+	return repo
+}
+
+func skillRepoMatches(repo skillRepoRecord, platform, owner, name string) bool {
+	repo = normalizeSkillRepoRecord(repo)
+	platform = normalizeSkillRepoPlatform(platform)
+	return strings.EqualFold(repo.Platform, platform) &&
+		strings.EqualFold(repo.Owner, owner) &&
+		strings.EqualFold(repo.Name, name)
+}
+
+func decodeToolingRepoPath(path string) (platform string, owner string, name string, err error) {
+	trimmed := strings.TrimPrefix(path, "/tooling/skills/repos/")
+	parts := strings.Split(trimmed, "/")
+	switch len(parts) {
+	case 2:
+		return "github", parts[0], parts[1], nil
+	case 3:
+		return normalizeSkillRepoPlatform(parts[0]), parts[1], parts[2], nil
+	default:
+		return "", "", "", errors.New("invalid repo path")
 	}
 }
 
@@ -1007,6 +1217,10 @@ type skillMetadata struct {
 	SourceClient string `json:"source_client"`
 	SourceRepo   string `json:"source_repo"`
 	SourceKind   string `json:"source_kind"`
+	Platform     string `json:"platform,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	SourcePath   string `json:"source_path,omitempty"`
+	SourceURL    string `json:"source_url,omitempty"`
 }
 
 func readSkillMetadata(dir string) skillMetadata {
@@ -1243,6 +1457,27 @@ func pathWithinRoot(root string, path string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
+
+func (h *ToolingHandler) refreshSkillDiscovery(home string) ([]discoveredSkillRecord, string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	cfg := h.loadConfig(home)
+	clients := toolingClientStates(home)
+	items, err := discoverSkillsFromRepos(home, cfg.SkillRepos, clients)
+	if err != nil {
+		return nil, "", err
+	}
+	fetchedAt := timeNowUTC().Format(time.RFC3339)
+	cache := skillDiscoveryCache{
+		FetchedAt: fetchedAt,
+		Items:     items,
+	}
+	if err := saveSkillDiscoveryCache(home, cache); err != nil {
+		return nil, "", err
+	}
+	return items, fetchedAt, nil
 }
 
 func applyManagedSkills(home string, method string, apps []string) (int, error) {
@@ -2005,7 +2240,7 @@ func (h *ToolingHandler) syncManagedCodexMcpServers(home string, cfg toolingConf
 }
 
 func searchGitHubRepos(query string) ([]repoSearchResult, error) {
-	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/search/repositories", nil)
+	req, err := http.NewRequest(http.MethodGet, githubAPIBase()+"/search/repositories", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -2039,6 +2274,7 @@ func searchGitHubRepos(query string) ([]repoSearchResult, error) {
 			continue
 		}
 		results = append(results, repoSearchResult{
+			Platform:    "github",
 			Owner:       owner,
 			Name:        name,
 			Branch:      firstNonEmpty(item.DefaultBranch, "main"),
@@ -2047,4 +2283,558 @@ func searchGitHubRepos(query string) ([]repoSearchResult, error) {
 		})
 	}
 	return results, nil
+}
+
+func searchGitLabRepos(query string) ([]repoSearchResult, error) {
+	req, err := http.NewRequest(http.MethodGet, gitlabAPIBase()+"/projects", nil)
+	if err != nil {
+		return nil, err
+	}
+	params := req.URL.Query()
+	params.Set("search", query)
+	params.Set("per_page", "8")
+	req.URL.RawQuery = params.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("gitlab search failed: %s", resp.Status)
+	}
+	var payload []struct {
+		PathWithNamespace string `json:"path_with_namespace"`
+		WebURL            string `json:"web_url"`
+		Description       string `json:"description"`
+		DefaultBranch     string `json:"default_branch"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	results := make([]repoSearchResult, 0, len(payload))
+	for _, item := range payload {
+		owner, name, found := strings.Cut(item.PathWithNamespace, "/")
+		if !found {
+			continue
+		}
+		results = append(results, repoSearchResult{
+			Platform:    "gitlab",
+			Owner:       owner,
+			Name:        name,
+			Branch:      firstNonEmpty(item.DefaultBranch, "main"),
+			URL:         item.WebURL,
+			Description: item.Description,
+		})
+	}
+	return results, nil
+}
+
+func githubAPIBase() string {
+	return strings.TrimRight(firstNonEmpty(os.Getenv("AIGATE_GITHUB_API_BASE"), "https://api.github.com"), "/")
+}
+
+func gitlabAPIBase() string {
+	return strings.TrimRight(firstNonEmpty(os.Getenv("AIGATE_GITLAB_API_BASE"), "https://gitlab.com/api/v4"), "/")
+}
+
+func loadSkillDiscoveryCache(home string) (skillDiscoveryCache, bool) {
+	path := skillDiscoveryCachePath(home)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return skillDiscoveryCache{}, false
+	}
+	var cache skillDiscoveryCache
+	if err := json.Unmarshal(raw, &cache); err != nil {
+		return skillDiscoveryCache{}, false
+	}
+	return cache, true
+}
+
+func saveSkillDiscoveryCache(home string, cache skillDiscoveryCache) error {
+	raw, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomic(skillDiscoveryCachePath(home), append(raw, '\n'), 0o600)
+}
+
+func skillDiscoveryCachePath(home string) string {
+	return filepath.Join(aigateDataRoot(home), "tooling", "skill-discovery-cache.json")
+}
+
+func timeNowUTC() time.Time {
+	return time.Now().UTC()
+}
+
+func discoverSkillsFromRepos(home string, repos []skillRepoRecord, clients []toolingClientState) ([]discoveredSkillRecord, error) {
+	installed := discoveredInstalledAppsBySource(home, clients)
+	items := make([]discoveredSkillRecord, 0)
+	for _, repo := range repos {
+		repo = normalizeSkillRepoRecord(repo)
+		if !repo.Enabled {
+			continue
+		}
+		repoItems, err := discoverSkillsFromRepo(repo, installed)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, repoItems...)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+	})
+	return items, nil
+}
+
+func discoveredInstalledAppsBySource(home string, clients []toolingClientState) map[string]map[string]bool {
+	installed := map[string]map[string]bool{}
+	for _, record := range scanManagedSkills(home, clients) {
+		meta := readSkillMetadata(record.ManagedPath)
+		key := discoveredSkillKey(meta.Platform, meta.SourceRepo, meta.Branch, meta.SourcePath)
+		if key == "" {
+			continue
+		}
+		apps := map[string]bool{}
+		for app, enabled := range record.InstalledApps {
+			apps[app] = enabled
+		}
+		installed[key] = apps
+	}
+	return installed
+}
+
+func discoverSkillsFromRepo(repo skillRepoRecord, installed map[string]map[string]bool) ([]discoveredSkillRecord, error) {
+	switch repo.Platform {
+	case "gitlab":
+		return discoverGitLabRepoSkills(repo, installed)
+	default:
+		return discoverGitHubRepoSkills(repo, installed)
+	}
+}
+
+func discoverGitHubRepoSkills(repo skillRepoRecord, installed map[string]map[string]bool) ([]discoveredSkillRecord, error) {
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/repos/%s/%s/git/trees/%s", githubAPIBase(), url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(repo.Branch)), nil)
+	if err != nil {
+		return nil, err
+	}
+	params := req.URL.Query()
+	params.Set("recursive", "1")
+	req.URL.RawQuery = params.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("github tree failed: %s", resp.Status)
+	}
+	var payload struct {
+		Tree []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"tree"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	items := make([]discoveredSkillRecord, 0)
+	for _, entry := range payload.Tree {
+		if entry.Type != "blob" || !strings.HasSuffix(entry.Path, "/SKILL.md") {
+			continue
+		}
+		raw, err := fetchGitHubFile(repo, entry.Path)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, buildDiscoveredSkillRecord(repo, entry.Path, raw, installed))
+	}
+	return items, nil
+}
+
+func fetchGitHubFile(repo skillRepoRecord, path string) (string, error) {
+	urlPath := fmt.Sprintf("%s/repos/%s/%s/contents/%s", githubAPIBase(), url.PathEscape(repo.Owner), url.PathEscape(repo.Name), encodeRepoPath(path))
+	req, err := http.NewRequest(http.MethodGet, urlPath, nil)
+	if err != nil {
+		return "", err
+	}
+	params := req.URL.Query()
+	params.Set("ref", repo.Branch)
+	req.URL.RawQuery = params.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("github content failed: %s", resp.Status)
+	}
+	var payload struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	if payload.Encoding != "base64" {
+		return "", fmt.Errorf("unsupported github content encoding: %s", payload.Encoding)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(payload.Content, "\n", ""))
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
+}
+
+func discoverGitLabRepoSkills(repo skillRepoRecord, installed map[string]map[string]bool) ([]discoveredSkillRecord, error) {
+	projectID := url.PathEscape(repo.Owner + "/" + repo.Name)
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/projects/%s/repository/tree", gitlabAPIBase(), projectID), nil)
+	if err != nil {
+		return nil, err
+	}
+	params := req.URL.Query()
+	params.Set("ref", repo.Branch)
+	params.Set("recursive", "true")
+	params.Set("per_page", "100")
+	req.URL.RawQuery = params.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("gitlab tree failed: %s", resp.Status)
+	}
+	var payload []struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	items := make([]discoveredSkillRecord, 0)
+	for _, entry := range payload {
+		if entry.Type != "blob" || !strings.HasSuffix(entry.Path, "/SKILL.md") {
+			continue
+		}
+		raw, err := fetchGitLabFile(repo, projectID, entry.Path)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, buildDiscoveredSkillRecord(repo, entry.Path, raw, installed))
+	}
+	return items, nil
+}
+
+func fetchGitLabFile(repo skillRepoRecord, projectID string, path string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/projects/%s/repository/files/%s/raw", gitlabAPIBase(), projectID, url.PathEscape(path)), nil)
+	if err != nil {
+		return "", err
+	}
+	params := req.URL.Query()
+	params.Set("ref", repo.Branch)
+	req.URL.RawQuery = params.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("gitlab raw failed: %s", resp.Status)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func buildDiscoveredSkillRecord(repo skillRepoRecord, skillFilePath string, body string, installed map[string]map[string]bool) discoveredSkillRecord {
+	sourcePath := path.Dir(skillFilePath)
+	if sourcePath == "." {
+		sourcePath = ""
+	}
+	name, description := parseDiscoveredSkillBody(body, sourcePath)
+	key := discoveredSkillKey(repo.Platform, repo.Owner+"/"+repo.Name, repo.Branch, sourcePath)
+	record := discoveredSkillRecord{
+		ID:            key,
+		Name:          name,
+		Description:   description,
+		Platform:      repo.Platform,
+		RepoOwner:     repo.Owner,
+		RepoName:      repo.Name,
+		Branch:        repo.Branch,
+		RepoURL:       buildRepoURL(repo.Platform, repo.Owner, repo.Name),
+		SourcePath:    sourcePath,
+		SourceURL:     buildRepoTreeURL(repo.Platform, repo.Owner, repo.Name, repo.Branch, sourcePath),
+		ManagedName:   buildDiscoveredManagedName(repo, sourcePath),
+		InstalledApps: map[string]bool{},
+	}
+	if apps, ok := installed[key]; ok {
+		for app, enabled := range apps {
+			record.InstalledApps[app] = enabled
+		}
+	}
+	return record
+}
+
+func buildRepoURL(platform string, owner string, name string) string {
+	switch normalizeSkillRepoPlatform(platform) {
+	case "gitlab":
+		return fmt.Sprintf("https://gitlab.com/%s/%s", owner, name)
+	default:
+		return fmt.Sprintf("https://github.com/%s/%s", owner, name)
+	}
+}
+
+func buildRepoTreeURL(platform string, owner string, name string, branch string, sourcePath string) string {
+	base := buildRepoURL(platform, owner, name)
+	sourcePath = strings.Trim(sourcePath, "/")
+	switch normalizeSkillRepoPlatform(platform) {
+	case "gitlab":
+		if sourcePath == "" {
+			return fmt.Sprintf("%s/-/tree/%s", base, branch)
+		}
+		return fmt.Sprintf("%s/-/tree/%s/%s", base, branch, sourcePath)
+	default:
+		if sourcePath == "" {
+			return fmt.Sprintf("%s/tree/%s", base, branch)
+		}
+		return fmt.Sprintf("%s/tree/%s/%s", base, branch, sourcePath)
+	}
+}
+
+func buildDiscoveredManagedName(repo skillRepoRecord, sourcePath string) string {
+	base := filepath.Base(strings.Trim(sourcePath, "/"))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		base = repo.Name
+	}
+	name := strings.ToLower(repo.Name + "-" + base)
+	replacer := strings.NewReplacer("/", "-", "\\", "-", "_", "-", " ", "-", ".", "-")
+	name = replacer.Replace(name)
+	for strings.Contains(name, "--") {
+		name = strings.ReplaceAll(name, "--", "-")
+	}
+	return strings.Trim(name, "-")
+}
+
+func parseDiscoveredSkillBody(body string, sourcePath string) (string, string) {
+	name := ""
+	description := ""
+	lines := strings.Split(body, "\n")
+	inFrontmatter := false
+	frontmatterSeen := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" && !frontmatterSeen {
+			inFrontmatter = true
+			frontmatterSeen = true
+			continue
+		}
+		if trimmed == "---" && inFrontmatter {
+			inFrontmatter = false
+			continue
+		}
+		if inFrontmatter {
+			switch {
+			case strings.HasPrefix(trimmed, "name:") && name == "":
+				name = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "name:")), `"'`)
+			case strings.HasPrefix(trimmed, "title:") && name == "":
+				name = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "title:")), `"'`)
+			case strings.HasPrefix(trimmed, "description:") && description == "":
+				description = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "description:")), `"'`)
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") && name == "" {
+			name = strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+			continue
+		}
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && description == "" {
+			description = trimmed
+		}
+	}
+	if name == "" {
+		name = filepath.Base(strings.Trim(sourcePath, "/"))
+		if name == "." || name == "" {
+			name = "Skill"
+		}
+	}
+	return name, description
+}
+
+func discoveredSkillKey(platform string, sourceRepo string, branch string, sourcePath string) string {
+	if strings.TrimSpace(sourceRepo) == "" {
+		return ""
+	}
+	return strings.ToLower(strings.Join([]string{
+		normalizeSkillRepoPlatform(platform),
+		strings.TrimSpace(sourceRepo),
+		firstNonEmpty(branch, "main"),
+		strings.Trim(strings.TrimSpace(sourcePath), "/"),
+	}, ":"))
+}
+
+func encodeRepoPath(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for idx, part := range parts {
+		parts[idx] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
+}
+
+func installDiscoveredSkillCollection(home string, id string, method string, apps []string) (int, error) {
+	platform, repoFullName, branch, sourcePath, err := parseDiscoveredSkillID(id)
+	if err != nil {
+		return 0, err
+	}
+	owner, name, found := strings.Cut(repoFullName, "/")
+	if !found {
+		return 0, fmt.Errorf("invalid discovered skill repo: %s", repoFullName)
+	}
+	repo := normalizeSkillRepoRecord(skillRepoRecord{
+		Platform: platform,
+		Owner:    owner,
+		Name:     name,
+		Branch:   branch,
+		Enabled:  true,
+	})
+	managedName := buildDiscoveredManagedName(repo, sourcePath)
+	targetDir := filepath.Join(managedSkillsRoot(home), managedName)
+	if !pathExists(targetDir) {
+		files, err := fetchDiscoveredSkillFiles(repo, sourcePath)
+		if err != nil {
+			return 0, err
+		}
+		if len(files) == 0 {
+			return 0, fmt.Errorf("no files found for discovered skill: %s", id)
+		}
+		for relativePath, raw := range files {
+			fullPath := filepath.Join(targetDir, filepath.FromSlash(relativePath))
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+				return 0, err
+			}
+			if err := os.WriteFile(fullPath, []byte(raw), 0o644); err != nil {
+				return 0, err
+			}
+		}
+		if err := writeSkillMetadata(targetDir, skillMetadata{
+			Name:       managedName,
+			SourceRepo: repoFullName,
+			SourceKind: "discovered",
+			Platform:   repo.Platform,
+			Branch:     repo.Branch,
+			SourcePath: sourcePath,
+			SourceURL:  buildRepoTreeURL(repo.Platform, repo.Owner, repo.Name, repo.Branch, sourcePath),
+		}); err != nil {
+			return 0, err
+		}
+	}
+	return applyManagedSkillCollection(home, managedName, method, apps)
+}
+
+func parseDiscoveredSkillID(id string) (platform string, repoFullName string, branch string, sourcePath string, err error) {
+	parts := strings.SplitN(strings.TrimSpace(id), ":", 4)
+	if len(parts) != 4 {
+		return "", "", "", "", fmt.Errorf("invalid discovered skill id: %s", id)
+	}
+	return normalizeSkillRepoPlatform(parts[0]), parts[1], firstNonEmpty(parts[2], "main"), strings.Trim(parts[3], "/"), nil
+}
+
+func fetchDiscoveredSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]string, error) {
+	switch repo.Platform {
+	case "gitlab":
+		return fetchGitLabSkillFiles(repo, sourcePath)
+	default:
+		return fetchGitHubSkillFiles(repo, sourcePath)
+	}
+}
+
+func fetchGitHubSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]string, error) {
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/repos/%s/%s/git/trees/%s", githubAPIBase(), url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(repo.Branch)), nil)
+	if err != nil {
+		return nil, err
+	}
+	params := req.URL.Query()
+	params.Set("recursive", "1")
+	req.URL.RawQuery = params.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("github tree failed: %s", resp.Status)
+	}
+	var payload struct {
+		Tree []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"tree"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	files := map[string]string{}
+	prefix := strings.Trim(sourcePath, "/")
+	for _, entry := range payload.Tree {
+		if entry.Type != "blob" || !pathWithinDiscoveredSkill(prefix, entry.Path) {
+			continue
+		}
+		raw, err := fetchGitHubFile(repo, entry.Path)
+		if err != nil {
+			return nil, err
+		}
+		files[strings.TrimPrefix(strings.TrimPrefix(entry.Path, prefix), "/")] = raw
+	}
+	return files, nil
+}
+
+func fetchGitLabSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]string, error) {
+	projectID := url.PathEscape(repo.Owner + "/" + repo.Name)
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/projects/%s/repository/tree", gitlabAPIBase(), projectID), nil)
+	if err != nil {
+		return nil, err
+	}
+	params := req.URL.Query()
+	params.Set("ref", repo.Branch)
+	params.Set("recursive", "true")
+	params.Set("per_page", "100")
+	req.URL.RawQuery = params.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("gitlab tree failed: %s", resp.Status)
+	}
+	var payload []struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	files := map[string]string{}
+	prefix := strings.Trim(sourcePath, "/")
+	for _, entry := range payload {
+		if entry.Type != "blob" || !pathWithinDiscoveredSkill(prefix, entry.Path) {
+			continue
+		}
+		raw, err := fetchGitLabFile(repo, projectID, entry.Path)
+		if err != nil {
+			return nil, err
+		}
+		files[strings.TrimPrefix(strings.TrimPrefix(entry.Path, prefix), "/")] = raw
+	}
+	return files, nil
+}
+
+func pathWithinDiscoveredSkill(prefix string, fullPath string) bool {
+	prefix = strings.Trim(prefix, "/")
+	fullPath = strings.Trim(fullPath, "/")
+	if prefix == "" {
+		return true
+	}
+	return fullPath == prefix || strings.HasPrefix(fullPath, prefix+"/")
 }

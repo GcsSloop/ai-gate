@@ -270,6 +270,7 @@ export type ToolingSkillStats = {
 };
 
 export type ToolingSkillRepo = {
+  platform?: "github" | "gitlab";
   owner: string;
   name: string;
   branch: string;
@@ -278,11 +279,33 @@ export type ToolingSkillRepo = {
 };
 
 export type ToolingRepoSearchResult = {
+  platform?: "github" | "gitlab";
   owner: string;
   name: string;
   branch: string;
   url: string;
   description?: string;
+};
+
+export type ToolingDiscoveredSkill = {
+  id: string;
+  name: string;
+  description?: string;
+  platform: "github" | "gitlab";
+  repo_owner: string;
+  repo_name: string;
+  branch: string;
+  repo_url: string;
+  source_path: string;
+  source_url: string;
+  managed_name: string;
+  installed_apps: Record<string, boolean>;
+};
+
+export type ToolingSkillDiscoveryResponse = {
+  cached: boolean;
+  fetched_at?: string;
+  items: ToolingDiscoveredSkill[];
 };
 
 export type ToolingSkillRecord = {
@@ -989,11 +1012,21 @@ export async function listToolingRepos(): Promise<ToolingSkillRepo[]> {
   return response.json();
 }
 
-export async function addToolingRepo(owner: string, name: string, branch = "main"): Promise<ToolingSkillRepo> {
+export async function addToolingRepo(
+  platformOrOwner: "github" | "gitlab" | string,
+  ownerOrName: string,
+  nameOrBranch = "main",
+  maybeBranch?: string,
+): Promise<ToolingSkillRepo> {
+  const usesExplicitPlatform = platformOrOwner === "github" || platformOrOwner === "gitlab";
+  const platform = usesExplicitPlatform ? platformOrOwner : "github";
+  const owner = usesExplicitPlatform ? ownerOrName : platformOrOwner;
+  const name = usesExplicitPlatform ? nameOrBranch : ownerOrName;
+  const branch = usesExplicitPlatform ? (maybeBranch ?? "main") : (nameOrBranch || "main");
   const response = await fetch(apiPath("/tooling/skills/repos"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ owner, name, branch }),
+    body: JSON.stringify({ platform, owner, name, branch }),
   });
   if (!response.ok) {
     const details = await response.text();
@@ -1002,8 +1035,31 @@ export async function addToolingRepo(owner: string, name: string, branch = "main
   return response.json();
 }
 
-export async function removeToolingRepo(owner: string, name: string): Promise<void> {
-  const response = await fetch(apiPath(`/tooling/skills/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`), {
+export async function updateToolingRepo(
+  currentPlatform: "github" | "gitlab",
+  currentOwner: string,
+  currentName: string,
+  payload: {
+    platform: "github" | "gitlab";
+    owner: string;
+    name: string;
+    branch: string;
+  },
+): Promise<ToolingSkillRepo> {
+  const response = await fetch(apiPath(`/tooling/skills/repos/${encodeURIComponent(currentPlatform)}/${encodeURIComponent(currentOwner)}/${encodeURIComponent(currentName)}`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to update tooling repo");
+  }
+  return response.json();
+}
+
+export async function removeToolingRepo(platform: "github" | "gitlab", owner: string, name: string): Promise<void> {
+  const response = await fetch(apiPath(`/tooling/skills/repos/${encodeURIComponent(platform)}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`), {
     method: "DELETE",
   });
   if (!response.ok) {
@@ -1016,6 +1072,44 @@ export async function searchToolingRepos(query: string): Promise<{ items: Toolin
   const response = await fetch(apiPath(`/tooling/skills/repos/search?q=${encodeURIComponent(query)}`));
   if (!response.ok) {
     throw new Error("failed to search tooling repos");
+  }
+  return response.json();
+}
+
+export async function getToolingDiscoveredSkills(): Promise<ToolingSkillDiscoveryResponse> {
+  const response = await fetch(apiPath("/tooling/skills/discover"));
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to load discovered skills");
+  }
+  return response.json();
+}
+
+export async function refreshToolingDiscoveredSkills(): Promise<ToolingSkillDiscoveryResponse> {
+  const response = await fetch(apiPath("/tooling/skills/discover/refresh"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to refresh discovered skills");
+  }
+  return response.json();
+}
+
+export async function installToolingDiscoveredSkill(payload: {
+  id: string;
+  apps?: string[];
+}): Promise<{ applied: number; enabled: boolean; skill_sync_method?: "symlink" | "copy" }> {
+  const response = await fetch(apiPath("/tooling/skills/discover/install"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to install discovered skill");
   }
   return response.json();
 }
