@@ -462,12 +462,8 @@ function buildManagedStatuses(enabledApps?: Record<string, boolean>): ManagedCli
 
 function describeMcpCard(server: ToolingMcpServer): { title: string; subtitle?: string } {
   const displayPath = getMcpDisplayPath(server);
-  if (!displayPath) {
-    return { title: normalizeMcpTitle(server.name) };
-  }
-  const friendlyTitle = normalizeMcpTitle(displayPath);
   return {
-    title: friendlyTitle,
+    title: server.id,
     subtitle: displayPath,
   };
 }
@@ -496,62 +492,6 @@ function looksLikeLocalPath(value?: string): boolean {
     trimmed.startsWith("\\\\") ||
     /^[A-Za-z]:[\\/]/.test(trimmed)
   );
-}
-
-function normalizeMcpTitle(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return value;
-  }
-
-  const fromPath = normalizeMcpToken(pathLikeBaseName(trimmed));
-  if (fromPath) {
-    return fromPath;
-  }
-
-  const fromBundle = inferAppBundleName(trimmed);
-  if (fromBundle) {
-    return fromBundle;
-  }
-
-  const fromRaw = normalizeMcpToken(trimmed);
-  if (fromRaw) {
-    return fromRaw;
-  }
-
-  return trimmed;
-}
-
-function pathLikeBaseName(value: string): string {
-  return value.split(/[\\/]/).filter(Boolean).at(-1) ?? value;
-}
-
-function inferAppBundleName(value: string): string | undefined {
-  const segment = value
-    .split(/[\\/]/)
-    .find((part) => part.toLowerCase().endsWith(".app"));
-  if (!segment) {
-    return undefined;
-  }
-  const appName = segment.slice(0, -4).trim();
-  return appName ? appName.toLowerCase() : undefined;
-}
-
-function normalizeMcpToken(value: string): string | undefined {
-  const scopedBase = value.trim().split("/").filter(Boolean).at(-1) ?? value.trim();
-  let normalized = scopedBase.toLowerCase();
-  normalized = normalized.replace(/\.(exe|cmd|bat|sh)$/i, "");
-  normalized = normalized.replace(/[-_](darwin|linux|windows)([-_](amd64|arm64|x64|x86_64|aarch64))?$/i, "");
-  normalized = normalized.replace(/^@[^/]+\//, "");
-  normalized = normalized.replace(/^(?:mcp[-_]?server[-_]?|server[-_]?|mcp[-_]?)+/i, "");
-  normalized = normalized.replace(/[-_]?server$/i, "");
-  normalized = normalized.replace(/\s+server$/i, "");
-  normalized = normalized.replace(/^[-_.\s]+|[-_.\s]+$/g, "");
-
-  if (!normalized || normalized === "mcp") {
-    return undefined;
-  }
-  return normalized;
 }
 
 function ManagedCard({
