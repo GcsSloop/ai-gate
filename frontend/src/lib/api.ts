@@ -287,6 +287,15 @@ export type ToolingRepoSearchResult = {
   description?: string;
 };
 
+export type ToolingResolvedRepo = {
+  platform: "github" | "gitlab";
+  owner: string;
+  name: string;
+  repo_url: string;
+  branch_options: string[];
+  selected_branch: string;
+};
+
 export type ToolingDiscoveredSkill = {
   id: string;
   name: string;
@@ -1075,6 +1084,19 @@ export async function searchToolingRepos(query: string): Promise<{ items: Toolin
   const response = await fetch(apiPath(`/tooling/skills/repos/search?q=${encodeURIComponent(query)}`));
   if (!response.ok) {
     throw new Error("failed to search tooling repos");
+  }
+  return response.json();
+}
+
+export async function resolveToolingRepo(input: string): Promise<ToolingResolvedRepo> {
+  const response = await fetch(apiPath("/tooling/skills/repos/resolve"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ input }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to resolve tooling repo");
   }
   return response.json();
 }

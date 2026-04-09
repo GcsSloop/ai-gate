@@ -17,6 +17,7 @@ vi.mock("../../lib/api", async () => {
     refreshToolingDiscoveredSkills: vi.fn(),
     installToolingDiscoveredSkill: vi.fn(),
     searchToolingRepos: vi.fn(),
+    resolveToolingRepo: vi.fn(),
     addToolingRepo: vi.fn(),
     updateToolingRepo: vi.fn(),
     removeToolingRepo: vi.fn(),
@@ -213,6 +214,26 @@ describe("ToolingPage", () => {
       skill_sync_method: "symlink",
     });
     vi.mocked(api.searchToolingRepos).mockResolvedValue({ items: [] });
+    vi.mocked((api as typeof api & { resolveToolingRepo: typeof vi.fn }).resolveToolingRepo).mockImplementation(async (input: string) => {
+      if (input.includes("gitlab.com")) {
+        return {
+          platform: "gitlab",
+          owner: "gitlab-org",
+          name: "codex-superpowers",
+          repo_url: "https://gitlab.com/gitlab-org/codex-superpowers",
+          branch_options: ["main", "master", "develop"],
+          selected_branch: "main",
+        };
+      }
+      return {
+        platform: "github",
+        owner: "openai",
+        name: "codex-superpowers",
+        repo_url: "https://github.com/openai/codex-superpowers",
+        branch_options: ["main", "release"],
+        selected_branch: "main",
+      };
+    });
     vi.mocked(api.addToolingRepo).mockResolvedValue({
       platform: "github",
       owner: "openai",
@@ -470,7 +491,8 @@ describe("ToolingPage", () => {
     expect(within(dialog).getByRole("button", { name: "已安装 Zulu Skill" })).toBeDisabled();
   });
 
-  it("manages repositories in a secondary modal with create, update, and delete actions", async () => {
+  it("manages repositories with a compact list, hover actions, and a tertiary add/edit modal", async () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
     render(<ToolingPage mode="skills" t={(text) => text} />);
 
     await screen.findByText("Skill 技能");
@@ -480,19 +502,35 @@ describe("ToolingPage", () => {
     fireEvent.click(within(discoverDialog).getByRole("button", { name: "仓库管理" }));
 
     const repoDialog = (await screen.findAllByRole("dialog")).at(-1)!;
-    fireEvent.change(within(repoDialog).getByLabelText("仓库平台"), { target: { value: "gitlab" } });
-    fireEvent.change(within(repoDialog).getByLabelText("仓库归属"), { target: { value: "gitlab-org" } });
-    fireEvent.change(within(repoDialog).getByLabelText("仓库名称"), { target: { value: "codex-superpowers" } });
-    fireEvent.change(within(repoDialog).getByLabelText("分支"), { target: { value: "develop" } });
+    expect(within(repoDialog).queryByLabelText("仓库平台")).not.toBeInTheDocument();
+    expect(within(repoDialog).getByText("openai/codex-superpowers")).toBeInTheDocument();
+    expect(within(repoDialog).getByText("12 skills · https://github.com/openai/codex-superpowers")).toBeInTheDocument();
+
     fireEvent.click(within(repoDialog).getByRole("button", { name: "添加仓库" }));
+
+    const createDialog = (await screen.findAllByRole("dialog")).at(-1)!;
+    fireEvent.change(within(createDialog).getByLabelText("仓库链接"), { target: { value: "https://gitlab.com/gitlab-org/codex-superpowers" } });
+
+    await waitFor(() =>
+      expect(vi.mocked((api as typeof api & { resolveToolingRepo: typeof vi.fn }).resolveToolingRepo)).toHaveBeenCalledWith(
+        "https://gitlab.com/gitlab-org/codex-superpowers",
+      ),
+    );
+
+    fireEvent.change(within(createDialog).getByLabelText("分支"), { target: { value: "develop" } });
+    fireEvent.click(within(createDialog).getByRole("button", { name: "确认添加仓库" }));
 
     await waitFor(() => expect(api.addToolingRepo).toHaveBeenCalledWith("gitlab", "gitlab-org", "codex-superpowers", "develop"));
 
+    fireEvent.click(within(repoDialog).getByRole("button", { name: "查看 openai/codex-superpowers" }));
+    expect(openSpy).toHaveBeenCalledWith("https://github.com/openai/codex-superpowers", "_blank", "noopener,noreferrer");
+
     fireEvent.click(within(repoDialog).getByRole("button", { name: "编辑 openai/codex-superpowers" }));
-    fireEvent.change(within(repoDialog).getByLabelText("仓库平台"), { target: { value: "gitlab" } });
-    fireEvent.change(within(repoDialog).getByLabelText("仓库归属"), { target: { value: "gitlab-org" } });
-    fireEvent.change(within(repoDialog).getByLabelText("分支"), { target: { value: "develop" } });
-    fireEvent.click(within(repoDialog).getByRole("button", { name: "保存仓库" }));
+
+    const editDialog = (await screen.findAllByRole("dialog")).at(-1)!;
+    expect(within(editDialog).getByDisplayValue("https://github.com/openai/codex-superpowers")).toBeDisabled();
+    fireEvent.change(within(editDialog).getByLabelText("分支"), { target: { value: "release" } });
+    fireEvent.click(within(editDialog).getByRole("button", { name: "保存仓库" }));
 
     await waitFor(() =>
       expect(vi.mocked((api as typeof api & { updateToolingRepo: typeof vi.fn }).updateToolingRepo)).toHaveBeenCalledWith(
@@ -500,17 +538,16 @@ describe("ToolingPage", () => {
         "openai",
         "codex-superpowers",
         {
-          platform: "gitlab",
-          owner: "gitlab-org",
+          platform: "github",
+          owner: "openai",
           name: "codex-superpowers",
-          branch: "develop",
+          branch: "release",
         },
       ),
     );
 
-    const refreshedRepoDialog = (await screen.findAllByRole("dialog")).at(-1)!;
-    await waitFor(() => expect(within(refreshedRepoDialog).getByRole("button", { name: "移除 openai/codex-superpowers" })).not.toBeDisabled());
-    fireEvent.click(within(refreshedRepoDialog).getByRole("button", { name: "移除 openai/codex-superpowers" }));
+    await waitFor(() => expect(within(repoDialog).getByRole("button", { name: "删除 openai/codex-superpowers" })).not.toBeDisabled());
+    fireEvent.click(within(repoDialog).getByRole("button", { name: "删除 openai/codex-superpowers" }));
     await waitFor(() => expect(api.removeToolingRepo).toHaveBeenCalledWith("github", "openai", "codex-superpowers"));
   });
 

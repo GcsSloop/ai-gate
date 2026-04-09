@@ -352,6 +352,103 @@ func TestToolingHandlerDeletesSingleSkillCollectionEverywhere(t *testing.T) {
 	}
 }
 
+func TestToolingHandlerResolvesGitHubRepoAndPrefersMainBranch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	githubAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/openai/codex-superpowers":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"default_branch":"release"}`))
+		case "/repos/openai/codex-superpowers/branches":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"name":"release"},{"name":"main"},{"name":"develop"}]`))
+		default:
+			t.Fatalf("unexpected github path: %s", r.URL.Path)
+		}
+	}))
+	defer githubAPI.Close()
+	t.Setenv("AIGATE_GITHUB_API_BASE", githubAPI.URL)
+
+	handler := api.NewToolingHandler()
+
+	resp := doToolingRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/tooling/skills/repos/resolve",
+		bytes.NewBufferString(`{"input":"https://github.com/openai/codex-superpowers/tree/release"}`),
+		map[string]string{"Content-Type": "application/json"},
+		http.StatusOK,
+	)
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp, &payload); err != nil {
+		t.Fatalf("unmarshal resolve response: %v", err)
+	}
+	if got := payload["platform"]; got != "github" {
+		t.Fatalf("platform = %v, want github", got)
+	}
+	if got := payload["owner"]; got != "openai" {
+		t.Fatalf("owner = %v, want openai", got)
+	}
+	if got := payload["name"]; got != "codex-superpowers" {
+		t.Fatalf("name = %v, want codex-superpowers", got)
+	}
+	if got := payload["repo_url"]; got != "https://github.com/openai/codex-superpowers" {
+		t.Fatalf("repo_url = %v, want github repo url", got)
+	}
+	if got := payload["selected_branch"]; got != "main" {
+		t.Fatalf("selected_branch = %v, want main", got)
+	}
+	options := payload["branch_options"].([]any)
+	if len(options) != 3 {
+		t.Fatalf("branch_options = %v, want 3 branches", payload["branch_options"])
+	}
+}
+
+func TestToolingHandlerResolvesGitLabRepoAndFallsBackToDefaultBranch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	gitlabAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.RequestURI(), "/projects/gitlab-org%2Fcodex-superpowers/repository/branches") {
+			t.Fatalf("unexpected gitlab request: %s", r.URL.RequestURI())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"name":"release","default":true},{"name":"feature-demo","default":false}]`))
+	}))
+	defer gitlabAPI.Close()
+	t.Setenv("AIGATE_GITLAB_API_BASE", gitlabAPI.URL)
+
+	handler := api.NewToolingHandler()
+
+	resp := doToolingRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/tooling/skills/repos/resolve",
+		bytes.NewBufferString(`{"input":"gitlab.com/gitlab-org/codex-superpowers.git"}`),
+		map[string]string{"Content-Type": "application/json"},
+		http.StatusOK,
+	)
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp, &payload); err != nil {
+		t.Fatalf("unmarshal resolve response: %v", err)
+	}
+	if got := payload["platform"]; got != "gitlab" {
+		t.Fatalf("platform = %v, want gitlab", got)
+	}
+	if got := payload["repo_url"]; got != "https://gitlab.com/gitlab-org/codex-superpowers" {
+		t.Fatalf("repo_url = %v, want gitlab repo url", got)
+	}
+	if got := payload["selected_branch"]; got != "release" {
+		t.Fatalf("selected_branch = %v, want release", got)
+	}
+}
+
 func TestToolingHandlerInstallAndApplyMcpServer(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
