@@ -204,6 +204,19 @@ type toolingRepoRequest struct {
 	Branch   string `json:"branch"`
 }
 
+type toolingRepoResolveRequest struct {
+	Input string `json:"input"`
+}
+
+type toolingRepoResolveResponse struct {
+	Platform       string   `json:"platform"`
+	Owner          string   `json:"owner"`
+	Name           string   `json:"name"`
+	RepoURL        string   `json:"repo_url"`
+	BranchOptions  []string `json:"branch_options"`
+	SelectedBranch string   `json:"selected_branch"`
+}
+
 type toolingRepoSearchResponse struct {
 	Items []repoSearchResult `json:"items"`
 }
@@ -251,6 +264,8 @@ func (h *ToolingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.listSkillRepos(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/repos":
 		h.addSkillRepo(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/repos/resolve":
+		h.resolveSkillRepo(w, r)
 	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/tooling/skills/repos/"):
 		h.updateSkillRepo(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/tooling/skills/repos/"):
@@ -565,6 +580,32 @@ func (h *ToolingHandler) addSkillRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, next)
+}
+
+func (h *ToolingHandler) resolveSkillRepo(w http.ResponseWriter, r *http.Request) {
+	var req toolingRepoResolveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	resolved, err := parseToolingRepoInput(req.Input)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	branches, selectedBranch, err := resolveSkillRepoBranches(resolved.Platform, resolved.Owner, resolved.Name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, toolingRepoResolveResponse{
+		Platform:       resolved.Platform,
+		Owner:          resolved.Owner,
+		Name:           resolved.Name,
+		RepoURL:        buildRepoURL(resolved.Platform, resolved.Owner, resolved.Name),
+		BranchOptions:  branches,
+		SelectedBranch: selectedBranch,
+	})
 }
 
 func (h *ToolingHandler) updateSkillRepo(w http.ResponseWriter, r *http.Request) {
@@ -1171,6 +1212,197 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func parseToolingRepoInput(input string) (skillRepoRecord, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return skillRepoRecord{}, errors.New("repo input is required")
+	}
+	if !strings.Contains(trimmed, "://") {
+		if strings.HasPrefix(strings.ToLower(trimmed), "github.com/") || strings.HasPrefix(strings.ToLower(trimmed), "gitlab.com/") {
+			trimmed = "https://" + trimmed
+		}
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return skillRepoRecord{}, fmt.Errorf("invalid repo url: %w", err)
+	}
+	host := strings.ToLower(strings.TrimPrefix(parsed.Hostname(), "www."))
+	var platform string
+	switch host {
+	case "github.com":
+		platform = "github"
+	case "gitlab.com":
+		platform = "gitlab"
+	default:
+		return skillRepoRecord{}, fmt.Errorf("unsupported repo host: %s", host)
+	}
+	segments := strings.FieldsFunc(strings.Trim(parsed.Path, "/"), func(r rune) bool {
+		return r == '/'
+	})
+	if len(segments) < 2 {
+		return skillRepoRecord{}, errors.New("repo url must include owner and name")
+	}
+	owner := strings.TrimSpace(segments[0])
+	name := strings.TrimSuffix(strings.TrimSpace(segments[1]), ".git")
+	if owner == "" || name == "" {
+		return skillRepoRecord{}, errors.New("repo url must include owner and name")
+	}
+	return normalizeSkillRepoRecord(skillRepoRecord{
+		Platform: platform,
+		Owner:    owner,
+		Name:     name,
+	}), nil
+}
+
+func resolveSkillRepoBranches(platform string, owner string, name string) ([]string, string, error) {
+	switch normalizeSkillRepoPlatform(platform) {
+	case "gitlab":
+		return resolveGitLabRepoBranches(owner, name)
+	default:
+		return resolveGitHubRepoBranches(owner, name)
+	}
+}
+
+func resolveGitHubRepoBranches(owner string, name string) ([]string, string, error) {
+	defaultBranch, err := fetchGitHubDefaultBranch(owner, name)
+	if err != nil {
+		return nil, "", err
+	}
+	req, err := newGitHubAPIRequest(http.MethodGet, fmt.Sprintf("%s/repos/%s/%s/branches", githubAPIBase(), url.PathEscape(owner), url.PathEscape(name)))
+	if err != nil {
+		return nil, "", err
+	}
+	params := req.URL.Query()
+	params.Set("per_page", "100")
+	req.URL.RawQuery = params.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, "", describeGitHubHTTPError("branches", resp)
+	}
+	var payload []struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, "", err
+	}
+	branches := make([]string, 0, len(payload))
+	for _, item := range payload {
+		if name := strings.TrimSpace(item.Name); name != "" {
+			branches = append(branches, name)
+		}
+	}
+	selected := selectPreferredBranch(branches, defaultBranch)
+	return uniqueStrings(branches), selected, nil
+}
+
+func fetchGitHubDefaultBranch(owner string, name string) (string, error) {
+	req, err := newGitHubAPIRequest(http.MethodGet, fmt.Sprintf("%s/repos/%s/%s", githubAPIBase(), url.PathEscape(owner), url.PathEscape(name)))
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", describeGitHubHTTPError("repo", resp)
+	}
+	var payload struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(payload.DefaultBranch), nil
+}
+
+func resolveGitLabRepoBranches(owner string, name string) ([]string, string, error) {
+	projectID := url.PathEscape(owner + "/" + name)
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/projects/%s/repository/branches", gitlabAPIBase(), projectID), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	params := req.URL.Query()
+	params.Set("per_page", "100")
+	req.URL.RawQuery = params.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("gitlab branches failed: %s", resp.Status)
+	}
+	var payload []struct {
+		Name    string `json:"name"`
+		Default bool   `json:"default"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, "", err
+	}
+	branches := make([]string, 0, len(payload))
+	defaultBranch := ""
+	for _, item := range payload {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		branches = append(branches, name)
+		if item.Default && defaultBranch == "" {
+			defaultBranch = name
+		}
+	}
+	selected := selectPreferredBranch(branches, defaultBranch)
+	return uniqueStrings(branches), selected, nil
+}
+
+func selectPreferredBranch(branches []string, fallback string) string {
+	candidates := uniqueStrings(branches)
+	for _, preferred := range []string{"main", "master"} {
+		for _, branch := range candidates {
+			if strings.EqualFold(branch, preferred) {
+				return branch
+			}
+		}
+	}
+	fallback = strings.TrimSpace(fallback)
+	if fallback != "" {
+		for _, branch := range candidates {
+			if strings.EqualFold(branch, fallback) {
+				return branch
+			}
+		}
+		return fallback
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return "main"
+}
+
+func uniqueStrings(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
 }
 
 func buildSkillStats(skills []managedSkillRecord) skillStatsResponse {

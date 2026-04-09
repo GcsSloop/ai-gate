@@ -9,7 +9,7 @@ import {
   SearchOutlined,
 } from "@ant-design/icons";
 import { Button, Card, Checkbox, Empty, Input, Modal, Space, Spin, Typography, message } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   addToolingRepo,
@@ -22,17 +22,20 @@ import {
   importToolingSkills,
   installToolingDiscoveredSkill,
   removeToolingRepo,
+  resolveToolingRepo,
   refreshToolingDiscoveredSkills,
   updateToolingSkill,
   updateToolingRepo,
   type ToolingDiscoveredSkill,
   type ToolingMcpServer,
+  type ToolingResolvedRepo,
   type ToolingSkillRecord,
   type ToolingSkillRepo,
   type ToolingSkillDiscoveryResponse,
   type ToolingState,
 } from "../../lib/api";
 import sourceOpenAIIcon from "../../assets/providers/openai.png";
+import { openExternalUrl } from "../../lib/desktop-shell";
 
 type ToolingMode = "skills" | "mcp";
 
@@ -49,6 +52,17 @@ type ManagedClientDescriptor = {
 
 type ManagedClientStatus = ManagedClientDescriptor & {
   enabled: boolean;
+};
+
+type RepoEditorMode = "create" | "edit";
+
+type RepoEditorForm = {
+  input: string;
+  platform: "github" | "gitlab";
+  owner: string;
+  name: string;
+  branch: string;
+  branchOptions: string[];
 };
 
 const managedClients: ManagedClientDescriptor[] = [
@@ -73,18 +87,13 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   const [discoveryBusyId, setDiscoveryBusyId] = useState<string | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [repoBusyKey, setRepoBusyKey] = useState<string | null>(null);
-  const [repoForm, setRepoForm] = useState<{
-    platform: "github" | "gitlab";
-    owner: string;
-    name: string;
-    branch: string;
-  }>({
-    platform: "github",
-    owner: "",
-    name: "",
-    branch: "main",
-  });
+  const [repoEditorOpen, setRepoEditorOpen] = useState(false);
+  const [repoEditorMode, setRepoEditorMode] = useState<RepoEditorMode>("create");
   const [repoEditing, setRepoEditing] = useState<ToolingSkillRepo | null>(null);
+  const [repoForm, setRepoForm] = useState<RepoEditorForm>(() => createEmptyRepoForm());
+  const [repoResolving, setRepoResolving] = useState(false);
+  const [repoResolveError, setRepoResolveError] = useState("");
+  const repoResolveRequestRef = useRef(0);
   const [skillBusyName, setSkillBusyName] = useState<string | null>(null);
   const [mcpBusyId, setMcpBusyId] = useState<string | null>(null);
 
@@ -339,7 +348,40 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   }
 
   function handleViewDiscoveredSkill(skill: ToolingDiscoveredSkill) {
-    window.open(skill.source_url, "_blank", "noopener,noreferrer");
+    void openExternalUrl(skill.source_url);
+  }
+
+  async function resolveRepoInput(input: string, options?: { initialBranch?: string }) {
+    const trimmed = input.trim();
+    setRepoResolveError("");
+    if (!trimmed) {
+      repoResolveRequestRef.current += 1;
+      setRepoResolving(false);
+      setRepoForm((current) => ({
+        ...createEmptyRepoForm(),
+        input: current.input,
+      }));
+      return;
+    }
+    const requestId = repoResolveRequestRef.current + 1;
+    repoResolveRequestRef.current = requestId;
+    setRepoResolving(true);
+    try {
+      const resolved = await resolveToolingRepo(trimmed);
+      if (repoResolveRequestRef.current !== requestId) {
+        return;
+      }
+      setRepoForm((current) => applyResolvedRepo(current, resolved, options?.initialBranch));
+    } catch (error) {
+      if (repoResolveRequestRef.current !== requestId) {
+        return;
+      }
+      setRepoResolveError(error instanceof Error ? error.message : t("仓库解析失败"));
+    } finally {
+      if (repoResolveRequestRef.current === requestId) {
+        setRepoResolving(false);
+      }
+    }
   }
 
   async function handleRepoAdd() {
@@ -361,14 +403,19 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   }
 
   async function handleRepoSave() {
-    if (!repoEditing) {
+    if (repoEditorMode === "create" || !repoEditing) {
       await handleRepoAdd();
       return;
     }
     const key = repoRecordKey(repoEditing.platform ?? "github", repoEditing.owner, repoEditing.name);
     setRepoBusyKey(key);
     try {
-      await updateToolingRepo(repoEditing.platform ?? "github", repoEditing.owner, repoEditing.name, repoForm);
+      await updateToolingRepo(repoEditing.platform ?? "github", repoEditing.owner, repoEditing.name, {
+        platform: repoForm.platform,
+        owner: repoForm.owner,
+        name: repoForm.name,
+        branch: repoForm.branch,
+      });
       void messageApi.success(t("仓库已更新"));
       resetRepoForm();
       await reload({ background: true });
@@ -382,24 +429,43 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     }
   }
 
-  function startRepoEdit(repo: ToolingSkillRepo) {
-    setRepoEditing(repo);
-    setRepoForm({
+  function openRepoCreate() {
+    setRepoEditorMode("create");
+    setRepoEditing(null);
+    setRepoResolveError("");
+    setRepoResolving(false);
+    setRepoForm(createEmptyRepoForm());
+    setRepoEditorOpen(true);
+  }
+
+  function openRepoEdit(repo: ToolingSkillRepo) {
+    const repoUrl = buildRepoURL(repo.platform ?? "github", repo.owner, repo.name);
+    const nextForm: RepoEditorForm = {
+      input: repoUrl,
       platform: repo.platform ?? "github",
       owner: repo.owner,
       name: repo.name,
       branch: repo.branch,
-    });
+      branchOptions: [repo.branch],
+    };
+    repoResolveRequestRef.current += 1;
+    setRepoEditorMode("edit");
+    setRepoEditing(repo);
+    setRepoResolveError("");
+    setRepoResolving(false);
+    setRepoForm(nextForm);
+    setRepoEditorOpen(true);
+    void resolveRepoInput(repoUrl, { initialBranch: repo.branch });
   }
 
   function resetRepoForm() {
+    repoResolveRequestRef.current += 1;
     setRepoEditing(null);
-    setRepoForm({
-      platform: "github",
-      owner: "",
-      name: "",
-      branch: "main",
-    });
+    setRepoEditorMode("create");
+    setRepoEditorOpen(false);
+    setRepoResolving(false);
+    setRepoResolveError("");
+    setRepoForm(createEmptyRepoForm());
   }
 
   async function handleRepoRemove(repo: ToolingSkillRepo) {
@@ -417,6 +483,10 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     } finally {
       setRepoBusyKey(null);
     }
+  }
+
+  function handleRepoView(repo: ToolingSkillRepo) {
+    void openExternalUrl(buildRepoURL(repo.platform ?? "github", repo.owner, repo.name));
   }
 
   if (loading || !state) {
@@ -567,67 +637,88 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
         }}
         footer={null}
         destroyOnHidden
+        className="tooling-repo-manager-modal"
       >
         <div className="tooling-repo-manager-shell">
-          <div className="tooling-repo-form-grid">
-            <label className="tooling-repo-field">
-              <span>{t("仓库平台")}</span>
-              <select
-                aria-label={t("仓库平台")}
-                value={repoForm.platform}
-                onChange={(event) => setRepoForm((current) => ({ ...current, platform: event.target.value as "github" | "gitlab" }))}
-              >
-                <option value="github">GitHub</option>
-                <option value="gitlab">GitLab</option>
-              </select>
-            </label>
-            <label className="tooling-repo-field">
-              <span>{t("仓库归属")}</span>
-              <input
-                aria-label={t("仓库归属")}
-                value={repoForm.owner}
-                onChange={(event) => setRepoForm((current) => ({ ...current, owner: event.target.value }))}
-              />
-            </label>
-            <label className="tooling-repo-field">
-              <span>{t("仓库名称")}</span>
-              <input
-                aria-label={t("仓库名称")}
-                value={repoForm.name}
-                onChange={(event) => setRepoForm((current) => ({ ...current, name: event.target.value }))}
-              />
-            </label>
-            <label className="tooling-repo-field">
-              <span>{t("分支")}</span>
-              <input
-                aria-label={t("分支")}
-                value={repoForm.branch}
-                onChange={(event) => setRepoForm((current) => ({ ...current, branch: event.target.value }))}
-              />
-            </label>
-          </div>
-          <Space wrap size={10}>
-            <Button type="primary" onClick={() => void handleRepoSave()}>
-              {repoEditing ? t("保存仓库") : t("添加仓库")}
+          <div className="tooling-repo-manager-toolbar">
+            <Typography.Text type="secondary">{t("仅管理公开 GitHub / GitLab 仓库")}</Typography.Text>
+            <Button type="primary" icon={<PlusOutlined />} aria-label={t("添加仓库")} onClick={openRepoCreate}>
+              {t("添加仓库")}
             </Button>
-            {repoEditing ? (
-              <Button onClick={() => resetRepoForm()}>
-                {t("取消编辑")}
-              </Button>
-            ) : null}
-          </Space>
+          </div>
 
-          <div className="tooling-discovery-list">
+          <div className="tooling-discovery-list tooling-repo-manager-list">
             {skillRepos.length > 0 ? skillRepos.map((repo) => (
               <RepoManageRow
                 key={repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
                 repo={repo}
                 busy={repoBusyKey === repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
-                onEdit={() => startRepoEdit(repo)}
+                onView={() => handleRepoView(repo)}
+                onEdit={() => openRepoEdit(repo)}
                 onDelete={() => void handleRepoRemove(repo)}
               />
             )) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("暂无已管理仓库")} />}
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={repoEditorOpen}
+        title={repoEditorMode === "edit" ? t("编辑仓库") : t("添加仓库")}
+        onCancel={() => resetRepoForm()}
+        footer={null}
+        destroyOnHidden
+        className="tooling-repo-editor-modal"
+      >
+        <div className="tooling-repo-editor-shell">
+          <label className="tooling-repo-field">
+            <span>{t("仓库链接")}</span>
+            <input
+              aria-label={t("仓库链接")}
+              value={repoForm.input}
+              disabled={repoEditorMode === "edit"}
+              onChange={(event) => {
+                const nextInput = event.target.value;
+                setRepoForm((current) => ({ ...current, input: nextInput }));
+                void resolveRepoInput(nextInput);
+              }}
+            />
+          </label>
+
+          <label className="tooling-repo-field">
+            <span>{t("分支")}</span>
+            <select
+              aria-label={t("分支")}
+              value={repoForm.branch}
+              onChange={(event) => setRepoForm((current) => ({ ...current, branch: event.target.value }))}
+            >
+              {repoForm.branchOptions.map((branch) => (
+                <option key={branch} value={branch}>
+                  {branch}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="tooling-repo-editor-summary">
+            {repoResolving ? <Typography.Text type="secondary">{t("正在解析仓库和分支…")}</Typography.Text> : null}
+            {!repoResolving && repoResolveError ? <Typography.Text type="danger">{repoResolveError}</Typography.Text> : null}
+            {!repoResolving && !repoResolveError && repoForm.owner && repoForm.name ? (
+              <Typography.Text type="secondary">{`${repoForm.platform.toUpperCase()} · ${repoForm.owner}/${repoForm.name}`}</Typography.Text>
+            ) : null}
+          </div>
+
+          <Space wrap size={10}>
+            <Button
+              type="primary"
+              loading={repoBusyKey === repoRecordKey(repoForm.platform, repoForm.owner, repoForm.name)}
+              disabled={repoResolving || !repoForm.owner || !repoForm.name || !repoForm.branch}
+              onClick={() => void handleRepoSave()}
+            >
+              {repoEditorMode === "edit" ? t("保存仓库") : t("确认添加仓库")}
+            </Button>
+            <Button onClick={() => resetRepoForm()}>{t("取消")}</Button>
+          </Space>
         </div>
       </Modal>
     </div>
@@ -669,6 +760,40 @@ function markDiscoveredSkillInstalled(
 
 function repoRecordKey(platform: string, owner: string, name: string): string {
   return `${platform}:${owner}/${name}`;
+}
+
+function createEmptyRepoForm(): RepoEditorForm {
+  return {
+    input: "",
+    platform: "github",
+    owner: "",
+    name: "",
+    branch: "main",
+    branchOptions: ["main"],
+  };
+}
+
+function applyResolvedRepo(current: RepoEditorForm, resolved: ToolingResolvedRepo, preferredBranch?: string): RepoEditorForm {
+  const branchOptions = resolved.branch_options.length > 0 ? resolved.branch_options : [resolved.selected_branch || preferredBranch || "main"];
+  const selectedBranch =
+    preferredBranch && branchOptions.includes(preferredBranch)
+      ? preferredBranch
+      : branchOptions.includes(resolved.selected_branch)
+        ? resolved.selected_branch
+        : branchOptions[0];
+  return {
+    ...current,
+    input: resolved.repo_url,
+    platform: resolved.platform,
+    owner: resolved.owner,
+    name: resolved.name,
+    branch: selectedBranch,
+    branchOptions,
+  };
+}
+
+function buildRepoURL(platform: string, owner: string, name: string): string {
+  return `${platform === "gitlab" ? "https://gitlab.com" : "https://github.com"}/${owner}/${name}`;
 }
 
 function DeleteMcpConfirmContent({
@@ -768,28 +893,34 @@ function DiscoveredSkillCard({
 function RepoManageRow({
   repo,
   busy,
+  onView,
   onEdit,
   onDelete,
 }: {
   repo: ToolingSkillRepo;
   busy?: boolean;
+  onView: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const repoUrl = buildRepoURL(repo.platform ?? "github", repo.owner, repo.name);
   return (
     <div className="tooling-repo-row">
       <div className="tooling-repo-main">
         <div className="tooling-repo-title">{`${repo.owner}/${repo.name}`}</div>
-        <div className="stats-subtitle">{`${(repo.platform ?? "github").toUpperCase()} · ${repo.branch} · ${repo.skill_count} skills`}</div>
+        <div className="stats-subtitle">{`${repo.skill_count} skills · ${repoUrl}`}</div>
       </div>
-      <Space size={8}>
-        <Button size="small" icon={<EditOutlined />} aria-label={`编辑 ${repo.owner}/${repo.name}`} onClick={onEdit}>
+      <div className="tooling-repo-actions">
+        <button type="button" className="tooling-repo-action-button" aria-label={`查看 ${repo.owner}/${repo.name}`} onClick={onView}>
+          查看
+        </button>
+        <button type="button" className="tooling-repo-action-button" aria-label={`编辑 ${repo.owner}/${repo.name}`} onClick={onEdit}>
           编辑
-        </Button>
-        <Button size="small" danger loading={busy} icon={<DeleteOutlined />} aria-label={`移除 ${repo.owner}/${repo.name}`} onClick={onDelete}>
-          移除
-        </Button>
-      </Space>
+        </button>
+        <button type="button" className="tooling-repo-action-button is-danger" aria-label={`删除 ${repo.owner}/${repo.name}`} disabled={busy} onClick={onDelete}>
+          删除
+        </button>
+      </div>
     </div>
   );
 }

@@ -795,6 +795,35 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   gap: 16px;
 }
 
+.tooling-repo-manager-modal .ant-modal-body {
+  max-height: min(72vh, 720px);
+  overflow: hidden;
+}
+
+.tooling-repo-manager-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tooling-repo-manager-list {
+  max-height: min(56vh, 560px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.tooling-repo-editor-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tooling-repo-editor-summary {
+  min-height: 22px;
+}
+
 .tooling-repo-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -933,14 +962,24 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 14px 16px;
-  border-radius: 14px;
-  background: var(--interactive-soft);
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: #ffffff;
   border: 1px solid var(--panel-border);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.tooling-repo-row:hover,
+.tooling-repo-row:focus-within {
+  transform: translateY(-1px);
+  border-color: rgba(62, 91, 232, 0.2);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
 }
 
 .tooling-repo-main {
   min-width: 0;
+  flex: 1;
 }
 
 .tooling-delete-confirm-content {
@@ -978,6 +1017,53 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   gap: 8px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.tooling-repo-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(2px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.tooling-repo-row:hover .tooling-repo-actions,
+.tooling-repo-row:focus-within .tooling-repo-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.tooling-repo-action-button {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.tooling-repo-action-button:hover {
+  color: #2448d8;
+  background: rgba(62, 91, 232, 0.06);
+}
+
+.tooling-repo-action-button.is-danger:hover {
+  color: #c2410c;
+  background: rgba(249, 115, 22, 0.08);
+}
+
+.tooling-repo-action-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .tooling-template-row {
@@ -1019,6 +1105,21 @@ html[data-theme-mode="dark"] .top-home-update-dot {
 
   .tooling-repo-form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .tooling-repo-manager-toolbar {
+    align-items: stretch;
+  }
+
+  .tooling-repo-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .tooling-repo-actions {
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
   }
 }
 
