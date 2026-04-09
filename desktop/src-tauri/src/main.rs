@@ -393,6 +393,7 @@ fn main() {
     APP_EXITING.store(false, Ordering::SeqCst);
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             force_exit_app,
