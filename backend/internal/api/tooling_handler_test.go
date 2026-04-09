@@ -1,8 +1,8 @@
 package api_test
 
 import (
+	"archive/zip"
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -762,31 +762,24 @@ func TestToolingHandlerDiscoverSkillsUsesCacheAndRefreshesLatest(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
+	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
+		"skills/zulu/SKILL.md":  "# Zulu Skill\nA trailing skill.\n\nUNIQUE-ZULU-BODY\n",
+		"skills/alpha/SKILL.md": "---\ndescription: Alpha summary\n---\n# Alpha Skill\nDetailed alpha body that must not be cached.\n",
+	})
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/openai/codex-skills/git/trees/main":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"tree": []map[string]any{
-					{"path": "skills/zulu/SKILL.md", "type": "blob"},
-					{"path": "skills/alpha/SKILL.md", "type": "blob"},
-				},
-			})
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/openai/codex-skills/contents/skills/zulu/SKILL.md":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"encoding": "base64",
-				"content":  base64.StdEncoding.EncodeToString([]byte("# Zulu Skill\nA trailing skill.\n\nUNIQUE-ZULU-BODY\n")),
-			})
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/openai/codex-skills/contents/skills/alpha/SKILL.md":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"encoding": "base64",
-				"content":  base64.StdEncoding.EncodeToString([]byte("---\ndescription: Alpha summary\n---\n# Alpha Skill\nDetailed alpha body that must not be cached.\n")),
-			})
+		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(archive)
+		case strings.Contains(r.URL.Path, "/git/trees/"), strings.Contains(r.URL.Path, "/contents/"):
+			http.Error(w, "legacy github api path should not be used", http.StatusForbidden)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
-	t.Setenv("AIGATE_GITHUB_API_BASE", server.URL)
+	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
 
 	writeToolingConfig(t, home, map[string]any{
 		"skill_sync_method": "symlink",
@@ -912,31 +905,27 @@ func TestToolingHandlerCanInstallDiscoveredSkillIntoManagedAndCodexDirs(t *testi
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
+	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
+		"skills/alpha/SKILL.md":           "# Alpha Skill\nInstallable summary.\n",
+		"skills/alpha/assets/config.json": "{\"ok\":true}\n",
+		"skills/alpha/assets/readme.txt":  "hello\n",
+		"skills/ignore-other/SKILL.md":    "# Ignore Other\nnot selected\n",
+		"skills/ignore-other/extra.txt":   "ignore\n",
+	})
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/openai/codex-skills/git/trees/main":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"tree": []map[string]any{
-					{"path": "skills/alpha/SKILL.md", "type": "blob"},
-					{"path": "skills/alpha/assets/config.json", "type": "blob"},
-				},
-			})
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/openai/codex-skills/contents/skills/alpha/SKILL.md":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"encoding": "base64",
-				"content":  base64.StdEncoding.EncodeToString([]byte("# Alpha Skill\nInstallable summary.\n")),
-			})
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/openai/codex-skills/contents/skills/alpha/assets/config.json":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"encoding": "base64",
-				"content":  base64.StdEncoding.EncodeToString([]byte("{\"ok\":true}\n")),
-			})
+		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(archive)
+		case strings.Contains(r.URL.Path, "/git/trees/"), strings.Contains(r.URL.Path, "/contents/"):
+			http.Error(w, "legacy github api path should not be used", http.StatusForbidden)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
-	t.Setenv("AIGATE_GITHUB_API_BASE", server.URL)
+	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
 
 	handler := api.NewToolingHandler()
 
@@ -955,6 +944,12 @@ func TestToolingHandlerCanInstallDiscoveredSkillIntoManagedAndCodexDirs(t *testi
 	if _, err := os.Stat(filepath.Join(managedRoot, "assets", "config.json")); err != nil {
 		t.Fatalf("expected managed nested file: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(managedRoot, "assets", "readme.txt")); err != nil {
+		t.Fatalf("expected managed text asset: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".aigate", "data", "tooling", "skills", "codex-skills-ignore-other")); !os.IsNotExist(err) {
+		t.Fatalf("expected unrelated skill not installed, stat err = %v", err)
+	}
 	metaRaw, err := os.ReadFile(filepath.Join(managedRoot, ".aigate-skill.json"))
 	if err != nil {
 		t.Fatalf("ReadFile metadata: %v", err)
@@ -969,6 +964,25 @@ func TestToolingHandlerCanInstallDiscoveredSkillIntoManagedAndCodexDirs(t *testi
 	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "codex-skills-alpha", "SKILL.md")); err != nil {
 		t.Fatalf("expected codex synced skill file: %v", err)
 	}
+}
+
+func makeGitHubArchiveZip(t *testing.T, root string, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for relativePath, raw := range files {
+		entry, err := zw.Create(root + "/" + strings.TrimLeft(relativePath, "/"))
+		if err != nil {
+			t.Fatalf("Create zip entry %s: %v", relativePath, err)
+		}
+		if _, err := entry.Write([]byte(raw)); err != nil {
+			t.Fatalf("Write zip entry %s: %v", relativePath, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("Close zip writer: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func doToolingRequest(t *testing.T, handler http.Handler, method, path string, body *bytes.Buffer, headers map[string]string, wantStatus int) []byte {

@@ -1,8 +1,8 @@
 package api
 
 import (
+	"archive/zip"
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -120,13 +121,13 @@ type discoveredSkillRecord struct {
 }
 
 type skillDiscoveryCache struct {
-	FetchedAt string                 `json:"fetched_at"`
+	FetchedAt string                  `json:"fetched_at"`
 	Items     []discoveredSkillRecord `json:"items"`
 }
 
 type toolingSkillDiscoverResponse struct {
-	Cached    bool                  `json:"cached"`
-	FetchedAt string                `json:"fetched_at,omitempty"`
+	Cached    bool                    `json:"cached"`
+	FetchedAt string                  `json:"fetched_at,omitempty"`
 	Items     []discoveredSkillRecord `json:"items"`
 }
 
@@ -190,9 +191,9 @@ type toolingDiscoveredSkillInstallRequest struct {
 
 type toolingRepoRequest struct {
 	Platform string `json:"platform"`
-	Owner  string `json:"owner"`
-	Name   string `json:"name"`
-	Branch string `json:"branch"`
+	Owner    string `json:"owner"`
+	Name     string `json:"name"`
+	Branch   string `json:"branch"`
 }
 
 type toolingRepoSearchResponse struct {
@@ -639,7 +640,7 @@ func (h *ToolingHandler) searchSkillRepos(w http.ResponseWriter, r *http.Request
 	}
 	var (
 		items []repoSearchResult
-		err error
+		err   error
 	)
 	switch platform {
 	case "gitlab":
@@ -2240,7 +2241,7 @@ func (h *ToolingHandler) syncManagedCodexMcpServers(home string, cfg toolingConf
 }
 
 func searchGitHubRepos(query string) ([]repoSearchResult, error) {
-	req, err := http.NewRequest(http.MethodGet, githubAPIBase()+"/search/repositories", nil)
+	req, err := newGitHubAPIRequest(http.MethodGet, githubAPIBase()+"/search/repositories")
 	if err != nil {
 		return nil, err
 	}
@@ -2254,7 +2255,7 @@ func searchGitHubRepos(query string) ([]repoSearchResult, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("github search failed: %s", resp.Status)
+		return nil, describeGitHubHTTPError("search", resp)
 	}
 	var payload struct {
 		Items []struct {
@@ -2333,8 +2334,76 @@ func githubAPIBase() string {
 	return strings.TrimRight(firstNonEmpty(os.Getenv("AIGATE_GITHUB_API_BASE"), "https://api.github.com"), "/")
 }
 
+func githubArchiveBase() string {
+	return strings.TrimRight(firstNonEmpty(os.Getenv("AIGATE_GITHUB_ARCHIVE_BASE"), "https://github.com"), "/")
+}
+
 func gitlabAPIBase() string {
 	return strings.TrimRight(firstNonEmpty(os.Getenv("AIGATE_GITLAB_API_BASE"), "https://gitlab.com/api/v4"), "/")
+}
+
+func githubAuthToken() string {
+	return strings.TrimSpace(firstNonEmpty(
+		os.Getenv("AIGATE_GITHUB_TOKEN"),
+		os.Getenv("GITHUB_TOKEN"),
+		os.Getenv("GH_TOKEN"),
+		os.Getenv("GITHUB_PERSONAL_ACCESS_TOKEN"),
+	))
+}
+
+func newGitHubAPIRequest(method string, targetURL string) (*http.Request, error) {
+	req, err := http.NewRequest(method, targetURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "ai-gate")
+	if token := githubAuthToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
+}
+
+func newGitHubArchiveRequest(repo skillRepoRecord) (*http.Request, error) {
+	archiveURL := fmt.Sprintf("%s/%s/%s/archive/refs/heads/%s.zip", githubArchiveBase(), url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(repo.Branch))
+	req, err := http.NewRequest(http.MethodGet, archiveURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "ai-gate")
+	return req, nil
+}
+
+func describeGitHubHTTPError(kind string, resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	bodyText := strings.TrimSpace(string(body))
+	message := bodyText
+	if strings.HasPrefix(bodyText, "{") {
+		var payload struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(body, &payload) == nil && strings.TrimSpace(payload.Message) != "" {
+			message = strings.TrimSpace(payload.Message)
+		}
+	}
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" || strings.Contains(strings.ToLower(message), "rate limit") {
+			resetHint := ""
+			if rawReset := strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")); rawReset != "" {
+				if ts, err := strconv.ParseInt(rawReset, 10, 64); err == nil {
+					resetHint = fmt.Sprintf("，预计 %s 重置", time.Unix(ts, 0).UTC().Format(time.RFC3339))
+				}
+			}
+			if githubAuthToken() == "" {
+				return fmt.Errorf("github %s 触发匿名请求限流%s，请稍后重试或配置 GitHub Token", kind, resetHint)
+			}
+			return fmt.Errorf("github %s 触发请求限流%s，请稍后重试", kind, resetHint)
+		}
+	}
+	if message != "" && message != resp.Status {
+		return fmt.Errorf("github %s failed: %s (%s)", kind, resp.Status, message)
+	}
+	return fmt.Errorf("github %s failed: %s", kind, resp.Status)
 }
 
 func loadSkillDiscoveryCache(home string) (skillDiscoveryCache, bool) {
@@ -2413,76 +2482,78 @@ func discoverSkillsFromRepo(repo skillRepoRecord, installed map[string]map[strin
 }
 
 func discoverGitHubRepoSkills(repo skillRepoRecord, installed map[string]map[string]bool) ([]discoveredSkillRecord, error) {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/repos/%s/%s/git/trees/%s", githubAPIBase(), url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(repo.Branch)), nil)
+	files, err := fetchGitHubArchiveFiles(repo, func(filePath string) bool {
+		return strings.HasSuffix(filePath, "/SKILL.md")
+	})
 	if err != nil {
 		return nil, err
 	}
-	params := req.URL.Query()
-	params.Set("recursive", "1")
-	req.URL.RawQuery = params.Encode()
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
+	paths := make([]string, 0, len(files))
+	for filePath := range files {
+		paths = append(paths, filePath)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("github tree failed: %s", resp.Status)
-	}
-	var payload struct {
-		Tree []struct {
-			Path string `json:"path"`
-			Type string `json:"type"`
-		} `json:"tree"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, err
-	}
+	sort.Strings(paths)
 	items := make([]discoveredSkillRecord, 0)
-	for _, entry := range payload.Tree {
-		if entry.Type != "blob" || !strings.HasSuffix(entry.Path, "/SKILL.md") {
-			continue
-		}
-		raw, err := fetchGitHubFile(repo, entry.Path)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, buildDiscoveredSkillRecord(repo, entry.Path, raw, installed))
+	for _, filePath := range paths {
+		items = append(items, buildDiscoveredSkillRecord(repo, filePath, files[filePath], installed))
 	}
 	return items, nil
 }
 
-func fetchGitHubFile(repo skillRepoRecord, path string) (string, error) {
-	urlPath := fmt.Sprintf("%s/repos/%s/%s/contents/%s", githubAPIBase(), url.PathEscape(repo.Owner), url.PathEscape(repo.Name), encodeRepoPath(path))
-	req, err := http.NewRequest(http.MethodGet, urlPath, nil)
+func fetchGitHubArchiveFiles(repo skillRepoRecord, match func(string) bool) (map[string]string, error) {
+	req, err := newGitHubArchiveRequest(repo)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	params := req.URL.Query()
-	params.Set("ref", repo.Branch)
-	req.URL.RawQuery = params.Encode()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("github content failed: %s", resp.Status)
+		return nil, describeGitHubHTTPError("archive", resp)
 	}
-	var payload struct {
-		Content  string `json:"content"`
-		Encoding string `json:"encoding"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", err
-	}
-	if payload.Encoding != "base64" {
-		return "", fmt.Errorf("unsupported github content encoding: %s", payload.Encoding)
-	}
-	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(payload.Content, "\n", ""))
+	archive, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return string(decoded), nil
+	reader, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+	if err != nil {
+		return nil, err
+	}
+	files := map[string]string{}
+	for _, file := range reader.File {
+		relativePath := trimGitHubArchivePath(file.Name)
+		if relativePath == "" || file.FileInfo().IsDir() || !match(relativePath) {
+			continue
+		}
+		handle, err := file.Open()
+		if err != nil {
+			return nil, err
+		}
+		raw, readErr := io.ReadAll(handle)
+		closeErr := handle.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		files[relativePath] = string(raw)
+	}
+	return files, nil
+}
+
+func trimGitHubArchivePath(filePath string) string {
+	filePath = strings.Trim(filePath, "/")
+	if filePath == "" {
+		return ""
+	}
+	_, relativePath, found := strings.Cut(filePath, "/")
+	if !found {
+		return ""
+	}
+	return strings.Trim(relativePath, "/")
 }
 
 func discoverGitLabRepoSkills(repo skillRepoRecord, installed map[string]map[string]bool) ([]discoveredSkillRecord, error) {
@@ -2750,43 +2821,18 @@ func fetchDiscoveredSkillFiles(repo skillRepoRecord, sourcePath string) (map[str
 }
 
 func fetchGitHubSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]string, error) {
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/repos/%s/%s/git/trees/%s", githubAPIBase(), url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(repo.Branch)), nil)
-	if err != nil {
-		return nil, err
-	}
-	params := req.URL.Query()
-	params.Set("recursive", "1")
-	req.URL.RawQuery = params.Encode()
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("github tree failed: %s", resp.Status)
-	}
-	var payload struct {
-		Tree []struct {
-			Path string `json:"path"`
-			Type string `json:"type"`
-		} `json:"tree"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, err
-	}
-	files := map[string]string{}
 	prefix := strings.Trim(sourcePath, "/")
-	for _, entry := range payload.Tree {
-		if entry.Type != "blob" || !pathWithinDiscoveredSkill(prefix, entry.Path) {
-			continue
-		}
-		raw, err := fetchGitHubFile(repo, entry.Path)
-		if err != nil {
-			return nil, err
-		}
-		files[strings.TrimPrefix(strings.TrimPrefix(entry.Path, prefix), "/")] = raw
+	files, err := fetchGitHubArchiveFiles(repo, func(filePath string) bool {
+		return pathWithinDiscoveredSkill(prefix, filePath)
+	})
+	if err != nil {
+		return nil, err
 	}
-	return files, nil
+	result := map[string]string{}
+	for filePath, raw := range files {
+		result[strings.TrimPrefix(strings.TrimPrefix(filePath, prefix), "/")] = raw
+	}
+	return result, nil
 }
 
 func fetchGitLabSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]string, error) {
