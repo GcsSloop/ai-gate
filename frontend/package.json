@@ -1,7 +1,7 @@
 {
   "name": "aigate-frontend",
   "private": true,
-  "version": "1.2.6",
+  "version": "1.2.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,6 +15,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-opener": "^2.5.3",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.0",
     "antd": "^6.3.1",

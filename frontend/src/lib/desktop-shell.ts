@@ -89,6 +89,19 @@ export async function writeDesktopClipboardText(text: string): Promise<void> {
   await invoke("write_clipboard_text", { text });
 }
 
+export async function openExternalUrl(url: string): Promise<void> {
+  if (isDesktopShell()) {
+    try {
+      const opener = await import("@tauri-apps/plugin-opener");
+      await opener.openUrl(url);
+      return;
+    } catch (error) {
+      console.warn("desktop openUrl failed, fallback to window.open", error);
+    }
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 export async function subscribeDesktopBackendStateChanged(handler: () => void): Promise<() => void> {
   if (!isDesktopShell()) {
     return () => {};
