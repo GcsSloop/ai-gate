@@ -838,15 +838,36 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   color: var(--text-secondary);
 }
 
-.tooling-repo-field input,
-.tooling-repo-field select {
+.tooling-repo-editor-input.ant-input,
+.tooling-repo-editor-select.ant-select {
   width: 100%;
-  min-height: 38px;
-  border-radius: 12px;
-  border: 1px solid var(--panel-border);
-  padding: 0 12px;
+}
+
+.tooling-repo-editor-input.ant-input {
+  min-height: 40px;
+  border-radius: 14px;
+  border-color: var(--panel-border);
   background: #ffffff;
   color: var(--text-primary);
+  box-shadow: none;
+  padding-inline: 14px;
+}
+
+.tooling-repo-editor-select.ant-select .ant-select-selector {
+  min-height: 40px !important;
+  border-radius: 14px !important;
+  border-color: var(--panel-border) !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+  padding: 4px 14px !important;
+  color: var(--text-primary);
+}
+
+.tooling-repo-editor-input.ant-input:focus,
+.tooling-repo-editor-input.ant-input-focused,
+.tooling-repo-editor-select.ant-select-focused .ant-select-selector {
+  border-color: #7aa2f8 !important;
+  box-shadow: 0 0 0 3px rgba(122, 162, 248, 0.2) !important;
 }
 
 .tooling-card {

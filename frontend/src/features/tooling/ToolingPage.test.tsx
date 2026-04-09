@@ -517,7 +517,8 @@ describe("ToolingPage", () => {
       ),
     );
 
-    fireEvent.change(within(createDialog).getByLabelText("分支"), { target: { value: "develop" } });
+    fireEvent.mouseDown(within(createDialog).getByLabelText("分支"));
+    fireEvent.click((await screen.findAllByText("develop"))[0]);
     fireEvent.click(within(createDialog).getByRole("button", { name: "确认添加仓库" }));
 
     await waitFor(() => expect(api.addToolingRepo).toHaveBeenCalledWith("gitlab", "gitlab-org", "codex-superpowers", "develop"));
@@ -529,7 +530,8 @@ describe("ToolingPage", () => {
 
     const editDialog = (await screen.findAllByRole("dialog")).at(-1)!;
     expect(within(editDialog).getByDisplayValue("https://github.com/openai/codex-superpowers")).toBeDisabled();
-    fireEvent.change(within(editDialog).getByLabelText("分支"), { target: { value: "release" } });
+    fireEvent.mouseDown(within(editDialog).getByLabelText("分支"));
+    fireEvent.click((await screen.findAllByText("release")).at(-1)!);
     fireEvent.click(within(editDialog).getByRole("button", { name: "保存仓库" }));
 
     await waitFor(() =>
