@@ -342,8 +342,8 @@ describe("ToolingPage", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "发现技能" });
     expect(within(dialog).getByPlaceholderText("搜索发现的技能")).toBeInTheDocument();
-    expect(within(dialog).getByText("使用缓存")).toBeInTheDocument();
-    const skillTitles = within(dialog).getAllByTestId("tooling-discovered-skill-title").map((node) => node.textContent);
+    expect(await within(dialog).findByText("使用缓存")).toBeInTheDocument();
+    const skillTitles = (await within(dialog).findAllByTestId("tooling-discovered-skill-title")).map((node) => node.textContent);
     expect(skillTitles).toEqual(["Alpha Skill", "Zulu Skill"]);
 
     refreshDeferred.resolve(buildDiscoveredSkillResponse({
