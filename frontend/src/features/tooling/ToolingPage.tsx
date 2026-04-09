@@ -8,7 +8,7 @@ import {
   ReloadOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
-import { Button, Card, Checkbox, Empty, Input, Modal, Space, Spin, Typography, message } from "antd";
+import { Button, Card, Checkbox, Empty, Input, Modal, Select, Space, Spin, Typography, message } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -152,6 +152,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
         }
         setDiscoveryResponse(sortDiscoveryResponse(response));
         setDiscoveryStatus(t("已更新"));
+        void reload({ background: true });
       })
       .catch((error) => {
         if (!active) {
@@ -316,6 +317,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       const response = await refreshToolingDiscoveredSkills();
       setDiscoveryResponse(sortDiscoveryResponse(response));
       setDiscoveryStatus(t("已更新"));
+      await reload({ background: true });
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
     } finally {
@@ -673,8 +675,9 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
         <div className="tooling-repo-editor-shell">
           <label className="tooling-repo-field">
             <span>{t("仓库链接")}</span>
-            <input
+            <Input
               aria-label={t("仓库链接")}
+              className="tooling-repo-editor-input"
               value={repoForm.input}
               disabled={repoEditorMode === "edit"}
               onChange={(event) => {
@@ -687,17 +690,13 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
 
           <label className="tooling-repo-field">
             <span>{t("分支")}</span>
-            <select
+            <Select
               aria-label={t("分支")}
+              className="tooling-repo-editor-select"
               value={repoForm.branch}
-              onChange={(event) => setRepoForm((current) => ({ ...current, branch: event.target.value }))}
-            >
-              {repoForm.branchOptions.map((branch) => (
-                <option key={branch} value={branch}>
-                  {branch}
-                </option>
-              ))}
-            </select>
+              options={repoForm.branchOptions.map((branch) => ({ label: branch, value: branch }))}
+              onChange={(branch) => setRepoForm((current) => ({ ...current, branch }))}
+            />
           </label>
 
           <div className="tooling-repo-editor-summary">
