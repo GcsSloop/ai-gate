@@ -449,6 +449,27 @@ func TestToolingHandlerResolvesGitLabRepoAndFallsBackToDefaultBranch(t *testing.
 	}
 }
 
+func TestToolingHandlerStateIncludesDefaultSkillRepo(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	handler := api.NewToolingHandler()
+	state := doToolingRequest(t, handler, http.MethodGet, "/tooling/state", nil, nil, http.StatusOK)
+
+	var payload map[string]any
+	if err := json.Unmarshal(state, &payload); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	repos, ok := payload["skill_repos"].([]any)
+	if !ok || len(repos) == 0 {
+		t.Fatalf("skill_repos = %v, want default repos", payload["skill_repos"])
+	}
+	repo := repos[0].(map[string]any)
+	if repo["platform"] != "github" || repo["owner"] != "openai" || repo["name"] != "skills" || repo["branch"] != "main" {
+		t.Fatalf("default repo = %v, want github/openai/skills@main", repo)
+	}
+}
+
 func TestToolingHandlerInstallAndApplyMcpServer(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -859,6 +880,9 @@ func TestToolingHandlerDiscoverSkillsUsesCacheAndRefreshesLatest(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
+	defaultArchive := makeGitHubArchiveZip(t, "skills-main", map[string]string{
+		"README.md": "# OpenAI Skills\n",
+	})
 	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
 		"skills/zulu/SKILL.md":  "# Zulu Skill\nA trailing skill.\n\nUNIQUE-ZULU-BODY\n",
 		"skills/alpha/SKILL.md": "---\ndescription: Alpha summary\n---\n# Alpha Skill\nDetailed alpha body that must not be cached.\n",
@@ -866,6 +890,9 @@ func TestToolingHandlerDiscoverSkillsUsesCacheAndRefreshesLatest(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/openai/skills/archive/refs/heads/main.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(defaultArchive)
 		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
 			w.Header().Set("Content-Type", "application/zip")
 			_, _ = w.Write(archive)
@@ -954,12 +981,32 @@ func TestToolingHandlerDiscoverSkillsUsesCacheAndRefreshesLatest(t *testing.T) {
 	if strings.Contains(cacheRaw, "Detailed alpha body that must not be cached.") || strings.Contains(cacheRaw, "UNIQUE-ZULU-BODY") {
 		t.Fatalf("cache raw = %s, want index-only cache without full body content", cacheRaw)
 	}
+
+	cfg := readToolingConfig(t, home)
+	repos := cfg["skill_repos"].([]any)
+	var target map[string]any
+	for _, raw := range repos {
+		repo := raw.(map[string]any)
+		if repo["owner"] == "openai" && repo["name"] == "codex-skills" {
+			target = repo
+			break
+		}
+	}
+	if target == nil {
+		t.Fatalf("skill_repos = %v, want openai/codex-skills", cfg["skill_repos"])
+	}
+	if target["skill_count"] != float64(2) {
+		t.Fatalf("skill_count = %v, want 2", target["skill_count"])
+	}
 }
 
 func TestToolingHandlerDiscoverSkillsMarksInstalledUpdatesByHash(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
+	defaultArchive := makeGitHubArchiveZip(t, "skills-main", map[string]string{
+		"README.md": "# OpenAI Skills\n",
+	})
 	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
 		"skills/alpha/SKILL.md":          "# Alpha Skill\nNew upstream summary.\n",
 		"skills/alpha/assets/config.txt": "v2\n",
@@ -968,6 +1015,9 @@ func TestToolingHandlerDiscoverSkillsMarksInstalledUpdatesByHash(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/openai/skills/archive/refs/heads/main.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(defaultArchive)
 		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
 			w.Header().Set("Content-Type", "application/zip")
 			_, _ = w.Write(archive)
@@ -1073,8 +1123,11 @@ func TestToolingHandlerSkillRepoCRUDSupportsPlatformAwareRecords(t *testing.T) {
 	}
 
 	listed = doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/repos", nil, nil, http.StatusOK)
-	if !strings.Contains(string(listed), `"platform":"gitlab"`) || strings.Contains(string(listed), `"platform":"github"`) {
-		t.Fatalf("list response after update = %s, want only updated gitlab record", string(listed))
+	if !strings.Contains(string(listed), `"platform":"gitlab"`) || !strings.Contains(string(listed), `"name":"skills"`) {
+		t.Fatalf("list response after update = %s, want updated gitlab repo plus default skills repo", string(listed))
+	}
+	if strings.Contains(string(listed), `"name":"codex-skills","branch":"main"`) {
+		t.Fatalf("list response after update = %s, want original github codex-skills record removed", string(listed))
 	}
 
 	removed := doToolingRequest(t, handler, http.MethodDelete, "/tooling/skills/repos/gitlab/gitlab-org/codex-skills", nil, nil, http.StatusOK)
@@ -1083,8 +1136,8 @@ func TestToolingHandlerSkillRepoCRUDSupportsPlatformAwareRecords(t *testing.T) {
 	}
 
 	listed = doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/repos", nil, nil, http.StatusOK)
-	if strings.TrimSpace(string(listed)) != "[]" {
-		t.Fatalf("list response after delete = %s, want empty list", string(listed))
+	if !strings.Contains(string(listed), `"name":"skills"`) || strings.Contains(string(listed), `"name":"codex-skills"`) {
+		t.Fatalf("list response after delete = %s, want only default skills repo", string(listed))
 	}
 }
 
