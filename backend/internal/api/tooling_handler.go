@@ -234,7 +234,15 @@ type mcpConfigPayload struct {
 	Mcp        map[string]any `json:"mcp"`
 }
 
-var toolingDefaultRepos = []skillRepoRecord{}
+var toolingDefaultRepos = []skillRepoRecord{
+	{
+		Platform: "github",
+		Owner:    "openai",
+		Name:     "skills",
+		Branch:   "main",
+		Enabled:  true,
+	},
+}
 
 var toolingTemplates = []mcpTemplateRecord{
 	{ID: "fetch", Name: "mcp-server-fetch", Description: "Quick template: mcp-fetch", Type: "stdio", Command: "uvx", Args: []string{"mcp-server-fetch"}},
@@ -1050,6 +1058,7 @@ func (h *ToolingHandler) loadConfig(home string) toolingConfig {
 		for idx := range cfg.SkillRepos {
 			cfg.SkillRepos[idx] = normalizeSkillRepoRecord(cfg.SkillRepos[idx])
 		}
+		cfg.SkillRepos = mergeDefaultSkillRepos(cfg.SkillRepos)
 	}
 	return cfg
 }
@@ -1062,6 +1071,7 @@ func (h *ToolingHandler) saveConfig(home string, cfg toolingConfig) error {
 		for idx := range cfg.SkillRepos {
 			cfg.SkillRepos[idx] = normalizeSkillRepoRecord(cfg.SkillRepos[idx])
 		}
+		cfg.SkillRepos = mergeDefaultSkillRepos(cfg.SkillRepos)
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -1212,6 +1222,33 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func mergeDefaultSkillRepos(repos []skillRepoRecord) []skillRepoRecord {
+	result := make([]skillRepoRecord, 0, len(repos)+len(toolingDefaultRepos))
+	result = append(result, repos...)
+	for _, defaultRepo := range toolingDefaultRepos {
+		exists := false
+		for _, repo := range result {
+			if skillRepoMatches(repo, defaultRepo.Platform, defaultRepo.Owner, defaultRepo.Name) {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			result = append(result, normalizeSkillRepoRecord(defaultRepo))
+		}
+	}
+	return result
+}
+
+func repoRecordKey(platform string, owner string, name string) string {
+	return fmt.Sprintf(
+		"%s:%s/%s",
+		normalizeSkillRepoPlatform(platform),
+		strings.ToLower(strings.TrimSpace(owner)),
+		strings.ToLower(strings.TrimSpace(name)),
+	)
 }
 
 func parseToolingRepoInput(input string) (skillRepoRecord, error) {
@@ -1711,6 +1748,11 @@ func (h *ToolingHandler) refreshSkillDiscovery(home string) ([]discoveredSkillRe
 	if err != nil {
 		return nil, "", err
 	}
+	if applyRepoSkillCounts(&cfg, items) {
+		if err := h.saveConfig(home, cfg); err != nil {
+			return nil, "", err
+		}
+	}
 	fetchedAt := timeNowUTC().Format(time.RFC3339)
 	cache := skillDiscoveryCache{
 		FetchedAt: fetchedAt,
@@ -1720,6 +1762,23 @@ func (h *ToolingHandler) refreshSkillDiscovery(home string) ([]discoveredSkillRe
 		return nil, "", err
 	}
 	return items, fetchedAt, nil
+}
+
+func applyRepoSkillCounts(cfg *toolingConfig, items []discoveredSkillRecord) bool {
+	repoSkillCounts := map[string]int{}
+	for _, item := range items {
+		repoSkillCounts[repoRecordKey(item.Platform, item.RepoOwner, item.RepoName)]++
+	}
+	changed := false
+	for idx := range cfg.SkillRepos {
+		key := repoRecordKey(cfg.SkillRepos[idx].Platform, cfg.SkillRepos[idx].Owner, cfg.SkillRepos[idx].Name)
+		nextCount := repoSkillCounts[key]
+		if cfg.SkillRepos[idx].SkillCount != nextCount {
+			cfg.SkillRepos[idx].SkillCount = nextCount
+			changed = true
+		}
+	}
+	return changed
 }
 
 func applyManagedSkills(home string, method string, apps []string) (int, error) {
@@ -2435,10 +2494,11 @@ func defaultRepoSearchResults() []repoSearchResult {
 	results := make([]repoSearchResult, 0, len(toolingDefaultRepos))
 	for _, repo := range toolingDefaultRepos {
 		results = append(results, repoSearchResult{
-			Owner:  repo.Owner,
-			Name:   repo.Name,
-			Branch: repo.Branch,
-			URL:    fmt.Sprintf("https://github.com/%s/%s", repo.Owner, repo.Name),
+			Platform: repo.Platform,
+			Owner:    repo.Owner,
+			Name:     repo.Name,
+			Branch:   repo.Branch,
+			URL:      buildRepoURL(repo.Platform, repo.Owner, repo.Name),
 		})
 	}
 	return results
