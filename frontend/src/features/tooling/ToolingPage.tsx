@@ -318,11 +318,19 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     setDiscoveryBusyId(skill.id);
     try {
       await installToolingDiscoveredSkill({ id: skill.id, apps: ["codex"] });
-      void messageApi.success(t("安装成功"));
-      await reload({ background: true });
-      const response = await refreshToolingDiscoveredSkills();
-      setDiscoveryResponse(sortDiscoveryResponse(response));
-      setDiscoveryStatus(t("已更新"));
+      const nextAction = skill.update_available ? t("已更新") : t("安装成功");
+      setDiscoveryResponse((current) => markDiscoveredSkillInstalled(current, skill.id));
+      setDiscoveryStatus(skill.update_available ? t("已更新") : t("已安装"));
+      void messageApi.success(nextAction);
+      void reload({ background: true });
+      void refreshToolingDiscoveredSkills()
+        .then((response) => {
+          setDiscoveryResponse(sortDiscoveryResponse(response));
+          setDiscoveryStatus(t("已更新"));
+        })
+        .catch((error) => {
+          void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
+        });
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("安装失败"));
     } finally {
@@ -331,7 +339,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   }
 
   function handleViewDiscoveredSkill(skill: ToolingDiscoveredSkill) {
-    window.open(skill.repo_url, "_blank", "noopener,noreferrer");
+    window.open(skill.source_url, "_blank", "noopener,noreferrer");
   }
 
   async function handleRepoAdd() {
@@ -538,6 +546,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
                   key={skill.id}
                   skill={skill}
                   busy={discoveryBusyId === skill.id}
+                  t={t}
                   onView={() => handleViewDiscoveredSkill(skill)}
                   onInstall={() => void handleDiscoveredSkillInstall(skill)}
                 />
@@ -632,6 +641,32 @@ function sortDiscoveryResponse(response: ToolingSkillDiscoveryResponse): Tooling
   };
 }
 
+function markDiscoveredSkillInstalled(
+  response: ToolingSkillDiscoveryResponse | null,
+  id: string,
+): ToolingSkillDiscoveryResponse | null {
+  if (!response) {
+    return response;
+  }
+  return {
+    ...response,
+    items: response.items.map((item) => {
+      if (item.id !== id) {
+        return item;
+      }
+      return {
+        ...item,
+        installed_apps: {
+          ...item.installed_apps,
+          codex: true,
+        },
+        installed_hash: item.content_hash,
+        update_available: false,
+      };
+    }),
+  };
+}
+
 function repoRecordKey(platform: string, owner: string, name: string): string {
   return `${platform}:${owner}/${name}`;
 }
@@ -684,31 +719,46 @@ function DeleteMcpConfirmContent({
 function DiscoveredSkillCard({
   skill,
   busy,
+  t,
   onView,
   onInstall,
 }: {
   skill: ToolingDiscoveredSkill;
   busy?: boolean;
+  t: (text: string) => string;
   onView: () => void;
   onInstall: () => void;
 }) {
   const installed = Boolean(skill.installed_apps?.codex);
+  const updateAvailable = installed && Boolean(skill.update_available);
+  const actionLabel = updateAvailable ? t("更新") : installed ? t("已安装") : t("安装");
+  const statusLabel = updateAvailable ? t("可更新") : installed ? t("已安装") : t("未安装");
   return (
     <div className="tooling-discovered-card">
       <div className="tooling-discovered-card-main">
         <div className="tooling-discovered-card-meta">
           <span className="tooling-discovered-platform">{skill.platform.toUpperCase()}</span>
           <span className="tooling-discovered-repo">{`${skill.repo_owner}/${skill.repo_name}`}</span>
+          <span className={`tooling-status-pill ${updateAvailable ? "is-update" : installed ? "is-enabled" : "is-disabled"}`}>{statusLabel}</span>
         </div>
-        <div className="tooling-item-title" data-testid="tooling-discovered-skill-title">{skill.name}</div>
+        <button type="button" className="tooling-discovered-title-button" data-testid="tooling-discovered-skill-title" aria-label={`打开 ${skill.name} 的源目录`} onClick={onView}>
+          {skill.name}
+        </button>
         {skill.description ? <div className="tooling-item-description is-default">{skill.description}</div> : null}
       </div>
       <div className="tooling-discovered-card-actions">
         <Button icon={<LinkOutlined />} aria-label={`查看 ${skill.name} 的仓库页面`} onClick={onView}>
-          查看
+          {t("查看")}
         </Button>
-        <Button type="primary" icon={<PlusOutlined />} loading={busy} disabled={installed} aria-label={`安装 ${skill.name}`} onClick={onInstall}>
-          {installed ? "已安装" : "安装"}
+        <Button
+          type="primary"
+          icon={updateAvailable ? <ReloadOutlined /> : <PlusOutlined />}
+          loading={busy}
+          disabled={installed && !updateAvailable}
+          aria-label={`${actionLabel} ${skill.name}`}
+          onClick={onInstall}
+        >
+          {actionLabel}
         </Button>
       </div>
     </div>

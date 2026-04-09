@@ -3,6 +3,7 @@ package api
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -106,18 +106,26 @@ type repoSearchResult struct {
 }
 
 type discoveredSkillRecord struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name"`
-	Description   string          `json:"description,omitempty"`
-	Platform      string          `json:"platform"`
-	RepoOwner     string          `json:"repo_owner"`
-	RepoName      string          `json:"repo_name"`
-	Branch        string          `json:"branch"`
-	RepoURL       string          `json:"repo_url"`
-	SourcePath    string          `json:"source_path"`
-	SourceURL     string          `json:"source_url"`
-	ManagedName   string          `json:"managed_name"`
-	InstalledApps map[string]bool `json:"installed_apps"`
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description,omitempty"`
+	Platform        string          `json:"platform"`
+	RepoOwner       string          `json:"repo_owner"`
+	RepoName        string          `json:"repo_name"`
+	Branch          string          `json:"branch"`
+	RepoURL         string          `json:"repo_url"`
+	SourcePath      string          `json:"source_path"`
+	SourceURL       string          `json:"source_url"`
+	ManagedName     string          `json:"managed_name"`
+	ContentHash     string          `json:"content_hash,omitempty"`
+	InstalledHash   string          `json:"installed_hash,omitempty"`
+	InstalledApps   map[string]bool `json:"installed_apps"`
+	UpdateAvailable bool            `json:"update_available"`
+}
+
+type discoveredInstallState struct {
+	Apps map[string]bool
+	Hash string
 }
 
 type skillDiscoveryCache struct {
@@ -1222,6 +1230,7 @@ type skillMetadata struct {
 	Branch       string `json:"branch,omitempty"`
 	SourcePath   string `json:"source_path,omitempty"`
 	SourceURL    string `json:"source_url,omitempty"`
+	UpstreamHash string `json:"upstream_hash,omitempty"`
 }
 
 func readSkillMetadata(dir string) skillMetadata {
@@ -2455,8 +2464,8 @@ func discoverSkillsFromRepos(home string, repos []skillRepoRecord, clients []too
 	return items, nil
 }
 
-func discoveredInstalledAppsBySource(home string, clients []toolingClientState) map[string]map[string]bool {
-	installed := map[string]map[string]bool{}
+func discoveredInstalledAppsBySource(home string, clients []toolingClientState) map[string]discoveredInstallState {
+	installed := map[string]discoveredInstallState{}
 	for _, record := range scanManagedSkills(home, clients) {
 		meta := readSkillMetadata(record.ManagedPath)
 		key := discoveredSkillKey(meta.Platform, meta.SourceRepo, meta.Branch, meta.SourcePath)
@@ -2467,12 +2476,19 @@ func discoveredInstalledAppsBySource(home string, clients []toolingClientState) 
 		for app, enabled := range record.InstalledApps {
 			apps[app] = enabled
 		}
-		installed[key] = apps
+		hash := strings.TrimSpace(meta.UpstreamHash)
+		if hash == "" {
+			hash = hashSkillDirectory(record.ManagedPath)
+		}
+		installed[key] = discoveredInstallState{
+			Apps: apps,
+			Hash: hash,
+		}
 	}
 	return installed
 }
 
-func discoverSkillsFromRepo(repo skillRepoRecord, installed map[string]map[string]bool) ([]discoveredSkillRecord, error) {
+func discoverSkillsFromRepo(repo skillRepoRecord, installed map[string]discoveredInstallState) ([]discoveredSkillRecord, error) {
 	switch repo.Platform {
 	case "gitlab":
 		return discoverGitLabRepoSkills(repo, installed)
@@ -2481,21 +2497,22 @@ func discoverSkillsFromRepo(repo skillRepoRecord, installed map[string]map[strin
 	}
 }
 
-func discoverGitHubRepoSkills(repo skillRepoRecord, installed map[string]map[string]bool) ([]discoveredSkillRecord, error) {
+func discoverGitHubRepoSkills(repo skillRepoRecord, installed map[string]discoveredInstallState) ([]discoveredSkillRecord, error) {
 	files, err := fetchGitHubArchiveFiles(repo, func(filePath string) bool {
-		return strings.HasSuffix(filePath, "/SKILL.md")
+		return true
 	})
 	if err != nil {
 		return nil, err
 	}
-	paths := make([]string, 0, len(files))
-	for filePath := range files {
-		paths = append(paths, filePath)
+	skillFiles := groupDiscoveredSkillFiles(files)
+	paths := make([]string, 0, len(skillFiles))
+	for sourcePath := range skillFiles {
+		paths = append(paths, sourcePath)
 	}
 	sort.Strings(paths)
 	items := make([]discoveredSkillRecord, 0)
-	for _, filePath := range paths {
-		items = append(items, buildDiscoveredSkillRecord(repo, filePath, files[filePath], installed))
+	for _, sourcePath := range paths {
+		items = append(items, buildDiscoveredSkillRecord(repo, sourcePath, skillFiles[sourcePath], installed))
 	}
 	return items, nil
 }
@@ -2556,7 +2573,7 @@ func trimGitHubArchivePath(filePath string) string {
 	return strings.Trim(relativePath, "/")
 }
 
-func discoverGitLabRepoSkills(repo skillRepoRecord, installed map[string]map[string]bool) ([]discoveredSkillRecord, error) {
+func discoverGitLabRepoSkills(repo skillRepoRecord, installed map[string]discoveredInstallState) ([]discoveredSkillRecord, error) {
 	projectID := url.PathEscape(repo.Owner + "/" + repo.Name)
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/projects/%s/repository/tree", gitlabAPIBase(), projectID), nil)
 	if err != nil {
@@ -2582,16 +2599,18 @@ func discoverGitLabRepoSkills(repo skillRepoRecord, installed map[string]map[str
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, err
 	}
+	skillFiles, err := fetchGitLabSkillDiscoveryFiles(repo, projectID, payload)
+	if err != nil {
+		return nil, err
+	}
 	items := make([]discoveredSkillRecord, 0)
-	for _, entry := range payload {
-		if entry.Type != "blob" || !strings.HasSuffix(entry.Path, "/SKILL.md") {
-			continue
-		}
-		raw, err := fetchGitLabFile(repo, projectID, entry.Path)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, buildDiscoveredSkillRecord(repo, entry.Path, raw, installed))
+	paths := make([]string, 0, len(skillFiles))
+	for sourcePath := range skillFiles {
+		paths = append(paths, sourcePath)
+	}
+	sort.Strings(paths)
+	for _, sourcePath := range paths {
+		items = append(items, buildDiscoveredSkillRecord(repo, sourcePath, skillFiles[sourcePath], installed))
 	}
 	return items, nil
 }
@@ -2619,29 +2638,177 @@ func fetchGitLabFile(repo skillRepoRecord, projectID string, path string) (strin
 	return string(raw), nil
 }
 
-func buildDiscoveredSkillRecord(repo skillRepoRecord, skillFilePath string, body string, installed map[string]map[string]bool) discoveredSkillRecord {
-	sourcePath := path.Dir(skillFilePath)
-	if sourcePath == "." {
-		sourcePath = ""
+func fetchGitLabSkillDiscoveryFiles(repo skillRepoRecord, projectID string, payload []struct {
+	Path string `json:"path"`
+	Type string `json:"type"`
+}) (map[string]map[string]string, error) {
+	roots := collectDiscoveredSkillRootsFromTree(payload)
+	files := map[string]map[string]string{}
+	for _, root := range roots {
+		files[root] = map[string]string{}
 	}
+	for _, entry := range payload {
+		if entry.Type != "blob" {
+			continue
+		}
+		root, ok := matchDiscoveredSkillRoot(roots, entry.Path)
+		if !ok {
+			continue
+		}
+		raw, err := fetchGitLabFile(repo, projectID, entry.Path)
+		if err != nil {
+			return nil, err
+		}
+		files[root][strings.TrimPrefix(strings.TrimPrefix(entry.Path, root), "/")] = raw
+	}
+	for root, entries := range files {
+		if _, ok := entries["SKILL.md"]; ok {
+			continue
+		}
+		delete(files, root)
+	}
+	return files, nil
+}
+
+func collectDiscoveredSkillRootsFromTree(payload []struct {
+	Path string `json:"path"`
+	Type string `json:"type"`
+}) []string {
+	roots := make([]string, 0)
+	for _, entry := range payload {
+		if entry.Type != "blob" || !strings.HasSuffix(entry.Path, "/SKILL.md") {
+			continue
+		}
+		root := strings.Trim(strings.TrimSuffix(entry.Path, "/SKILL.md"), "/")
+		roots = append(roots, root)
+	}
+	sort.Slice(roots, func(i, j int) bool {
+		if len(roots[i]) == len(roots[j]) {
+			return roots[i] < roots[j]
+		}
+		return len(roots[i]) > len(roots[j])
+	})
+	return roots
+}
+
+func groupDiscoveredSkillFiles(files map[string]string) map[string]map[string]string {
+	roots := make([]string, 0)
+	for filePath := range files {
+		if !strings.HasSuffix(filePath, "/SKILL.md") {
+			continue
+		}
+		root := strings.Trim(strings.TrimSuffix(filePath, "/SKILL.md"), "/")
+		roots = append(roots, root)
+	}
+	sort.Slice(roots, func(i, j int) bool {
+		if len(roots[i]) == len(roots[j]) {
+			return roots[i] < roots[j]
+		}
+		return len(roots[i]) > len(roots[j])
+	})
+	grouped := map[string]map[string]string{}
+	for _, root := range roots {
+		grouped[root] = map[string]string{}
+	}
+	for filePath, raw := range files {
+		root, ok := matchDiscoveredSkillRoot(roots, filePath)
+		if !ok {
+			continue
+		}
+		grouped[root][strings.TrimPrefix(strings.TrimPrefix(filePath, root), "/")] = raw
+	}
+	for root, entries := range grouped {
+		if _, ok := entries["SKILL.md"]; ok {
+			continue
+		}
+		delete(grouped, root)
+	}
+	return grouped
+}
+
+func matchDiscoveredSkillRoot(roots []string, filePath string) (string, bool) {
+	for _, root := range roots {
+		if pathWithinDiscoveredSkill(root, filePath) {
+			return root, true
+		}
+	}
+	return "", false
+}
+
+func hashSkillFiles(files map[string]string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(files))
+	for key := range files {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	digest := sha256.New()
+	for _, key := range keys {
+		_, _ = digest.Write([]byte(key))
+		_, _ = digest.Write([]byte{0})
+		_, _ = digest.Write([]byte(files[key]))
+		_, _ = digest.Write([]byte{0})
+	}
+	return fmt.Sprintf("%x", digest.Sum(nil))
+}
+
+func hashSkillDirectory(root string) string {
+	files := map[string]string{}
+	_ = filepath.WalkDir(root, func(current string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if current != root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, current)
+		if err != nil {
+			return err
+		}
+		if rel == ".aigate-skill.json" {
+			return nil
+		}
+		raw, err := os.ReadFile(current)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(rel)] = string(raw)
+		return nil
+	})
+	return hashSkillFiles(files)
+}
+
+func buildDiscoveredSkillRecord(repo skillRepoRecord, sourcePath string, files map[string]string, installed map[string]discoveredInstallState) discoveredSkillRecord {
+	sourcePath = strings.Trim(sourcePath, "/")
+	body := files["SKILL.md"]
 	name, description := parseDiscoveredSkillBody(body, sourcePath)
 	key := discoveredSkillKey(repo.Platform, repo.Owner+"/"+repo.Name, repo.Branch, sourcePath)
+	contentHash := hashSkillFiles(files)
 	record := discoveredSkillRecord{
-		ID:            key,
-		Name:          name,
-		Description:   description,
-		Platform:      repo.Platform,
-		RepoOwner:     repo.Owner,
-		RepoName:      repo.Name,
-		Branch:        repo.Branch,
-		RepoURL:       buildRepoURL(repo.Platform, repo.Owner, repo.Name),
-		SourcePath:    sourcePath,
-		SourceURL:     buildRepoTreeURL(repo.Platform, repo.Owner, repo.Name, repo.Branch, sourcePath),
-		ManagedName:   buildDiscoveredManagedName(repo, sourcePath),
-		InstalledApps: map[string]bool{},
+		ID:              key,
+		Name:            name,
+		Description:     description,
+		Platform:        repo.Platform,
+		RepoOwner:       repo.Owner,
+		RepoName:        repo.Name,
+		Branch:          repo.Branch,
+		RepoURL:         buildRepoURL(repo.Platform, repo.Owner, repo.Name),
+		SourcePath:      sourcePath,
+		SourceURL:       buildRepoTreeURL(repo.Platform, repo.Owner, repo.Name, repo.Branch, sourcePath),
+		ManagedName:     buildDiscoveredManagedName(repo, sourcePath),
+		ContentHash:     contentHash,
+		InstalledApps:   map[string]bool{},
+		UpdateAvailable: false,
 	}
-	if apps, ok := installed[key]; ok {
-		for app, enabled := range apps {
+	if state, ok := installed[key]; ok {
+		record.InstalledHash = state.Hash
+		record.UpdateAvailable = state.Hash != "" && contentHash != "" && state.Hash != contentHash
+		for app, enabled := range state.Apps {
 			record.InstalledApps[app] = enabled
 		}
 	}
@@ -2771,34 +2938,36 @@ func installDiscoveredSkillCollection(home string, id string, method string, app
 	})
 	managedName := buildDiscoveredManagedName(repo, sourcePath)
 	targetDir := filepath.Join(managedSkillsRoot(home), managedName)
-	if !pathExists(targetDir) {
-		files, err := fetchDiscoveredSkillFiles(repo, sourcePath)
-		if err != nil {
+	files, err := fetchDiscoveredSkillFiles(repo, sourcePath)
+	if err != nil {
+		return 0, err
+	}
+	if len(files) == 0 {
+		return 0, fmt.Errorf("no files found for discovered skill: %s", id)
+	}
+	if err := os.RemoveAll(targetDir); err != nil {
+		return 0, err
+	}
+	for relativePath, raw := range files {
+		fullPath := filepath.Join(targetDir, filepath.FromSlash(relativePath))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 			return 0, err
 		}
-		if len(files) == 0 {
-			return 0, fmt.Errorf("no files found for discovered skill: %s", id)
-		}
-		for relativePath, raw := range files {
-			fullPath := filepath.Join(targetDir, filepath.FromSlash(relativePath))
-			if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-				return 0, err
-			}
-			if err := os.WriteFile(fullPath, []byte(raw), 0o644); err != nil {
-				return 0, err
-			}
-		}
-		if err := writeSkillMetadata(targetDir, skillMetadata{
-			Name:       managedName,
-			SourceRepo: repoFullName,
-			SourceKind: "discovered",
-			Platform:   repo.Platform,
-			Branch:     repo.Branch,
-			SourcePath: sourcePath,
-			SourceURL:  buildRepoTreeURL(repo.Platform, repo.Owner, repo.Name, repo.Branch, sourcePath),
-		}); err != nil {
+		if err := os.WriteFile(fullPath, []byte(raw), 0o644); err != nil {
 			return 0, err
 		}
+	}
+	if err := writeSkillMetadata(targetDir, skillMetadata{
+		Name:         managedName,
+		SourceRepo:   repoFullName,
+		SourceKind:   "discovered",
+		Platform:     repo.Platform,
+		Branch:       repo.Branch,
+		SourcePath:   sourcePath,
+		SourceURL:    buildRepoTreeURL(repo.Platform, repo.Owner, repo.Name, repo.Branch, sourcePath),
+		UpstreamHash: hashSkillFiles(files),
+	}); err != nil {
+		return 0, err
 	}
 	return applyManagedSkillCollection(home, managedName, method, apps)
 }

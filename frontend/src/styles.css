@@ -571,6 +571,12 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   opacity: 0.55;
 }
 
+.tooling-status-pill.is-update {
+  color: #9a3412;
+  border-color: rgba(249, 115, 22, 0.24);
+  background: rgba(249, 115, 22, 0.1);
+}
+
 .tooling-item-primary-action,
 .tooling-item-icon-action {
   appearance: none;
@@ -764,6 +770,23 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.tooling-discovered-title-button {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tooling-discovered-title-button:hover {
+  color: #2f49c8;
 }
 
 .tooling-repo-manager-shell {

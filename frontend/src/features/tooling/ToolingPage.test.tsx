@@ -148,7 +148,9 @@ function buildDiscoveredSkillResponse(overrides?: Partial<api.ToolingSkillDiscov
         source_path: "skills/zulu",
         source_url: "https://github.com/openai/codex-skills/tree/main/skills/zulu",
         managed_name: "codex-skills-zulu",
+        content_hash: "hash-zulu-v1",
         installed_apps: { codex: false },
+        update_available: false,
       },
       {
         id: "github:openai/codex-skills:main:skills/alpha",
@@ -162,7 +164,9 @@ function buildDiscoveredSkillResponse(overrides?: Partial<api.ToolingSkillDiscov
         source_path: "skills/alpha",
         source_url: "https://github.com/openai/codex-skills/tree/main/skills/alpha",
         managed_name: "codex-skills-alpha",
+        content_hash: "hash-alpha-v1",
         installed_apps: { codex: false },
+        update_available: false,
       },
     ],
     ...overrides,
@@ -367,6 +371,27 @@ describe("ToolingPage", () => {
 
   it("supports manual refresh, viewing source repo, and installing a discovered skill", async () => {
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    vi.mocked((api as typeof api & { getToolingState: typeof vi.fn }).getToolingState)
+      .mockResolvedValueOnce(buildToolingState())
+      .mockImplementation(() => new Promise(() => {}));
+    vi.mocked((api as typeof api & { refreshToolingDiscoveredSkills: typeof vi.fn }).refreshToolingDiscoveredSkills)
+      .mockResolvedValueOnce(
+        buildDiscoveredSkillResponse({
+          cached: false,
+          fetched_at: "2026-04-08T10:01:00Z",
+          items: [
+            {
+              ...buildDiscoveredSkillResponse().items[1],
+              description: "Latest alpha summary",
+            },
+            {
+              ...buildDiscoveredSkillResponse().items[0],
+              description: "Latest zulu summary",
+            },
+          ],
+        }),
+      )
+      .mockImplementationOnce(() => new Promise(() => {}));
 
     render(<ToolingPage mode="skills" t={(text) => text} />);
 
@@ -381,7 +406,10 @@ describe("ToolingPage", () => {
     );
 
     fireEvent.click(within(dialog).getByRole("button", { name: "查看 Alpha Skill 的仓库页面" }));
-    expect(openSpy).toHaveBeenCalledWith("https://github.com/openai/codex-skills", "_blank", "noopener,noreferrer");
+    expect(openSpy).toHaveBeenCalledWith("https://github.com/openai/codex-skills/tree/main/skills/alpha", "_blank", "noopener,noreferrer");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "打开 Alpha Skill 的源目录" }));
+    expect(openSpy).toHaveBeenCalledWith("https://github.com/openai/codex-skills/tree/main/skills/alpha", "_blank", "noopener,noreferrer");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "安装 Alpha Skill" }));
     await waitFor(() =>
@@ -390,6 +418,56 @@ describe("ToolingPage", () => {
         apps: ["codex"],
       }),
     );
+    await waitFor(() =>
+      expect(within(dialog).getByRole("button", { name: "已安装 Alpha Skill" })).toBeDisabled(),
+    );
+  });
+
+  it("distinguishes install states in discovered skill cards", async () => {
+    vi.mocked((api as typeof api & { getToolingDiscoveredSkills: typeof vi.fn }).getToolingDiscoveredSkills).mockResolvedValue(
+      buildDiscoveredSkillResponse({
+        items: [
+          {
+            ...buildDiscoveredSkillResponse().items[1],
+            installed_apps: { codex: true },
+            update_available: true,
+          },
+          {
+            ...buildDiscoveredSkillResponse().items[0],
+            installed_apps: { codex: true },
+            update_available: false,
+          },
+        ],
+      }),
+    );
+    vi.mocked((api as typeof api & { refreshToolingDiscoveredSkills: typeof vi.fn }).refreshToolingDiscoveredSkills).mockResolvedValue(
+      buildDiscoveredSkillResponse({
+        cached: false,
+        items: [
+          {
+            ...buildDiscoveredSkillResponse().items[1],
+            installed_apps: { codex: true },
+            update_available: true,
+          },
+          {
+            ...buildDiscoveredSkillResponse().items[0],
+            installed_apps: { codex: true },
+            update_available: false,
+          },
+        ],
+      }),
+    );
+
+    render(<ToolingPage mode="skills" t={(text) => text} />);
+
+    await screen.findByText("Skill 技能");
+    fireEvent.click(screen.getByRole("button", { name: /发现技能/ }));
+
+    const dialog = await screen.findByRole("dialog", { name: "发现技能" });
+    expect(within(dialog).getByText("可更新")).toBeInTheDocument();
+    expect(within(dialog).getAllByText("已安装").length).toBeGreaterThan(0);
+    expect(within(dialog).getByRole("button", { name: "更新 Alpha Skill" })).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: "已安装 Zulu Skill" })).toBeDisabled();
   });
 
   it("manages repositories in a secondary modal with create, update, and delete actions", async () => {
