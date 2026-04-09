@@ -18,6 +18,7 @@ futures-util = "0.3"
 minisign-verify = "0.2"
 base64 = "0.22"
 arboard = "3"
+tokio = { version = "1", features = ["time"] }
 
 [features]
 default = []

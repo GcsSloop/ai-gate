@@ -8,6 +8,7 @@ use reqwest::header::{HeaderValue, ACCEPT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::VecDeque;
+use std::future::Future;
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -73,6 +74,7 @@ const DESKTOP_RECENT_LOG_CAPACITY: usize = 200;
 const DESKTOP_RECENT_LOG_DEFAULT_LIMIT: usize = 50;
 const DESKTOP_RECENT_LOG_MAX_LIMIT: usize = 50;
 const UPDATE_POLL_CHUNK_SIZE: usize = 64 * 1024;
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 const SIDECAR_MACOS_NAME: &str = "routerd-universal-apple-darwin";
 const SIDECAR_WINDOWS_NAME: &str = "routerd-x86_64-pc-windows-msvc.exe";
 const TRAY_ICON_COLOR_BYTES: &[u8] = include_bytes!("../icons/tray-icon-color.png");
@@ -316,6 +318,19 @@ impl UpdateManagerState {
         self.snapshot = snapshot;
     }
 
+    fn begin_check(&mut self) -> bool {
+        if self.snapshot.status == UpdateStatus::Checking {
+            return false;
+        }
+        self.snapshot = UpdateStatePayload {
+            status: UpdateStatus::Checking,
+            update: None,
+            progress: None,
+            error: None,
+        };
+        true
+    }
+
     fn begin_download(&mut self, update: UpdateInfoPayload) -> Result<Arc<AtomicBool>, String> {
         if self.snapshot.status == UpdateStatus::Downloading {
             if self.active_version.as_deref() == Some(update.version.as_str()) {
@@ -542,18 +557,13 @@ async fn check_for_app_update<R: Runtime>(app: AppHandle<R>) -> Result<UpdateSta
     let current_version = app.package_info().version.to_string();
     {
         let mut manager = lock_update_manager()?;
-        let existing_update = manager.snapshot.update.clone();
-        let existing_progress = manager.snapshot.progress.clone();
-        manager.set_snapshot(UpdateStatePayload {
-            status: UpdateStatus::Checking,
-            update: existing_update,
-            progress: existing_progress,
-            error: None,
-        });
+        if !manager.begin_check() {
+            return Ok(current_update_snapshot(&current_version));
+        }
     }
 
-    match fetch_update(&app).await? {
-        Some(update) => {
+    match resolve_update_future_with_timeout(fetch_update(&app), UPDATE_CHECK_TIMEOUT, "check update").await {
+        Ok(Some(update)) => {
             let payload = to_update_info_payload(&current_version, &update)?;
             let snapshot = UpdateStatePayload {
                 status: UpdateStatus::Available,
@@ -564,7 +574,7 @@ async fn check_for_app_update<R: Runtime>(app: AppHandle<R>) -> Result<UpdateSta
             lock_update_manager()?.set_snapshot(snapshot.clone());
             Ok(snapshot)
         }
-        None => {
+        Ok(None) => {
             let snapshot = UpdateStatePayload {
                 status: UpdateStatus::UpToDate,
                 update: None,
@@ -573,6 +583,15 @@ async fn check_for_app_update<R: Runtime>(app: AppHandle<R>) -> Result<UpdateSta
             };
             lock_update_manager()?.set_snapshot(snapshot.clone());
             Ok(snapshot)
+        }
+        Err(err) => {
+            lock_update_manager()?.set_snapshot(UpdateStatePayload {
+                status: UpdateStatus::Error,
+                update: None,
+                progress: None,
+                error: Some(err.clone()),
+            });
+            Err(err)
         }
     }
 }
@@ -592,7 +611,11 @@ async fn start_update_download<R: Runtime>(
         }
     }
 
-    let update = fetch_update(&app)
+    let update = resolve_update_future_with_timeout(
+        fetch_update(&app),
+        UPDATE_CHECK_TIMEOUT,
+        "fetch update metadata",
+    )
         .await?
         .ok_or_else(|| "Update is no longer available. Check again and retry.".to_string())?;
     let payload = to_update_info_payload(&current_version, &update)?;
@@ -663,6 +686,20 @@ fn normalize_update_snapshot(
         }
     }
     snapshot
+}
+
+async fn resolve_update_future_with_timeout<T, F>(
+    future: F,
+    timeout: Duration,
+    label: &str,
+) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+{
+    match tokio::time::timeout(timeout, future).await {
+        Ok(result) => result,
+        Err(_) => Err(format!("{label} timed out after {}ms", timeout.as_millis())),
+    }
 }
 
 async fn fetch_update<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Update>, String> {
@@ -2123,6 +2160,7 @@ mod tests {
         UpdateStatus, WindowCloseAction, WindowSizeCache, DESKTOP_RUNTIME, MAIN_WINDOW_MIN_HEIGHT,
         MAIN_WINDOW_MIN_WIDTH, SIDECAR_CHILD, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
         TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
+        resolve_update_future_with_timeout,
     };
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -3064,5 +3102,44 @@ mod tests {
         assert_eq!(manager.snapshot.status, UpdateStatus::Cancelled);
         assert!(manager.cancel_flag.is_none());
         assert!(manager.active_version.is_none());
+    }
+
+    #[test]
+    fn update_manager_deduplicates_checking_state() {
+        let mut manager = UpdateManagerState::default();
+        manager.set_snapshot(UpdateStatePayload {
+            status: UpdateStatus::Available,
+            update: Some(UpdateInfoPayload {
+                body: None,
+                current_version: "1.2.3".to_string(),
+                date: None,
+                version: "1.2.4".to_string(),
+            }),
+            progress: None,
+            error: None,
+        });
+
+        assert!(manager.begin_check());
+        assert_eq!(manager.snapshot.status, UpdateStatus::Checking);
+        assert!(!manager.begin_check());
+        assert_eq!(manager.snapshot.status, UpdateStatus::Checking);
+        assert!(manager.snapshot.update.is_none());
+    }
+
+    #[test]
+    fn update_check_timeout_returns_error_for_stalled_future() {
+        let result = tauri::async_runtime::block_on(resolve_update_future_with_timeout(
+            async {
+                futures_util::future::pending::<Result<Option<UpdateInfoPayload>, String>>().await
+            },
+            Duration::from_millis(10),
+            "check update",
+        ));
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.expect_err("timeout error"),
+            "check update timed out after 10ms"
+        );
     }
 }
