@@ -798,18 +798,20 @@ func TestToolingHandlerDiscoverSkillsUsesCacheAndRefreshesLatest(t *testing.T) {
 		"fetched_at": "2026-04-08T10:00:00Z",
 		"items": []map[string]any{
 			{
-				"id":             "github:openai/codex-skills:skills/cached",
-				"name":           "Cached Skill",
-				"description":    "Cached summary",
-				"platform":       "github",
-				"repo_owner":     "openai",
-				"repo_name":      "codex-skills",
-				"branch":         "main",
-				"repo_url":       "https://github.com/openai/codex-skills",
-				"source_path":    "skills/cached",
-				"source_url":     "https://github.com/openai/codex-skills/tree/main/skills/cached",
-				"managed_name":   "cached-skill",
-				"installed_apps": map[string]bool{"codex": false},
+				"id":               "github:openai/codex-skills:skills/cached",
+				"name":             "Cached Skill",
+				"description":      "Cached summary",
+				"platform":         "github",
+				"repo_owner":       "openai",
+				"repo_name":        "codex-skills",
+				"branch":           "main",
+				"repo_url":         "https://github.com/openai/codex-skills",
+				"source_path":      "skills/cached",
+				"source_url":       "https://github.com/openai/codex-skills/tree/main/skills/cached",
+				"managed_name":     "cached-skill",
+				"content_hash":     "cached-hash",
+				"installed_apps":   map[string]bool{"codex": false},
+				"update_available": false,
 			},
 		},
 	})
@@ -844,6 +846,9 @@ func TestToolingHandlerDiscoverSkillsUsesCacheAndRefreshesLatest(t *testing.T) {
 	if refreshedItems[0].(map[string]any)["name"] != "Alpha Skill" || refreshedItems[1].(map[string]any)["name"] != "Zulu Skill" {
 		t.Fatalf("refreshed item order = %v, want alpha then zulu", refreshedPayload["items"])
 	}
+	if strings.TrimSpace(refreshedItems[0].(map[string]any)["content_hash"].(string)) == "" {
+		t.Fatalf("refreshed item content_hash = %v, want non-empty hash", refreshedItems[0].(map[string]any)["content_hash"])
+	}
 
 	cacheRaw := readSkillDiscoveryCacheRaw(t, home)
 	if !strings.Contains(cacheRaw, "Alpha Skill") {
@@ -851,6 +856,91 @@ func TestToolingHandlerDiscoverSkillsUsesCacheAndRefreshesLatest(t *testing.T) {
 	}
 	if strings.Contains(cacheRaw, "Detailed alpha body that must not be cached.") || strings.Contains(cacheRaw, "UNIQUE-ZULU-BODY") {
 		t.Fatalf("cache raw = %s, want index-only cache without full body content", cacheRaw)
+	}
+}
+
+func TestToolingHandlerDiscoverSkillsMarksInstalledUpdatesByHash(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
+		"skills/alpha/SKILL.md":          "# Alpha Skill\nNew upstream summary.\n",
+		"skills/alpha/assets/config.txt": "v2\n",
+		"skills/zulu/SKILL.md":           "# Zulu Skill\nStable upstream summary.\n",
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(archive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
+
+	writeToolingConfig(t, home, map[string]any{
+		"skill_sync_method": "symlink",
+		"skill_repos": []map[string]any{
+			{
+				"platform": "github",
+				"owner":    "openai",
+				"name":     "codex-skills",
+				"branch":   "main",
+				"enabled":  true,
+			},
+		},
+		"mcp_servers": []any{},
+	})
+
+	managedRoot := filepath.Join(home, ".aigate", "data", "tooling", "skills", "codex-skills-alpha")
+	if err := os.MkdirAll(filepath.Join(managedRoot, "assets"), 0o755); err != nil {
+		t.Fatalf("MkdirAll managed assets: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(managedRoot, "SKILL.md"), []byte("# Alpha Skill\nOld local summary.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile managed SKILL: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(managedRoot, "assets", "config.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile managed asset: %v", err)
+	}
+	if err := writeSkillMetadataForTest(managedRoot, map[string]any{
+		"name":        "codex-skills-alpha",
+		"source_repo": "openai/codex-skills",
+		"source_kind": "discovered",
+		"platform":    "github",
+		"branch":      "main",
+		"source_path": "skills/alpha",
+		"source_url":  "https://github.com/openai/codex-skills/tree/main/skills/alpha",
+	}); err != nil {
+		t.Fatalf("writeSkillMetadata: %v", err)
+	}
+	codexRoot := filepath.Join(home, ".codex", "skills", "codex-skills-alpha")
+	if err := copyDirForTest(managedRoot, codexRoot); err != nil {
+		t.Fatalf("copyDir codex skill: %v", err)
+	}
+
+	handler := api.NewToolingHandler()
+	refreshed := doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/refresh", bytes.NewBufferString(`{}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
+
+	var payload map[string]any
+	if err := json.Unmarshal(refreshed, &payload); err != nil {
+		t.Fatalf("unmarshal refreshed discover payload: %v", err)
+	}
+	items := payload["items"].([]any)
+	alpha := items[0].(map[string]any)
+	if alpha["name"] != "Alpha Skill" {
+		t.Fatalf("first item = %v, want Alpha Skill", alpha["name"])
+	}
+	if alpha["installed_apps"].(map[string]any)["codex"] != true {
+		t.Fatalf("installed_apps = %v, want codex true", alpha["installed_apps"])
+	}
+	if alpha["update_available"] != true {
+		t.Fatalf("update_available = %v, want true", alpha["update_available"])
+	}
+	if alpha["installed_hash"] == alpha["content_hash"] {
+		t.Fatalf("installed_hash = %v, content_hash = %v, want differing hashes", alpha["installed_hash"], alpha["content_hash"])
 	}
 }
 
@@ -966,6 +1056,70 @@ func TestToolingHandlerCanInstallDiscoveredSkillIntoManagedAndCodexDirs(t *testi
 	}
 }
 
+func TestToolingHandlerInstallDiscoveredSkillUpdatesExistingManagedFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
+		"skills/alpha/SKILL.md":          "# Alpha Skill\nUpdated summary.\n",
+		"skills/alpha/assets/config.txt": "v2\n",
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(archive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
+
+	managedRoot := filepath.Join(home, ".aigate", "data", "tooling", "skills", "codex-skills-alpha")
+	if err := os.MkdirAll(filepath.Join(managedRoot, "assets"), 0o755); err != nil {
+		t.Fatalf("MkdirAll managed assets: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(managedRoot, "SKILL.md"), []byte("# Alpha Skill\nOld summary.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile managed SKILL: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(managedRoot, "stale.txt"), []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile stale file: %v", err)
+	}
+	if err := writeSkillMetadataForTest(managedRoot, map[string]any{
+		"name":        "codex-skills-alpha",
+		"source_repo": "openai/codex-skills",
+		"source_kind": "discovered",
+		"platform":    "github",
+		"branch":      "main",
+		"source_path": "skills/alpha",
+		"source_url":  "https://github.com/openai/codex-skills/tree/main/skills/alpha",
+	}); err != nil {
+		t.Fatalf("writeSkillMetadata: %v", err)
+	}
+
+	handler := api.NewToolingHandler()
+	doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/install", bytes.NewBufferString(`{
+		"id":"github:openai/codex-skills:main:skills/alpha",
+		"apps":["codex"]
+	}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
+
+	raw, err := os.ReadFile(filepath.Join(managedRoot, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("ReadFile updated SKILL: %v", err)
+	}
+	if !strings.Contains(string(raw), "Updated summary.") {
+		t.Fatalf("updated SKILL = %s, want updated summary", string(raw))
+	}
+	if _, err := os.Stat(filepath.Join(managedRoot, "stale.txt")); !os.IsNotExist(err) {
+		t.Fatalf("stale file should be removed on update, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "codex-skills-alpha", "assets", "config.txt")); err != nil {
+		t.Fatalf("expected synced updated asset in codex dir: %v", err)
+	}
+}
+
 func makeGitHubArchiveZip(t *testing.T, root string, files map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -1013,6 +1167,44 @@ func seedSkill(t *testing.T, dir, body string) {
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile skill: %v", err)
 	}
+}
+
+func copyDirForTest(source string, target string) error {
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return err
+	}
+	return filepath.WalkDir(source, func(current string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(source, current)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(target, rel)
+		if d.IsDir() {
+			if rel == "." {
+				return nil
+			}
+			return os.MkdirAll(dst, 0o755)
+		}
+		raw, err := os.ReadFile(current)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dst, raw, 0o644)
+	})
+}
+
+func writeSkillMetadataForTest(dir string, payload map[string]any) error {
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, ".aigate-skill.json"), append(raw, '\n'), 0o600)
 }
 
 func writeToolingConfig(t *testing.T, home string, payload map[string]any) {

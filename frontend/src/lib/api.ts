@@ -299,7 +299,10 @@ export type ToolingDiscoveredSkill = {
   source_path: string;
   source_url: string;
   managed_name: string;
+  content_hash?: string;
+  installed_hash?: string;
   installed_apps: Record<string, boolean>;
+  update_available?: boolean;
 };
 
 export type ToolingSkillDiscoveryResponse = {
