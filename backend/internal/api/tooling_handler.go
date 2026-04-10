@@ -33,9 +33,16 @@ const (
 	githubArchiveRetryBaseDelay        = 1500 * time.Millisecond
 	githubRepoRequestInterval          = 250 * time.Millisecond
 	skillDiscoveryAutoRefreshJitterMax = 3 * time.Hour
+	skillMetricsHeartbeatName          = "__client_active__"
+	skillMetricsHeartbeatSource        = "__aigate_client__"
+	skillMetricsActiveReportInterval   = 12 * time.Hour
+	skillMetricsRetryInterval          = time.Hour
+	skillMetricsMaxRetry               = 3
+	skillMetricsPendingQueueMaxItems   = 200
 )
 
 var toolingSupportedApps = []string{"codex"}
+var skillMetricsReportMu sync.Mutex
 
 type defaultSkillRepoSeed struct {
 	Platform string
@@ -159,12 +166,14 @@ type skillDiscoveryCache struct {
 }
 
 type toolingSkillDiscoverResponse struct {
-	Cached    bool                    `json:"cached"`
-	FetchedAt string                  `json:"fetched_at,omitempty"`
-	Total     int                     `json:"total"`
-	Offset    int                     `json:"offset"`
-	Limit     int                     `json:"limit"`
-	Items     []discoveredSkillRecord `json:"items"`
+	Cached       bool                    `json:"cached"`
+	FetchedAt    string                  `json:"fetched_at,omitempty"`
+	IndexedTotal int                     `json:"indexed_total"`
+	Total        int                     `json:"total"`
+	Offset       int                     `json:"offset"`
+	Limit        int                     `json:"limit"`
+	Query        string                  `json:"query,omitempty"`
+	Items        []discoveredSkillRecord `json:"items"`
 }
 
 type centralDiscoveredSkillResponse struct {
@@ -421,7 +430,7 @@ func (h *ToolingHandler) getState(w http.ResponseWriter) {
 	skills := scanManagedSkills(home, clients)
 	cache, _ := loadSkillDiscoveryCache(home)
 	applySkillUpdateFlags(skills, cache.Items)
-	_, _ = loadOrCreateToolingAnonymousID(home)
+	go reportToolingClientActive(home)
 	repoResults := defaultRepoSearchResults()
 	discoveredServers := discoverMcpServers(home)
 	servers := h.buildMcpViews(home, cfg)
@@ -498,16 +507,20 @@ func (h *ToolingHandler) getDiscoveredSkills(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	limit, offset := parseDiscoveredPaging(r.URL.Query())
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	cache, ok := loadSkillDiscoveryCache(home)
 	if ok {
-		items, total := sliceDiscoveredItems(cache.Items, limit, offset)
+		matched := filterDiscoveredItems(cache.Items, query)
+		items, total := sliceDiscoveredItems(matched, limit, offset)
 		writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
-			Cached:    true,
-			FetchedAt: cache.FetchedAt,
-			Total:     total,
-			Offset:    offset,
-			Limit:     limit,
-			Items:     items,
+			Cached:       true,
+			FetchedAt:    cache.FetchedAt,
+			IndexedTotal: len(cache.Items),
+			Total:        total,
+			Offset:       offset,
+			Limit:        limit,
+			Query:        query,
+			Items:        items,
 		})
 		return
 	}
@@ -516,14 +529,17 @@ func (h *ToolingHandler) getDiscoveredSkills(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	paged, total := sliceDiscoveredItems(items, limit, offset)
+	matched := filterDiscoveredItems(items, query)
+	paged, total := sliceDiscoveredItems(matched, limit, offset)
 	writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
-		Cached:    false,
-		FetchedAt: fetchedAt,
-		Total:     total,
-		Offset:    offset,
-		Limit:     limit,
-		Items:     paged,
+		Cached:       false,
+		FetchedAt:    fetchedAt,
+		IndexedTotal: len(items),
+		Total:        total,
+		Offset:       offset,
+		Limit:        limit,
+		Query:        query,
+		Items:        paged,
 	})
 }
 
@@ -539,14 +555,18 @@ func (h *ToolingHandler) refreshDiscoveredSkills(w http.ResponseWriter, r *http.
 		return
 	}
 	limit, offset := parseDiscoveredPaging(r.URL.Query())
-	paged, total := sliceDiscoveredItems(items, limit, offset)
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	matched := filterDiscoveredItems(items, query)
+	paged, total := sliceDiscoveredItems(matched, limit, offset)
 	writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
-		Cached:    false,
-		FetchedAt: fetchedAt,
-		Total:     total,
-		Offset:    offset,
-		Limit:     limit,
-		Items:     paged,
+		Cached:       false,
+		FetchedAt:    fetchedAt,
+		IndexedTotal: len(items),
+		Total:        total,
+		Offset:       offset,
+		Limit:        limit,
+		Query:        query,
+		Items:        paged,
 	})
 }
 
@@ -3234,6 +3254,27 @@ func sliceDiscoveredItems(items []discoveredSkillRecord, limit int, offset int) 
 	return items[offset:end], total
 }
 
+func filterDiscoveredItems(items []discoveredSkillRecord, rawQuery string) []discoveredSkillRecord {
+	query := strings.ToLower(strings.TrimSpace(rawQuery))
+	if query == "" {
+		return items
+	}
+	filtered := make([]discoveredSkillRecord, 0, len(items))
+	for _, item := range items {
+		haystack := strings.ToLower(strings.Join([]string{
+			item.Name,
+			item.Description,
+			item.RepoOwner,
+			item.RepoName,
+			item.SourcePath,
+		}, " "))
+		if strings.Contains(haystack, query) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
 func discoverSkillsFromCentral(home string, clients []toolingClientState) ([]discoveredSkillRecord, error) {
 	baseURL := skillMetricsBaseURL()
 	if baseURL == "" {
@@ -3411,8 +3452,45 @@ func skillMetricsBaseURL() string {
 	return strings.TrimRight(parsed.String(), "/")
 }
 
+type skillMetricsReportState struct {
+	LastActiveAt string `json:"last_active_at,omitempty"`
+}
+
+type pendingSkillMetricsEvent struct {
+	Kind        string            `json:"kind"`
+	Payload     map[string]string `json:"payload"`
+	RetryCount  int               `json:"retry_count"`
+	NextRetryAt string            `json:"next_retry_at,omitempty"`
+	CreatedAt   string            `json:"created_at,omitempty"`
+}
+
+type pendingSkillMetricsQueue struct {
+	Items []pendingSkillMetricsEvent `json:"items"`
+}
+
+type skillMetricsHTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *skillMetricsHTTPError) Error() string {
+	message := strings.TrimSpace(e.Body)
+	if message == "" {
+		return fmt.Sprintf("status %d", e.StatusCode)
+	}
+	return fmt.Sprintf("status %d: %s", e.StatusCode, message)
+}
+
 func toolingAnonymousClientIDPath(home string) string {
 	return filepath.Join(aigateDataRoot(home), "tooling", "anonymous-client.json")
+}
+
+func toolingSkillMetricsStatePath(home string) string {
+	return filepath.Join(aigateDataRoot(home), "tooling", "skill-metrics-state.json")
+}
+
+func toolingSkillMetricsPendingPath(home string) string {
+	return filepath.Join(aigateDataRoot(home), "tooling", "skill-metrics-pending.json")
 }
 
 func loadOrCreateToolingAnonymousID(home string) (string, error) {
@@ -3444,18 +3522,183 @@ func loadOrCreateToolingAnonymousID(home string) (string, error) {
 	return id, nil
 }
 
+func newToolingAnonymousID() (string, error) {
+	var nonce [16]byte
+	if _, err := crand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("aigate-%x", nonce[:]), nil
+}
+
+func loadSkillMetricsState(home string) skillMetricsReportState {
+	path := toolingSkillMetricsStatePath(home)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return skillMetricsReportState{}
+	}
+	var state skillMetricsReportState
+	if json.Unmarshal(raw, &state) != nil {
+		return skillMetricsReportState{}
+	}
+	return state
+}
+
+func saveSkillMetricsState(home string, state skillMetricsReportState) error {
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	path := toolingSkillMetricsStatePath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return writeAtomic(path, append(raw, '\n'), 0o600)
+}
+
+func loadPendingSkillMetricsQueue(home string) pendingSkillMetricsQueue {
+	path := toolingSkillMetricsPendingPath(home)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return pendingSkillMetricsQueue{}
+	}
+	var queue pendingSkillMetricsQueue
+	if json.Unmarshal(raw, &queue) != nil {
+		return pendingSkillMetricsQueue{}
+	}
+	if len(queue.Items) > skillMetricsPendingQueueMaxItems {
+		queue.Items = queue.Items[len(queue.Items)-skillMetricsPendingQueueMaxItems:]
+	}
+	return queue
+}
+
+func savePendingSkillMetricsQueue(home string, queue pendingSkillMetricsQueue) error {
+	path := toolingSkillMetricsPendingPath(home)
+	if len(queue.Items) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	raw, err := json.Marshal(queue)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return writeAtomic(path, append(raw, '\n'), 0o600)
+}
+
+func shouldThrottleActiveMetric(home string, now time.Time) bool {
+	state := loadSkillMetricsState(home)
+	lastAt, err := time.Parse(time.RFC3339, strings.TrimSpace(state.LastActiveAt))
+	if err != nil || lastAt.IsZero() {
+		return false
+	}
+	return now.Sub(lastAt) < skillMetricsActiveReportInterval
+}
+
+func markActiveMetricScheduled(home string, now time.Time) {
+	state := loadSkillMetricsState(home)
+	state.LastActiveAt = now.UTC().Format(time.RFC3339)
+	if err := saveSkillMetricsState(home, state); err != nil {
+		fmt.Fprintf(os.Stderr, "save skill metrics state failed: %v\n", err)
+	}
+}
+
+func queueSkillMetricsEvent(home string, kind string, payload map[string]string, nextRetryAt time.Time) {
+	queue := loadPendingSkillMetricsQueue(home)
+	item := pendingSkillMetricsEvent{
+		Kind:        strings.TrimSpace(kind),
+		Payload:     payload,
+		RetryCount:  0,
+		NextRetryAt: nextRetryAt.UTC().Format(time.RFC3339),
+		CreatedAt:   timeNowUTC().UTC().Format(time.RFC3339),
+	}
+	queue.Items = append(queue.Items, item)
+	if len(queue.Items) > skillMetricsPendingQueueMaxItems {
+		queue.Items = queue.Items[len(queue.Items)-skillMetricsPendingQueueMaxItems:]
+	}
+	if err := savePendingSkillMetricsQueue(home, queue); err != nil {
+		fmt.Fprintf(os.Stderr, "save pending skill metrics queue failed: %v\n", err)
+	}
+}
+
+func flushPendingSkillMetricsEvents(home string, baseURL string, now time.Time) {
+	queue := loadPendingSkillMetricsQueue(home)
+	if len(queue.Items) == 0 {
+		return
+	}
+	next := make([]pendingSkillMetricsEvent, 0, len(queue.Items))
+	for _, item := range queue.Items {
+		runAt := parseTimestamp(item.NextRetryAt)
+		if !runAt.IsZero() && now.Before(runAt) {
+			next = append(next, item)
+			continue
+		}
+		statusCode, err := sendSkillMetricsInstallEvent(baseURL, item.Payload)
+		if err == nil {
+			continue
+		}
+		if !shouldRetrySkillMetric(statusCode, err) {
+			fmt.Fprintf(os.Stderr, "drop pending skill metrics event (%s): %v\n", item.Kind, err)
+			continue
+		}
+		item.RetryCount++
+		if item.RetryCount >= skillMetricsMaxRetry {
+			fmt.Fprintf(os.Stderr, "drop pending skill metrics event after retries (%s): %v\n", item.Kind, err)
+			continue
+		}
+		item.NextRetryAt = now.Add(skillMetricsRetryInterval).UTC().Format(time.RFC3339)
+		next = append(next, item)
+	}
+	if err := savePendingSkillMetricsQueue(home, pendingSkillMetricsQueue{Items: next}); err != nil {
+		fmt.Fprintf(os.Stderr, "save pending skill metrics queue failed: %v\n", err)
+	}
+}
+
+func parseTimestamp(raw string) time.Time {
+	if strings.TrimSpace(raw) == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
+}
+
+func shouldRetrySkillMetric(statusCode int, err error) bool {
+	if err == nil {
+		return false
+	}
+	if statusCode == 0 {
+		return true
+	}
+	return statusCode == http.StatusTooManyRequests || statusCode >= 500
+}
+
 func reportDiscoveredSkillInstall(home string, id string) {
 	baseURL := skillMetricsBaseURL()
 	if baseURL == "" {
 		return
 	}
+	skillMetricsReportMu.Lock()
+	defer skillMetricsReportMu.Unlock()
+	now := timeNowUTC()
+	flushPendingSkillMetricsEvents(home, baseURL, now)
 	platform, repoFullName, _, sourcePath, err := parseDiscoveredSkillID(id)
 	if err != nil {
 		return
 	}
 	anonymousID, err := loadOrCreateToolingAnonymousID(home)
 	if err != nil {
-		return
+		fmt.Fprintf(os.Stderr, "load tooling anonymous id failed for install event: %v\n", err)
+		anonymousID, err = newToolingAnonymousID()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "create fallback tooling anonymous id failed for install event: %v\n", err)
+			return
+		}
 	}
 	skillName := filepath.Base(strings.Trim(sourcePath, "/"))
 	if skillName == "" || skillName == "." {
@@ -3466,27 +3709,81 @@ func reportDiscoveredSkillInstall(home string, id string) {
 		"skill_name":   skillName,
 		"source_repo":  repoFullName,
 	}
+	if platform == "" {
+		return
+	}
+	statusCode, err := sendSkillMetricsInstallEvent(baseURL, payload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "report discovered skill install failed: %v\n", err)
+		if shouldRetrySkillMetric(statusCode, err) {
+			queueSkillMetricsEvent(home, "install", payload, now.Add(skillMetricsRetryInterval))
+		}
+	}
+}
+
+func reportToolingClientActive(home string) {
+	baseURL := skillMetricsBaseURL()
+	if baseURL == "" {
+		return
+	}
+	skillMetricsReportMu.Lock()
+	defer skillMetricsReportMu.Unlock()
+	now := timeNowUTC()
+	flushPendingSkillMetricsEvents(home, baseURL, now)
+	if shouldThrottleActiveMetric(home, now) {
+		return
+	}
+	anonymousID, err := loadOrCreateToolingAnonymousID(home)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load tooling anonymous id failed for heartbeat event: %v\n", err)
+		anonymousID, err = newToolingAnonymousID()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "create fallback tooling anonymous id failed for heartbeat event: %v\n", err)
+			return
+		}
+	}
+	payload := map[string]string{
+		"anonymous_id": anonymousID,
+		"skill_name":   skillMetricsHeartbeatName,
+		"source_repo":  skillMetricsHeartbeatSource,
+	}
+	statusCode, err := sendSkillMetricsInstallEvent(baseURL, payload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "report tooling active failed: %v\n", err)
+		if shouldRetrySkillMetric(statusCode, err) {
+			queueSkillMetricsEvent(home, "active", payload, now.Add(skillMetricsRetryInterval))
+			markActiveMetricScheduled(home, now)
+		}
+		return
+	}
+	markActiveMetricScheduled(home, now)
+}
+
+func sendSkillMetricsInstallEvent(baseURL string, payload map[string]string) (int, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return 0, err
 	}
 	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(baseURL, "/")+"/events/install", bytes.NewReader(raw))
 	if err != nil {
-		return
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "ai-gate")
 	if token := strings.TrimSpace(os.Getenv("AIGATE_SKILL_METRICS_INGEST_TOKEN")); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	if platform == "" {
-		return
-	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return
+		return 0, err
 	}
-	_ = resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		message := strings.TrimSpace(string(body))
+		return resp.StatusCode, &skillMetricsHTTPError{StatusCode: resp.StatusCode, Body: message}
+	}
+	return resp.StatusCode, nil
 }
 
 func discoverSkillsFromRepos(home string, repos []skillRepoRecord, clients []toolingClientState) ([]discoveredSkillRecord, error) {
