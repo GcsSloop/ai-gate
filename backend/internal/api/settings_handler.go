@@ -439,7 +439,7 @@ func createCodexBackupSnapshot(home string, kind string, backupSource string) (s
 	for _, file := range files {
 		source := filepath.Join(home, ".codex", file.Name)
 		target := filepath.Join(targetDir, file.Name)
-		if kind == codexBackupKindPreRestore {
+		if kind == codexBackupKindPreRestore || (kind == codexBackupKindRegular && backupSource == backupSourceProxyEnable && file.Name == "auth.json") {
 			if err := copyOptionalFile(source, target); err != nil {
 				return "", "", err
 			}
@@ -887,6 +887,13 @@ func (h *SettingsHandler) restoreCodexBackup(w http.ResponseWriter, r *http.Requ
 	for _, name := range restoreFiles {
 		source := filepath.Join(backupDir, name)
 		target := filepath.Join(codexDir, name)
+		if name == "auth.json" {
+			if err := copyOptionalFile(source, target); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			continue
+		}
 		if err := copyRequiredFile(source, target); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -918,6 +925,9 @@ func (h *SettingsHandler) getCodexBackupFiles(w http.ResponseWriter, r *http.Req
 	for _, name := range []string{"config.toml", "auth.json", "manifest.json"} {
 		raw, err := os.ReadFile(filepath.Join(backupDir, name))
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
