@@ -1,0 +1,27 @@
+{
+  "name": "aigate-skill-metrics",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-10",
+  "compatibility_flags": [
+    "global_fetch_strictly_public"
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "aigate-skill-metrics-db",
+      "database_id": "84bcb438-4628-4b3f-8bbc-c1b0a55a53b6"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "SKILL_METRICS_CACHE",
+      "id": "d15a84c8260f4d80bee42ebe976302c7"
+    }
+  ],
+  "triggers": {
+    "crons": ["23 3 * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}
