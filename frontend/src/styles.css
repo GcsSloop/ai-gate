@@ -702,6 +702,17 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   height: 100%;
 }
 
+.tooling-discovery-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tooling-discovery-match-count {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .tooling-discovery-toolbar {
   display: flex;
   align-items: center;
@@ -711,16 +722,13 @@ html[data-theme-mode="dark"] .top-home-update-dot {
 }
 
 .tooling-discovery-search {
-  max-width: 420px;
+  max-width: 560px;
 }
 
-.tooling-discovery-grid {
+.tooling-discovery-virtual-list {
   flex: 1;
   overflow: auto;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 12px;
-  align-content: start;
+  padding-right: 4px;
 }
 
 .tooling-discovery-loading {
@@ -730,26 +738,41 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   justify-content: center;
 }
 
-.tooling-discovered-card {
+.tooling-discovery-loading-more {
   display: flex;
-  flex-direction: column;
+  justify-content: center;
+  padding: 10px 0 4px;
+}
+
+.tooling-discovered-row {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
-  padding: 18px;
-  border-radius: 18px;
+  gap: 10px;
+  min-height: 96px;
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
   border: 1px solid var(--panel-border);
-  background: #ffffff;
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+  background: #fff;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.tooling-discovered-card-main {
+.tooling-discovered-row:hover,
+.tooling-discovered-row:focus-within {
+  border-color: rgba(62, 91, 232, 0.28);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+}
+
+.tooling-discovered-row-main {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
+  flex: 1;
 }
 
-.tooling-discovered-card-meta {
+.tooling-discovered-row-meta {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -773,13 +796,6 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   font-size: 13px;
 }
 
-.tooling-discovered-card-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
 .tooling-discovered-title-button {
   appearance: none;
   padding: 0;
@@ -795,6 +811,33 @@ html[data-theme-mode="dark"] .top-home-update-dot {
 
 .tooling-discovered-title-button:hover {
   color: #2f49c8;
+}
+
+.tooling-discovered-row-description {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tooling-discovered-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(6px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.tooling-discovered-row:hover .tooling-discovered-row-actions,
+.tooling-discovered-row:focus-within .tooling-discovered-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
 }
 
 .tooling-repo-manager-shell {

@@ -324,9 +324,11 @@ export type ToolingDiscoveredSkill = {
 export type ToolingSkillDiscoveryResponse = {
   cached: boolean;
   fetched_at?: string;
+  indexed_total?: number;
   total: number;
   offset: number;
   limit: number;
+  query?: string;
   items: ToolingDiscoveredSkill[];
 };
 
@@ -1125,7 +1127,7 @@ export async function resolveToolingRepo(input: string): Promise<ToolingResolved
   return response.json();
 }
 
-export async function getToolingDiscoveredSkills(params?: { limit?: number; offset?: number }): Promise<ToolingSkillDiscoveryResponse> {
+export async function getToolingDiscoveredSkills(params?: { limit?: number; offset?: number; query?: string }): Promise<ToolingSkillDiscoveryResponse> {
   const search = new URLSearchParams();
   if (typeof params?.limit === "number" && params.limit > 0) {
     search.set("limit", String(params.limit));
@@ -1133,8 +1135,12 @@ export async function getToolingDiscoveredSkills(params?: { limit?: number; offs
   if (typeof params?.offset === "number" && params.offset >= 0) {
     search.set("offset", String(params.offset));
   }
-  const query = search.toString();
-  const response = await fetch(apiPath(`/tooling/skills/discover${query ? `?${query}` : ""}`));
+  const query = params?.query?.trim();
+  if (query) {
+    search.set("q", query);
+  }
+  const queryString = search.toString();
+  const response = await fetch(apiPath(`/tooling/skills/discover${queryString ? `?${queryString}` : ""}`));
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to load discovered skills");
@@ -1142,25 +1148,8 @@ export async function getToolingDiscoveredSkills(params?: { limit?: number; offs
   return response.json();
 }
 
-export async function refreshToolingDiscoveredSkills(params?: { limit?: number; offset?: number }): Promise<ToolingSkillDiscoveryResponse> {
-  const search = new URLSearchParams();
-  if (typeof params?.limit === "number" && params.limit > 0) {
-    search.set("limit", String(params.limit));
-  }
-  if (typeof params?.offset === "number" && params.offset >= 0) {
-    search.set("offset", String(params.offset));
-  }
-  const query = search.toString();
-  const response = await fetch(apiPath(`/tooling/skills/discover/refresh${query ? `?${query}` : ""}`), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-  });
-  if (!response.ok) {
-    const details = await response.text();
-    throw new Error(details || "failed to refresh discovered skills");
-  }
-  return response.json();
+export async function refreshToolingDiscoveredSkills(params?: { limit?: number; offset?: number; query?: string }): Promise<ToolingSkillDiscoveryResponse> {
+  return getToolingDiscoveredSkills(params);
 }
 
 export async function installToolingDiscoveredSkill(payload: {
