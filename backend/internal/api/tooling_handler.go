@@ -28,7 +28,10 @@ const toolingConfigFilename = "tooling.json"
 var toolingSupportedApps = []string{"codex"}
 
 type ToolingHandler struct {
-	mu sync.Mutex
+	mu                  sync.Mutex
+	autoRefreshMu       sync.Mutex
+	autoRefreshInFlight bool
+	autoRefreshLastTry  time.Time
 }
 
 func NewToolingHandler() *ToolingHandler {
@@ -86,14 +89,15 @@ type skillStatsResponse struct {
 }
 
 type managedSkillRecord struct {
-	Name          string          `json:"name"`
-	Description   string          `json:"description,omitempty"`
-	Directory     string          `json:"directory"`
-	SourceClient  string          `json:"source_client,omitempty"`
-	SourceRepo    string          `json:"source_repo,omitempty"`
-	SourceKind    string          `json:"source_kind"`
-	ManagedPath   string          `json:"managed_path"`
-	InstalledApps map[string]bool `json:"installed_apps"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description,omitempty"`
+	Directory       string          `json:"directory"`
+	SourceClient    string          `json:"source_client,omitempty"`
+	SourceRepo      string          `json:"source_repo,omitempty"`
+	SourceKind      string          `json:"source_kind"`
+	ManagedPath     string          `json:"managed_path"`
+	InstalledApps   map[string]bool `json:"installed_apps"`
+	UpdateAvailable bool            `json:"update_available"`
 }
 
 type repoSearchResult struct {
@@ -204,6 +208,16 @@ type toolingRepoRequest struct {
 	Branch   string `json:"branch"`
 }
 
+type toolingRepoOrderItem struct {
+	Platform string `json:"platform"`
+	Owner    string `json:"owner"`
+	Name     string `json:"name"`
+}
+
+type toolingRepoOrderRequest struct {
+	Items []toolingRepoOrderItem `json:"items"`
+}
+
 type toolingRepoResolveRequest struct {
 	Input string `json:"input"`
 }
@@ -242,6 +256,20 @@ var toolingDefaultRepos = []skillRepoRecord{
 		Branch:   "main",
 		Enabled:  true,
 	},
+	{
+		Platform: "github",
+		Owner:    "anthropics",
+		Name:     "skills",
+		Branch:   "main",
+		Enabled:  true,
+	},
+	{
+		Platform: "github",
+		Owner:    "ComposioHQ",
+		Name:     "awesome-claude-skills",
+		Branch:   "master",
+		Enabled:  true,
+	},
 }
 
 var toolingTemplates = []mcpTemplateRecord{
@@ -274,6 +302,8 @@ func (h *ToolingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.addSkillRepo(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/repos/resolve":
 		h.resolveSkillRepo(w, r)
+	case r.Method == http.MethodPut && r.URL.Path == "/tooling/skills/repos/order":
+		h.reorderSkillRepos(w, r)
 	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/tooling/skills/repos/"):
 		h.updateSkillRepo(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/tooling/skills/repos/"):
@@ -314,9 +344,12 @@ func (h *ToolingHandler) getState(w http.ResponseWriter) {
 	cfg, _ = h.syncManagedCodexMcpServers(home, cfg)
 	clients := toolingClientStates(home)
 	skills := scanManagedSkills(home, clients)
+	cache, _ := loadSkillDiscoveryCache(home)
+	applySkillUpdateFlags(skills, cache.Items)
 	repoResults := defaultRepoSearchResults()
 	discoveredServers := discoverMcpServers(home)
 	servers := h.buildMcpViews(home, cfg)
+	h.maybeScheduleDailySkillDiscoveryRefresh(home, cache.FetchedAt)
 
 	writeJSON(w, http.StatusOK, toolingStateResponse{
 		SkillSyncMethod:      normalizeSkillSyncMethod(cfg.SkillSyncMethod),
@@ -329,6 +362,32 @@ func (h *ToolingHandler) getState(w http.ResponseWriter) {
 		McpTemplates:         toolingTemplates,
 		McpServers:           servers,
 	})
+}
+
+func (h *ToolingHandler) maybeScheduleDailySkillDiscoveryRefresh(home string, fetchedAt string) {
+	parsedFetchedAt, _ := time.Parse(time.RFC3339, strings.TrimSpace(fetchedAt))
+	if !parsedFetchedAt.IsZero() && timeNowUTC().Sub(parsedFetchedAt) < 24*time.Hour {
+		return
+	}
+	h.autoRefreshMu.Lock()
+	defer h.autoRefreshMu.Unlock()
+	now := timeNowUTC()
+	if h.autoRefreshInFlight {
+		return
+	}
+	if !h.autoRefreshLastTry.IsZero() && now.Sub(h.autoRefreshLastTry) < 5*time.Minute {
+		return
+	}
+	h.autoRefreshInFlight = true
+	h.autoRefreshLastTry = now
+	go func() {
+		defer func() {
+			h.autoRefreshMu.Lock()
+			h.autoRefreshInFlight = false
+			h.autoRefreshMu.Unlock()
+		}()
+		_, _, _ = h.refreshSkillDiscovery(home)
+	}()
 }
 
 func (h *ToolingHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
@@ -655,6 +714,53 @@ func (h *ToolingHandler) updateSkillRepo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	http.Error(w, "repo not found", http.StatusNotFound)
+}
+
+func (h *ToolingHandler) reorderSkillRepos(w http.ResponseWriter, r *http.Request) {
+	var req toolingRepoOrderRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	cfg := h.loadConfig(home)
+	byKey := make(map[string]skillRepoRecord, len(cfg.SkillRepos))
+	orderedKeys := make([]string, 0, len(cfg.SkillRepos))
+	for _, repo := range cfg.SkillRepos {
+		key := repoRecordKey(repo.Platform, repo.Owner, repo.Name)
+		byKey[key] = repo
+		orderedKeys = append(orderedKeys, key)
+	}
+	seen := map[string]bool{}
+	reordered := make([]skillRepoRecord, 0, len(cfg.SkillRepos))
+	for _, item := range req.Items {
+		key := repoRecordKey(item.Platform, item.Owner, item.Name)
+		if seen[key] {
+			continue
+		}
+		repo, ok := byKey[key]
+		if !ok {
+			continue
+		}
+		reordered = append(reordered, repo)
+		seen[key] = true
+	}
+	for _, key := range orderedKeys {
+		if seen[key] {
+			continue
+		}
+		reordered = append(reordered, byKey[key])
+	}
+	cfg.SkillRepos = reordered
+	if err := h.saveConfig(home, cfg); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg.SkillRepos)
 }
 
 func (h *ToolingHandler) removeSkillRepo(w http.ResponseWriter, r *http.Request) {
@@ -1464,14 +1570,15 @@ func scanManagedSkills(home string, clients []toolingClientState) []managedSkill
 	for _, entry := range records {
 		meta := readSkillMetadata(entry.FullPath)
 		record := managedSkillRecord{
-			Name:          firstNonEmpty(meta.Name, entry.RelativePath),
-			Description:   describeSkillCollection(entry.FullPath),
-			Directory:     entry.FullPath,
-			SourceClient:  meta.SourceClient,
-			SourceRepo:    meta.SourceRepo,
-			SourceKind:    firstNonEmpty(meta.SourceKind, "manual"),
-			ManagedPath:   entry.FullPath,
-			InstalledApps: map[string]bool{},
+			Name:            firstNonEmpty(meta.Name, entry.RelativePath),
+			Description:     describeSkillCollection(entry.FullPath),
+			Directory:       entry.FullPath,
+			SourceClient:    meta.SourceClient,
+			SourceRepo:      meta.SourceRepo,
+			SourceKind:      firstNonEmpty(meta.SourceKind, "manual"),
+			ManagedPath:     entry.FullPath,
+			InstalledApps:   map[string]bool{},
+			UpdateAvailable: false,
 		}
 		for _, client := range clients {
 			if pathExists(filepath.Join(client.SkillsDir, filepath.FromSlash(entry.RelativePath))) {
@@ -1488,6 +1595,25 @@ func scanManagedSkills(home string, clients []toolingClientState) []managedSkill
 		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
 	})
 	return result
+}
+
+func applySkillUpdateFlags(skills []managedSkillRecord, items []discoveredSkillRecord) {
+	if len(skills) == 0 || len(items) == 0 {
+		return
+	}
+	updates := map[string]bool{}
+	for _, item := range items {
+		if !item.UpdateAvailable {
+			continue
+		}
+		updates[strings.ToLower(strings.TrimSpace(item.ManagedName))] = true
+	}
+	for idx := range skills {
+		collectionName := strings.ToLower(strings.TrimSpace(filepath.Base(skills[idx].ManagedPath)))
+		if updates[collectionName] {
+			skills[idx].UpdateAvailable = true
+		}
+	}
 }
 
 type skillMetadata struct {

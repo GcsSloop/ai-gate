@@ -461,12 +461,23 @@ func TestToolingHandlerStateIncludesDefaultSkillRepo(t *testing.T) {
 		t.Fatalf("unmarshal state: %v", err)
 	}
 	repos, ok := payload["skill_repos"].([]any)
-	if !ok || len(repos) == 0 {
+	if !ok || len(repos) < 3 {
 		t.Fatalf("skill_repos = %v, want default repos", payload["skill_repos"])
 	}
-	repo := repos[0].(map[string]any)
-	if repo["platform"] != "github" || repo["owner"] != "openai" || repo["name"] != "skills" || repo["branch"] != "main" {
-		t.Fatalf("default repo = %v, want github/openai/skills@main", repo)
+	expected := []struct {
+		owner  string
+		name   string
+		branch string
+	}{
+		{owner: "openai", name: "skills", branch: "main"},
+		{owner: "anthropics", name: "skills", branch: "main"},
+		{owner: "ComposioHQ", name: "awesome-claude-skills", branch: "master"},
+	}
+	for idx, item := range expected {
+		repo := repos[idx].(map[string]any)
+		if repo["platform"] != "github" || repo["owner"] != item.owner || repo["name"] != item.name || repo["branch"] != item.branch {
+			t.Fatalf("default repo[%d] = %v, want github/%s/%s@%s", idx, repo, item.owner, item.name, item.branch)
+		}
 	}
 }
 
@@ -883,6 +894,12 @@ func TestToolingHandlerDiscoverSkillsUsesCacheAndRefreshesLatest(t *testing.T) {
 	defaultArchive := makeGitHubArchiveZip(t, "skills-main", map[string]string{
 		"README.md": "# OpenAI Skills\n",
 	})
+	anthropicsArchive := makeGitHubArchiveZip(t, "skills-main", map[string]string{
+		"README.md": "# Anthropic Skills\n",
+	})
+	composioArchive := makeGitHubArchiveZip(t, "awesome-claude-skills-master", map[string]string{
+		"README.md": "# Awesome Claude Skills\n",
+	})
 	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
 		"skills/zulu/SKILL.md":  "# Zulu Skill\nA trailing skill.\n\nUNIQUE-ZULU-BODY\n",
 		"skills/alpha/SKILL.md": "---\ndescription: Alpha summary\n---\n# Alpha Skill\nDetailed alpha body that must not be cached.\n",
@@ -893,6 +910,12 @@ func TestToolingHandlerDiscoverSkillsUsesCacheAndRefreshesLatest(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/openai/skills/archive/refs/heads/main.zip":
 			w.Header().Set("Content-Type", "application/zip")
 			_, _ = w.Write(defaultArchive)
+		case r.Method == http.MethodGet && r.URL.Path == "/anthropics/skills/archive/refs/heads/main.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(anthropicsArchive)
+		case r.Method == http.MethodGet && r.URL.Path == "/ComposioHQ/awesome-claude-skills/archive/refs/heads/master.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(composioArchive)
 		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
 			w.Header().Set("Content-Type", "application/zip")
 			_, _ = w.Write(archive)
@@ -1007,6 +1030,12 @@ func TestToolingHandlerDiscoverSkillsMarksInstalledUpdatesByHash(t *testing.T) {
 	defaultArchive := makeGitHubArchiveZip(t, "skills-main", map[string]string{
 		"README.md": "# OpenAI Skills\n",
 	})
+	anthropicsArchive := makeGitHubArchiveZip(t, "skills-main", map[string]string{
+		"README.md": "# Anthropic Skills\n",
+	})
+	composioArchive := makeGitHubArchiveZip(t, "awesome-claude-skills-master", map[string]string{
+		"README.md": "# Awesome Claude Skills\n",
+	})
 	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
 		"skills/alpha/SKILL.md":          "# Alpha Skill\nNew upstream summary.\n",
 		"skills/alpha/assets/config.txt": "v2\n",
@@ -1018,6 +1047,12 @@ func TestToolingHandlerDiscoverSkillsMarksInstalledUpdatesByHash(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/openai/skills/archive/refs/heads/main.zip":
 			w.Header().Set("Content-Type", "application/zip")
 			_, _ = w.Write(defaultArchive)
+		case r.Method == http.MethodGet && r.URL.Path == "/anthropics/skills/archive/refs/heads/main.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(anthropicsArchive)
+		case r.Method == http.MethodGet && r.URL.Path == "/ComposioHQ/awesome-claude-skills/archive/refs/heads/master.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(composioArchive)
 		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
 			w.Header().Set("Content-Type", "application/zip")
 			_, _ = w.Write(archive)
@@ -1136,8 +1171,46 @@ func TestToolingHandlerSkillRepoCRUDSupportsPlatformAwareRecords(t *testing.T) {
 	}
 
 	listed = doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/repos", nil, nil, http.StatusOK)
-	if !strings.Contains(string(listed), `"name":"skills"`) || strings.Contains(string(listed), `"name":"codex-skills"`) {
-		t.Fatalf("list response after delete = %s, want only default skills repo", string(listed))
+	if !strings.Contains(string(listed), `"owner":"openai","name":"skills"`) ||
+		!strings.Contains(string(listed), `"owner":"anthropics","name":"skills"`) ||
+		!strings.Contains(string(listed), `"owner":"ComposioHQ","name":"awesome-claude-skills"`) ||
+		strings.Contains(string(listed), `"name":"codex-skills"`) {
+		t.Fatalf("list response after delete = %s, want only default repos", string(listed))
+	}
+}
+
+func TestToolingHandlerReorderSkillReposPersistsOrder(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	handler := api.NewToolingHandler()
+
+	doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/repos", bytes.NewBufferString(`{
+		"platform":"github",
+		"owner":"z-org",
+		"name":"z-repo",
+		"branch":"main"
+	}`), map[string]string{"Content-Type": "application/json"}, http.StatusCreated)
+
+	doToolingRequest(t, handler, http.MethodPut, "/tooling/skills/repos/order", bytes.NewBufferString(`{
+		"items":[
+			{"platform":"github","owner":"z-org","name":"z-repo"},
+			{"platform":"github","owner":"openai","name":"skills"},
+			{"platform":"github","owner":"anthropics","name":"skills"},
+			{"platform":"github","owner":"ComposioHQ","name":"awesome-claude-skills"}
+		]
+	}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
+
+	listed := doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/repos", nil, nil, http.StatusOK)
+	var repos []map[string]any
+	if err := json.Unmarshal(listed, &repos); err != nil {
+		t.Fatalf("unmarshal repos: %v", err)
+	}
+	if len(repos) < 4 {
+		t.Fatalf("repos = %v, want at least 4", repos)
+	}
+	first := repos[0]
+	if first["owner"] != "z-org" || first["name"] != "z-repo" {
+		t.Fatalf("first repo = %v, want z-org/z-repo", first)
 	}
 }
 
