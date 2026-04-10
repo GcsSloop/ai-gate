@@ -461,7 +461,7 @@ func TestToolingHandlerStateIncludesDefaultSkillRepo(t *testing.T) {
 		t.Fatalf("unmarshal state: %v", err)
 	}
 	repos, ok := payload["skill_repos"].([]any)
-	if !ok || len(repos) < 3 {
+	if !ok || len(repos) < 20 {
 		t.Fatalf("skill_repos = %v, want default repos", payload["skill_repos"])
 	}
 	expected := []struct {
@@ -469,9 +469,9 @@ func TestToolingHandlerStateIncludesDefaultSkillRepo(t *testing.T) {
 		name   string
 		branch string
 	}{
-		{owner: "openai", name: "skills", branch: "main"},
+		{owner: "obra", name: "superpowers", branch: "main"},
 		{owner: "anthropics", name: "skills", branch: "main"},
-		{owner: "ComposioHQ", name: "awesome-claude-skills", branch: "master"},
+		{owner: "shadcn", name: "ui", branch: "main"},
 	}
 	for idx, item := range expected {
 		repo := repos[idx].(map[string]any)
@@ -919,6 +919,9 @@ func TestToolingHandlerDiscoverSkillsUsesCacheAndRefreshesLatest(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
 			w.Header().Set("Content-Type", "application/zip")
 			_, _ = w.Write(archive)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/archive/refs/heads/") && strings.HasSuffix(r.URL.Path, ".zip"):
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(defaultArchive)
 		case strings.Contains(r.URL.Path, "/git/trees/"), strings.Contains(r.URL.Path, "/contents/"):
 			http.Error(w, "legacy github api path should not be used", http.StatusForbidden)
 		default:
@@ -1056,6 +1059,9 @@ func TestToolingHandlerDiscoverSkillsMarksInstalledUpdatesByHash(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
 			w.Header().Set("Content-Type", "application/zip")
 			_, _ = w.Write(archive)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/archive/refs/heads/") && strings.HasSuffix(r.URL.Path, ".zip"):
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(defaultArchive)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1171,9 +1177,9 @@ func TestToolingHandlerSkillRepoCRUDSupportsPlatformAwareRecords(t *testing.T) {
 	}
 
 	listed = doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/repos", nil, nil, http.StatusOK)
-	if !strings.Contains(string(listed), `"owner":"openai","name":"skills"`) ||
+	if !strings.Contains(string(listed), `"owner":"obra","name":"superpowers"`) ||
 		!strings.Contains(string(listed), `"owner":"anthropics","name":"skills"`) ||
-		!strings.Contains(string(listed), `"owner":"ComposioHQ","name":"awesome-claude-skills"`) ||
+		!strings.Contains(string(listed), `"owner":"shadcn","name":"ui"`) ||
 		strings.Contains(string(listed), `"name":"codex-skills"`) {
 		t.Fatalf("list response after delete = %s, want only default repos", string(listed))
 	}
@@ -1194,9 +1200,9 @@ func TestToolingHandlerReorderSkillReposPersistsOrder(t *testing.T) {
 	doToolingRequest(t, handler, http.MethodPut, "/tooling/skills/repos/order", bytes.NewBufferString(`{
 		"items":[
 			{"platform":"github","owner":"z-org","name":"z-repo"},
-			{"platform":"github","owner":"openai","name":"skills"},
+			{"platform":"github","owner":"obra","name":"superpowers"},
 			{"platform":"github","owner":"anthropics","name":"skills"},
-			{"platform":"github","owner":"ComposioHQ","name":"awesome-claude-skills"}
+			{"platform":"github","owner":"shadcn","name":"ui"}
 		]
 	}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
 

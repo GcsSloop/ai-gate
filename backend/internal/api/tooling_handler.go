@@ -24,8 +24,23 @@ import (
 )
 
 const toolingConfigFilename = "tooling.json"
+const (
+	skillDiscoveryCacheMaxBytes        = 1024 * 1024
+	skillDiscoveryDescriptionMaxLength = 600
+	githubArchiveRetryMaxAttempts      = 3
+	githubArchiveRetryBaseDelay        = 1500 * time.Millisecond
+	githubRepoRequestInterval          = 250 * time.Millisecond
+)
 
 var toolingSupportedApps = []string{"codex"}
+
+type defaultSkillRepoSeed struct {
+	Platform string
+	Owner    string
+	Name     string
+	Branch   string
+	Stars    int
+}
 
 type ToolingHandler struct {
 	mu                  sync.Mutex
@@ -248,28 +263,34 @@ type mcpConfigPayload struct {
 	Mcp        map[string]any `json:"mcp"`
 }
 
-var toolingDefaultRepos = []skillRepoRecord{
-	{
-		Platform: "github",
-		Owner:    "openai",
-		Name:     "skills",
-		Branch:   "main",
-		Enabled:  true,
-	},
-	{
-		Platform: "github",
-		Owner:    "anthropics",
-		Name:     "skills",
-		Branch:   "main",
-		Enabled:  true,
-	},
-	{
-		Platform: "github",
-		Owner:    "ComposioHQ",
-		Name:     "awesome-claude-skills",
-		Branch:   "master",
-		Enabled:  true,
-	},
+var toolingDefaultRepos = buildToolingDefaultRepos()
+
+var toolingDefaultRepoSeeds = []defaultSkillRepoSeed{
+	// Synced from https://cc-ai.cn/skills-cn/frontend/index.html on 2026-04-10.
+	{Platform: "github", Owner: "obra", Name: "superpowers", Branch: "main", Stars: 144505},
+	{Platform: "github", Owner: "anthropics", Name: "skills", Branch: "main", Stars: 114242},
+	{Platform: "github", Owner: "shadcn", Name: "ui", Branch: "main", Stars: 111969},
+	{Platform: "github", Owner: "browser-use", Name: "browser-use", Branch: "main", Stars: 86895},
+	{Platform: "github", Owner: "nextlevelbuilder", Name: "ui-ux-pro-max-skill", Branch: "main", Stars: 62185},
+	{Platform: "github", Owner: "wshobson", Name: "agents", Branch: "main", Stars: 33305},
+	{Platform: "github", Owner: "vercel-labs", Name: "agent-browser", Branch: "main", Stars: 28441},
+	{Platform: "github", Owner: "vercel-labs", Name: "agent-skills", Branch: "main", Stars: 24819},
+	{Platform: "github", Owner: "coreyhaines31", Name: "marketingskills", Branch: "main", Stars: 20027},
+	{Platform: "github", Owner: "pbakaus", Name: "impeccable", Branch: "main", Stars: 17953},
+	{Platform: "github", Owner: "vercel-labs", Name: "skills", Branch: "main", Stars: 13603},
+	{Platform: "github", Owner: "larksuite", Name: "cli", Branch: "main", Stars: 7311},
+	{Platform: "github", Owner: "google-labs-code", Name: "stitch-skills", Branch: "main", Stars: 4241},
+	{Platform: "github", Owner: "remotion-dev", Name: "skills", Branch: "main", Stars: 2670},
+	{Platform: "github", Owner: "supabase", Name: "agent-skills", Branch: "main", Stars: 1879},
+	{Platform: "github", Owner: "vercel-labs", Name: "next-skills", Branch: "main", Stars: 809},
+	{Platform: "github", Owner: "microsoft", Name: "azure-skills", Branch: "main", Stars: 611},
+	{Platform: "github", Owner: "sleekdotdesign", Name: "agent-skills", Branch: "main", Stars: 298},
+	{Platform: "github", Owner: "microsoft", Name: "github-copilot-for-azure", Branch: "main", Stars: 184},
+	{Platform: "github", Owner: "better-auth", Name: "skills", Branch: "main", Stars: 171},
+	{Platform: "github", Owner: "squirrelscan", Name: "skills", Branch: "main", Stars: 72},
+	{Platform: "github", Owner: "xixu-me", Name: "skills", Branch: "main", Stars: 32},
+	{Platform: "github", Owner: "roin-orca", Name: "skills", Branch: "main", Stars: 3},
+	{Platform: "github", Owner: "soultrace-ai", Name: "soultrace-skill", Branch: "main", Stars: 2},
 }
 
 var toolingTemplates = []mcpTemplateRecord{
@@ -278,6 +299,29 @@ var toolingTemplates = []mcpTemplateRecord{
 	{ID: "memory", Name: "@modelcontextprotocol/server-memory", Description: "Quick template: memory server", Type: "stdio", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-memory"}},
 	{ID: "sequential-thinking", Name: "@modelcontextprotocol/server-sequential-thinking", Description: "Quick template: sequential thinking", Type: "stdio", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-sequential-thinking"}},
 	{ID: "context7", Name: "@upstash/context7-mcp", Description: "Quick template: context7", Type: "stdio", Command: "npx", Args: []string{"-y", "@upstash/context7-mcp"}},
+}
+
+func buildToolingDefaultRepos() []skillRepoRecord {
+	seeds := append([]defaultSkillRepoSeed{}, toolingDefaultRepoSeeds...)
+	sort.SliceStable(seeds, func(i, j int) bool {
+		if seeds[i].Stars == seeds[j].Stars {
+			left := strings.ToLower(seeds[i].Owner + "/" + seeds[i].Name)
+			right := strings.ToLower(seeds[j].Owner + "/" + seeds[j].Name)
+			return left < right
+		}
+		return seeds[i].Stars > seeds[j].Stars
+	})
+	repos := make([]skillRepoRecord, 0, len(seeds))
+	for _, seed := range seeds {
+		repos = append(repos, normalizeSkillRepoRecord(skillRepoRecord{
+			Platform: seed.Platform,
+			Owner:    seed.Owner,
+			Name:     seed.Name,
+			Branch:   seed.Branch,
+			Enabled:  true,
+		}))
+	}
+	return repos
 }
 
 func (h *ToolingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -2847,6 +2891,7 @@ func loadSkillDiscoveryCache(home string) (skillDiscoveryCache, bool) {
 }
 
 func saveSkillDiscoveryCache(home string, cache skillDiscoveryCache) error {
+	cache = compactSkillDiscoveryCache(cache)
 	raw, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
 		return err
@@ -2862,17 +2907,67 @@ func timeNowUTC() time.Time {
 	return time.Now().UTC()
 }
 
+func compactSkillDiscoveryCache(cache skillDiscoveryCache) skillDiscoveryCache {
+	normalizedItems := make([]discoveredSkillRecord, 0, len(cache.Items))
+	for _, item := range cache.Items {
+		item.Description = strings.TrimSpace(item.Description)
+		if len(item.Description) > skillDiscoveryDescriptionMaxLength {
+			item.Description = strings.TrimSpace(item.Description[:skillDiscoveryDescriptionMaxLength]) + "..."
+		}
+		if len(item.InstalledApps) == 0 {
+			item.InstalledApps = nil
+		}
+		normalizedItems = append(normalizedItems, item)
+	}
+	cache.Items = normalizedItems
+	if fitsSkillDiscoveryCacheLimit(cache) {
+		return cache
+	}
+	for len(cache.Items) > 1 && !fitsSkillDiscoveryCacheLimit(cache) {
+		nextLen := int(float64(len(cache.Items)) * 0.9)
+		if nextLen >= len(cache.Items) {
+			nextLen = len(cache.Items) - 1
+		}
+		if nextLen < 1 {
+			nextLen = 1
+		}
+		cache.Items = cache.Items[:nextLen]
+	}
+	if !fitsSkillDiscoveryCacheLimit(cache) {
+		cache.Items = nil
+	}
+	return cache
+}
+
+func fitsSkillDiscoveryCacheLimit(cache skillDiscoveryCache) bool {
+	raw, err := json.Marshal(cache)
+	if err != nil {
+		return false
+	}
+	return len(raw) <= skillDiscoveryCacheMaxBytes
+}
+
 func discoverSkillsFromRepos(home string, repos []skillRepoRecord, clients []toolingClientState) ([]discoveredSkillRecord, error) {
 	installed := discoveredInstalledAppsBySource(home, clients)
 	items := make([]discoveredSkillRecord, 0)
+	lastGitHubFetchAt := time.Time{}
 	for _, repo := range repos {
 		repo = normalizeSkillRepoRecord(repo)
 		if !repo.Enabled {
 			continue
 		}
+		if repo.Platform == "github" && !lastGitHubFetchAt.IsZero() {
+			waitFor := githubRepoRequestInterval - time.Since(lastGitHubFetchAt)
+			if waitFor > 0 {
+				time.Sleep(waitFor)
+			}
+		}
 		repoItems, err := discoverSkillsFromRepo(repo, installed)
 		if err != nil {
 			return nil, err
+		}
+		if repo.Platform == "github" {
+			lastGitHubFetchAt = time.Now()
 		}
 		items = append(items, repoItems...)
 	}
@@ -2936,21 +3031,31 @@ func discoverGitHubRepoSkills(repo skillRepoRecord, installed map[string]discove
 }
 
 func fetchGitHubArchiveFiles(repo skillRepoRecord, match func(string) bool) (map[string]string, error) {
-	req, err := newGitHubArchiveRequest(repo)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, describeGitHubHTTPError("archive", resp)
-	}
-	archive, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	var archive []byte
+	for attempt := 1; attempt <= githubArchiveRetryMaxAttempts; attempt++ {
+		req, err := newGitHubArchiveRequest(repo)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode < 300 {
+			archive, err = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
+		httpErr := describeGitHubHTTPError("archive", resp)
+		_ = resp.Body.Close()
+		if attempt < githubArchiveRetryMaxAttempts && isGitHubRateLimitError(httpErr) {
+			time.Sleep(time.Duration(attempt) * githubArchiveRetryBaseDelay)
+			continue
+		}
+		return nil, httpErr
 	}
 	reader, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
 	if err != nil {
@@ -2977,6 +3082,14 @@ func fetchGitHubArchiveFiles(repo skillRepoRecord, match func(string) bool) (map
 		files[relativePath] = string(raw)
 	}
 	return files, nil
+}
+
+func isGitHubRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "限流") || strings.Contains(message, "rate limit")
 }
 
 func trimGitHubArchivePath(filePath string) string {
