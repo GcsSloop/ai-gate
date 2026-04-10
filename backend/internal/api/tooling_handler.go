@@ -3,7 +3,9 @@ package api
 import (
 	"archive/zip"
 	"bytes"
+	crand "crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +32,7 @@ const (
 	githubArchiveRetryMaxAttempts      = 3
 	githubArchiveRetryBaseDelay        = 1500 * time.Millisecond
 	githubRepoRequestInterval          = 250 * time.Millisecond
+	skillDiscoveryAutoRefreshJitterMax = 3 * time.Hour
 )
 
 var toolingSupportedApps = []string{"codex"}
@@ -66,6 +69,7 @@ type skillRepoRecord struct {
 	Branch     string `json:"branch"`
 	Enabled    bool   `json:"enabled"`
 	SkillCount int    `json:"skill_count"`
+	StarCount  int    `json:"star_count,omitempty"`
 }
 
 type managedMcpServer struct {
@@ -148,14 +152,35 @@ type discoveredInstallState struct {
 }
 
 type skillDiscoveryCache struct {
-	FetchedAt string                  `json:"fetched_at"`
-	Items     []discoveredSkillRecord `json:"items"`
+	FetchedAt          string                  `json:"fetched_at"`
+	NextAutoRefreshAt  string                  `json:"next_auto_refresh_at,omitempty"`
+	RepoStarsFetchedAt string                  `json:"repo_stars_fetched_at,omitempty"`
+	Items              []discoveredSkillRecord `json:"items"`
 }
 
 type toolingSkillDiscoverResponse struct {
 	Cached    bool                    `json:"cached"`
 	FetchedAt string                  `json:"fetched_at,omitempty"`
+	Total     int                     `json:"total"`
+	Offset    int                     `json:"offset"`
+	Limit     int                     `json:"limit"`
 	Items     []discoveredSkillRecord `json:"items"`
+}
+
+type centralDiscoveredSkillResponse struct {
+	FetchedAt string `json:"fetched_at"`
+	Total     int    `json:"total_items"`
+	Items     []struct {
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		Platform   string `json:"platform"`
+		RepoOwner  string `json:"repo_owner"`
+		RepoName   string `json:"repo_name"`
+		Branch     string `json:"branch"`
+		RepoURL    string `json:"repo_url"`
+		SourcePath string `json:"source_path"`
+		SourceURL  string `json:"source_url"`
+	} `json:"items"`
 }
 
 type mcpTemplateRecord struct {
@@ -276,18 +301,23 @@ var toolingDefaultRepoSeeds = []defaultSkillRepoSeed{
 	{Platform: "github", Owner: "vercel-labs", Name: "agent-browser", Branch: "main", Stars: 28441},
 	{Platform: "github", Owner: "vercel-labs", Name: "agent-skills", Branch: "main", Stars: 24819},
 	{Platform: "github", Owner: "coreyhaines31", Name: "marketingskills", Branch: "main", Stars: 20027},
+	{Platform: "github", Owner: "JimLiu", Name: "baoyu-skills", Branch: "main", Stars: 14014},
 	{Platform: "github", Owner: "pbakaus", Name: "impeccable", Branch: "main", Stars: 17953},
 	{Platform: "github", Owner: "vercel-labs", Name: "skills", Branch: "main", Stars: 13603},
+	{Platform: "github", Owner: "ComposioHQ", Name: "awesome-claude-skills", Branch: "master", Stars: 52597},
 	{Platform: "github", Owner: "larksuite", Name: "cli", Branch: "main", Stars: 7311},
 	{Platform: "github", Owner: "google-labs-code", Name: "stitch-skills", Branch: "main", Stars: 4241},
 	{Platform: "github", Owner: "remotion-dev", Name: "skills", Branch: "main", Stars: 2670},
+	{Platform: "github", Owner: "cexll", Name: "myclaude", Branch: "master", Stars: 2579},
 	{Platform: "github", Owner: "supabase", Name: "agent-skills", Branch: "main", Stars: 1879},
 	{Platform: "github", Owner: "vercel-labs", Name: "next-skills", Branch: "main", Stars: 809},
 	{Platform: "github", Owner: "microsoft", Name: "azure-skills", Branch: "main", Stars: 611},
 	{Platform: "github", Owner: "sleekdotdesign", Name: "agent-skills", Branch: "main", Stars: 298},
 	{Platform: "github", Owner: "microsoft", Name: "github-copilot-for-azure", Branch: "main", Stars: 184},
 	{Platform: "github", Owner: "better-auth", Name: "skills", Branch: "main", Stars: 171},
+	{Platform: "github", Owner: "lc2panda", Name: "wps-skills", Branch: "main", Stars: 144},
 	{Platform: "github", Owner: "squirrelscan", Name: "skills", Branch: "main", Stars: 72},
+	{Platform: "github", Owner: "openai", Name: "skills", Branch: "main", Stars: 0},
 	{Platform: "github", Owner: "xixu-me", Name: "skills", Branch: "main", Stars: 32},
 	{Platform: "github", Owner: "roin-orca", Name: "skills", Branch: "main", Stars: 3},
 	{Platform: "github", Owner: "soultrace-ai", Name: "soultrace-skill", Branch: "main", Stars: 2},
@@ -314,11 +344,12 @@ func buildToolingDefaultRepos() []skillRepoRecord {
 	repos := make([]skillRepoRecord, 0, len(seeds))
 	for _, seed := range seeds {
 		repos = append(repos, normalizeSkillRepoRecord(skillRepoRecord{
-			Platform: seed.Platform,
-			Owner:    seed.Owner,
-			Name:     seed.Name,
-			Branch:   seed.Branch,
-			Enabled:  true,
+			Platform:  seed.Platform,
+			Owner:     seed.Owner,
+			Name:      seed.Name,
+			Branch:    seed.Branch,
+			Enabled:   true,
+			StarCount: seed.Stars,
 		}))
 	}
 	return repos
@@ -331,11 +362,11 @@ func (h *ToolingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && r.URL.Path == "/tooling/settings":
 		h.updateSettings(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/tooling/skills/discover":
-		h.getDiscoveredSkills(w)
+		h.getDiscoveredSkills(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/discover/install":
 		h.installDiscoveredSkill(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/discover/refresh":
-		h.refreshDiscoveredSkills(w)
+		h.refreshDiscoveredSkills(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/import":
 		h.importSkills(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/apply":
@@ -390,10 +421,11 @@ func (h *ToolingHandler) getState(w http.ResponseWriter) {
 	skills := scanManagedSkills(home, clients)
 	cache, _ := loadSkillDiscoveryCache(home)
 	applySkillUpdateFlags(skills, cache.Items)
+	_, _ = loadOrCreateToolingAnonymousID(home)
 	repoResults := defaultRepoSearchResults()
 	discoveredServers := discoverMcpServers(home)
 	servers := h.buildMcpViews(home, cfg)
-	h.maybeScheduleDailySkillDiscoveryRefresh(home, cache.FetchedAt)
+	h.maybeScheduleDailySkillDiscoveryRefresh(home, cache)
 
 	writeJSON(w, http.StatusOK, toolingStateResponse{
 		SkillSyncMethod:      normalizeSkillSyncMethod(cfg.SkillSyncMethod),
@@ -408,14 +440,17 @@ func (h *ToolingHandler) getState(w http.ResponseWriter) {
 	})
 }
 
-func (h *ToolingHandler) maybeScheduleDailySkillDiscoveryRefresh(home string, fetchedAt string) {
-	parsedFetchedAt, _ := time.Parse(time.RFC3339, strings.TrimSpace(fetchedAt))
-	if !parsedFetchedAt.IsZero() && timeNowUTC().Sub(parsedFetchedAt) < 24*time.Hour {
+func (h *ToolingHandler) maybeScheduleDailySkillDiscoveryRefresh(home string, cache skillDiscoveryCache) {
+	now := timeNowUTC()
+	if nextAutoAt, _ := time.Parse(time.RFC3339, strings.TrimSpace(cache.NextAutoRefreshAt)); !nextAutoAt.IsZero() && now.Before(nextAutoAt) {
+		return
+	}
+	parsedFetchedAt, _ := time.Parse(time.RFC3339, strings.TrimSpace(cache.FetchedAt))
+	if !parsedFetchedAt.IsZero() && now.Sub(parsedFetchedAt) < 24*time.Hour {
 		return
 	}
 	h.autoRefreshMu.Lock()
 	defer h.autoRefreshMu.Unlock()
-	now := timeNowUTC()
 	if h.autoRefreshInFlight {
 		return
 	}
@@ -456,18 +491,23 @@ func (h *ToolingHandler) updateSettings(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"skill_sync_method": cfg.SkillSyncMethod})
 }
 
-func (h *ToolingHandler) getDiscoveredSkills(w http.ResponseWriter) {
+func (h *ToolingHandler) getDiscoveredSkills(w http.ResponseWriter, r *http.Request) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	limit, offset := parseDiscoveredPaging(r.URL.Query())
 	cache, ok := loadSkillDiscoveryCache(home)
 	if ok {
+		items, total := sliceDiscoveredItems(cache.Items, limit, offset)
 		writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
 			Cached:    true,
 			FetchedAt: cache.FetchedAt,
-			Items:     cache.Items,
+			Total:     total,
+			Offset:    offset,
+			Limit:     limit,
+			Items:     items,
 		})
 		return
 	}
@@ -476,14 +516,18 @@ func (h *ToolingHandler) getDiscoveredSkills(w http.ResponseWriter) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	paged, total := sliceDiscoveredItems(items, limit, offset)
 	writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
 		Cached:    false,
 		FetchedAt: fetchedAt,
-		Items:     items,
+		Total:     total,
+		Offset:    offset,
+		Limit:     limit,
+		Items:     paged,
 	})
 }
 
-func (h *ToolingHandler) refreshDiscoveredSkills(w http.ResponseWriter) {
+func (h *ToolingHandler) refreshDiscoveredSkills(w http.ResponseWriter, r *http.Request) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -494,10 +538,15 @@ func (h *ToolingHandler) refreshDiscoveredSkills(w http.ResponseWriter) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	limit, offset := parseDiscoveredPaging(r.URL.Query())
+	paged, total := sliceDiscoveredItems(items, limit, offset)
 	writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
 		Cached:    false,
 		FetchedAt: fetchedAt,
-		Items:     items,
+		Total:     total,
+		Offset:    offset,
+		Limit:     limit,
+		Items:     paged,
 	})
 }
 
@@ -519,6 +568,7 @@ func (h *ToolingHandler) installDiscoveredSkill(w http.ResponseWriter, r *http.R
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	go reportDiscoveredSkillInstall(home, req.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"applied": applied, "enabled": true, "skill_sync_method": method})
 }
 
@@ -1304,6 +1354,9 @@ func normalizeSkillRepoRecord(repo skillRepoRecord) skillRepoRecord {
 	if repo.Branch == "" {
 		repo.Branch = "main"
 	}
+	if repo.StarCount < 0 {
+		repo.StarCount = 0
+	}
 	return repo
 }
 
@@ -1913,20 +1966,43 @@ func (h *ToolingHandler) refreshSkillDiscovery(home string) ([]discoveredSkillRe
 	defer h.mu.Unlock()
 
 	cfg := h.loadConfig(home)
-	clients := toolingClientStates(home)
-	items, err := discoverSkillsFromRepos(home, cfg.SkillRepos, clients)
-	if err != nil {
-		return nil, "", err
+	cfgDirty := false
+	centralRepos, centralErr := fetchCentralTrackedSkillRepos()
+	if centralErr == nil && mergeMissingTrackedRepos(&cfg, centralRepos) {
+		cfgDirty = true
 	}
-	if applyRepoSkillCounts(&cfg, items) {
+	existingCache, _ := loadSkillDiscoveryCache(home)
+	clients := toolingClientStates(home)
+	items, err := discoverSkillsFromCentral(home, clients)
+	if err != nil {
+		items, err = discoverSkillsFromRepos(home, cfg.SkillRepos, clients)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	repoStars := map[string]int{}
+	refreshStars := repoStarsRefreshDue(existingCache.RepoStarsFetchedAt)
+	if refreshStars {
+		repoStars = fetchGitHubRepoStars(cfg.SkillRepos)
+	}
+	if applyRepoMetrics(&cfg, items, repoStars) {
+		cfgDirty = true
+	}
+	if cfgDirty {
 		if err := h.saveConfig(home, cfg); err != nil {
 			return nil, "", err
 		}
 	}
-	fetchedAt := timeNowUTC().Format(time.RFC3339)
+	fetchedAtTime := timeNowUTC()
+	fetchedAt := fetchedAtTime.Format(time.RFC3339)
 	cache := skillDiscoveryCache{
-		FetchedAt: fetchedAt,
-		Items:     items,
+		FetchedAt:          fetchedAt,
+		NextAutoRefreshAt:  nextSkillDiscoveryAutoRefreshAt(fetchedAtTime).Format(time.RFC3339),
+		RepoStarsFetchedAt: firstNonEmpty(existingCache.RepoStarsFetchedAt),
+		Items:              items,
+	}
+	if refreshStars {
+		cache.RepoStarsFetchedAt = fetchedAt
 	}
 	if err := saveSkillDiscoveryCache(home, cache); err != nil {
 		return nil, "", err
@@ -1934,7 +2010,111 @@ func (h *ToolingHandler) refreshSkillDiscovery(home string) ([]discoveredSkillRe
 	return items, fetchedAt, nil
 }
 
-func applyRepoSkillCounts(cfg *toolingConfig, items []discoveredSkillRecord) bool {
+func mergeMissingTrackedRepos(cfg *toolingConfig, repos []skillRepoRecord) bool {
+	changed := false
+	for _, repo := range repos {
+		repo = normalizeSkillRepoRecord(repo)
+		if repo.Owner == "" || repo.Name == "" {
+			continue
+		}
+		exists := false
+		for _, existing := range cfg.SkillRepos {
+			if skillRepoMatches(existing, repo.Platform, repo.Owner, repo.Name) {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			cfg.SkillRepos = append(cfg.SkillRepos, repo)
+			changed = true
+		}
+	}
+	return changed
+}
+
+func fetchCentralTrackedSkillRepos() ([]skillRepoRecord, error) {
+	registryURL := strings.TrimSpace(os.Getenv("AIGATE_SKILL_REPO_REGISTRY_URL"))
+	if registryURL == "" {
+		return nil, nil
+	}
+	req, err := http.NewRequest(http.MethodGet, registryURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "ai-gate")
+	if token := strings.TrimSpace(os.Getenv("AIGATE_SKILL_REPO_REGISTRY_TOKEN")); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("tracked repos fetch failed: %s", resp.Status)
+	}
+	var payload struct {
+		Items []struct {
+			Platform  string `json:"platform"`
+			Owner     string `json:"owner"`
+			Name      string `json:"name"`
+			Branch    string `json:"branch"`
+			Enabled   bool   `json:"enabled"`
+			SortOrder int    `json:"sort_order"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	type centralizedRepo struct {
+		Repo      skillRepoRecord
+		SortOrder int
+	}
+	normalized := make([]centralizedRepo, 0, len(payload.Items))
+	for _, item := range payload.Items {
+		repo := normalizeSkillRepoRecord(skillRepoRecord{
+			Platform: item.Platform,
+			Owner:    item.Owner,
+			Name:     item.Name,
+			Branch:   item.Branch,
+			Enabled:  item.Enabled,
+		})
+		if repo.Owner == "" || repo.Name == "" {
+			continue
+		}
+		normalized = append(normalized, centralizedRepo{
+			Repo:      repo,
+			SortOrder: item.SortOrder,
+		})
+	}
+	sort.SliceStable(normalized, func(i, j int) bool {
+		if normalized[i].SortOrder != normalized[j].SortOrder {
+			return normalized[i].SortOrder < normalized[j].SortOrder
+		}
+		left := strings.ToLower(normalized[i].Repo.Platform + ":" + normalized[i].Repo.Owner + "/" + normalized[i].Repo.Name)
+		right := strings.ToLower(normalized[j].Repo.Platform + ":" + normalized[j].Repo.Owner + "/" + normalized[j].Repo.Name)
+		return left < right
+	})
+	result := make([]skillRepoRecord, 0, len(normalized))
+	for _, item := range normalized {
+		result = append(result, item.Repo)
+	}
+	return result, nil
+}
+
+func repoStarsRefreshDue(lastFetchedAt string) bool {
+	lastFetchedAt = strings.TrimSpace(lastFetchedAt)
+	if lastFetchedAt == "" {
+		return true
+	}
+	parsed, err := time.Parse(time.RFC3339, lastFetchedAt)
+	if err != nil {
+		return true
+	}
+	return timeNowUTC().Sub(parsed) >= 24*time.Hour
+}
+
+func applyRepoMetrics(cfg *toolingConfig, items []discoveredSkillRecord, repoStars map[string]int) bool {
 	repoSkillCounts := map[string]int{}
 	for _, item := range items {
 		repoSkillCounts[repoRecordKey(item.Platform, item.RepoOwner, item.RepoName)]++
@@ -1947,8 +2127,81 @@ func applyRepoSkillCounts(cfg *toolingConfig, items []discoveredSkillRecord) boo
 			cfg.SkillRepos[idx].SkillCount = nextCount
 			changed = true
 		}
+		if nextStars, ok := repoStars[key]; ok && cfg.SkillRepos[idx].StarCount != nextStars {
+			cfg.SkillRepos[idx].StarCount = nextStars
+			changed = true
+		}
 	}
 	return changed
+}
+
+func fetchGitHubRepoStars(repos []skillRepoRecord) map[string]int {
+	stars := map[string]int{}
+	lastRequestAt := time.Time{}
+	for _, repo := range repos {
+		repo = normalizeSkillRepoRecord(repo)
+		if repo.Platform != "github" {
+			continue
+		}
+		if !lastRequestAt.IsZero() {
+			waitFor := githubRepoRequestInterval - time.Since(lastRequestAt)
+			if waitFor > 0 {
+				time.Sleep(waitFor)
+			}
+		}
+		count, err := fetchGitHubRepoStarsCount(repo.Owner, repo.Name)
+		lastRequestAt = time.Now()
+		if err != nil {
+			continue
+		}
+		stars[repoRecordKey(repo.Platform, repo.Owner, repo.Name)] = count
+	}
+	return stars
+}
+
+func fetchGitHubRepoStarsCount(owner string, name string) (int, error) {
+	req, err := newGitHubAPIRequest(http.MethodGet, fmt.Sprintf("%s/repos/%s/%s", githubAPIBase(), url.PathEscape(owner), url.PathEscape(name)))
+	if err != nil {
+		return 0, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return 0, describeGitHubHTTPError("repo", resp)
+	}
+	var payload struct {
+		StargazersCount int `json:"stargazers_count"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return 0, err
+	}
+	if payload.StargazersCount < 0 {
+		return 0, nil
+	}
+	return payload.StargazersCount, nil
+}
+
+func nextSkillDiscoveryAutoRefreshAt(now time.Time) time.Time {
+	return now.Add(24*time.Hour + randomDuration(skillDiscoveryAutoRefreshJitterMax))
+}
+
+func randomDuration(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	var raw [8]byte
+	if _, err := crand.Read(raw[:]); err == nil {
+		return time.Duration(binary.BigEndian.Uint64(raw[:]) % uint64(max))
+	}
+	fallback := uint64(nowUnixNano())
+	return time.Duration(fallback % uint64(max))
+}
+
+func nowUnixNano() int64 {
+	return time.Now().UnixNano()
 }
 
 func applyManagedSkills(home string, method string, apps []string) (int, error) {
@@ -2947,29 +3200,317 @@ func fitsSkillDiscoveryCacheLimit(cache skillDiscoveryCache) bool {
 	return len(raw) <= skillDiscoveryCacheMaxBytes
 }
 
+func parseDiscoveredPaging(query url.Values) (limit int, offset int) {
+	limit = 100
+	offset = 0
+	if query == nil {
+		return limit, offset
+	}
+	if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if raw := strings.TrimSpace(query.Get("offset")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	return limit, offset
+}
+
+func sliceDiscoveredItems(items []discoveredSkillRecord, limit int, offset int) ([]discoveredSkillRecord, int) {
+	total := len(items)
+	if offset >= total {
+		return []discoveredSkillRecord{}, total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return items[offset:end], total
+}
+
+func discoverSkillsFromCentral(home string, clients []toolingClientState) ([]discoveredSkillRecord, error) {
+	baseURL := skillMetricsBaseURL()
+	if baseURL == "" {
+		return nil, errors.New("central skill discovery is not configured")
+	}
+	catalog, err := fetchCentralSkillsCatalog(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	installed := discoveredInstalledAppsBySource(home, clients)
+	hashCache := map[string]string{}
+	items := make([]discoveredSkillRecord, 0, len(catalog.Items))
+	for _, raw := range catalog.Items {
+		repo := normalizeSkillRepoRecord(skillRepoRecord{
+			Platform: raw.Platform,
+			Owner:    raw.RepoOwner,
+			Name:     raw.RepoName,
+			Branch:   raw.Branch,
+			Enabled:  true,
+		})
+		sourcePath := strings.Trim(strings.TrimSpace(raw.SourcePath), "/")
+		if sourcePath == "" {
+			sourcePath = strings.Trim(strings.TrimSpace(raw.Name), "/")
+		}
+		key := firstNonEmpty(strings.TrimSpace(raw.ID), discoveredSkillKey(repo.Platform, repo.Owner+"/"+repo.Name, repo.Branch, sourcePath))
+		record := discoveredSkillRecord{
+			ID:              key,
+			Name:            firstNonEmpty(strings.TrimSpace(raw.Name), filepath.Base(sourcePath), "Skill"),
+			Platform:        repo.Platform,
+			RepoOwner:       repo.Owner,
+			RepoName:        repo.Name,
+			Branch:          repo.Branch,
+			RepoURL:         firstNonEmpty(strings.TrimSpace(raw.RepoURL), buildRepoURL(repo.Platform, repo.Owner, repo.Name)),
+			SourcePath:      sourcePath,
+			SourceURL:       firstNonEmpty(strings.TrimSpace(raw.SourceURL), buildRepoTreeURL(repo.Platform, repo.Owner, repo.Name, repo.Branch, sourcePath)),
+			ManagedName:     buildDiscoveredManagedName(repo, sourcePath),
+			InstalledApps:   map[string]bool{},
+			UpdateAvailable: false,
+		}
+		if state, ok := installed[key]; ok {
+			record.InstalledHash = state.Hash
+			for app, enabled := range state.Apps {
+				record.InstalledApps[app] = enabled
+			}
+			if cachedHash, ok := hashCache[key]; ok {
+				record.ContentHash = cachedHash
+			} else {
+				contentHash, hashErr := fetchDiscoveredSkillContentHash(repo, sourcePath)
+				if hashErr == nil {
+					record.ContentHash = contentHash
+					hashCache[key] = contentHash
+				}
+			}
+			record.UpdateAvailable = state.Hash != "" && record.ContentHash != "" && state.Hash != record.ContentHash
+		}
+		items = append(items, record)
+	}
+	recommended, _ := fetchCentralRecommendedTop10(baseURL)
+	return reorderDiscoveredWithRecommendations(items, recommended), nil
+}
+
+func reorderDiscoveredWithRecommendations(items []discoveredSkillRecord, recommended []string) []discoveredSkillRecord {
+	if len(items) == 0 {
+		return items
+	}
+	byID := make(map[string]discoveredSkillRecord, len(items))
+	byName := make(map[string][]string)
+	orderedIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		byID[item.ID] = item
+		orderedIDs = append(orderedIDs, item.ID)
+		nameKey := strings.ToLower(strings.TrimSpace(item.Name))
+		byName[nameKey] = append(byName[nameKey], item.ID)
+	}
+	seen := map[string]bool{}
+	result := make([]discoveredSkillRecord, 0, len(items))
+	for _, name := range recommended {
+		key := strings.ToLower(strings.TrimSpace(name))
+		for _, id := range byName[key] {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			result = append(result, byID[id])
+		}
+	}
+	sort.SliceStable(orderedIDs, func(i, j int) bool {
+		return strings.ToLower(byID[orderedIDs[i]].Name) < strings.ToLower(byID[orderedIDs[j]].Name)
+	})
+	for _, id := range orderedIDs {
+		if seen[id] {
+			continue
+		}
+		result = append(result, byID[id])
+	}
+	return result
+}
+
+func fetchCentralSkillsCatalog(baseURL string) (centralDiscoveredSkillResponse, error) {
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+"/skills/final?limit=5000&offset=0", nil)
+	if err != nil {
+		return centralDiscoveredSkillResponse{}, err
+	}
+	req.Header.Set("User-Agent", "ai-gate")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return centralDiscoveredSkillResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return centralDiscoveredSkillResponse{}, fmt.Errorf("central skills failed: %s", resp.Status)
+	}
+	var payload centralDiscoveredSkillResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return centralDiscoveredSkillResponse{}, err
+	}
+	return payload, nil
+}
+
+func fetchCentralRecommendedTop10(baseURL string) ([]string, error) {
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+"/rankings/skills?limit=10", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "ai-gate")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("central rankings failed: %s", resp.Status)
+	}
+	var payload struct {
+		Items []struct {
+			SkillName string `json:"skill_name"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(payload.Items))
+	for _, item := range payload.Items {
+		if strings.TrimSpace(item.SkillName) == "" {
+			continue
+		}
+		names = append(names, item.SkillName)
+	}
+	return names, nil
+}
+
+func fetchDiscoveredSkillContentHash(repo skillRepoRecord, sourcePath string) (string, error) {
+	files, err := fetchDiscoveredSkillFiles(repo, sourcePath)
+	if err != nil {
+		return "", err
+	}
+	return hashSkillFiles(files), nil
+}
+
+func skillMetricsBaseURL() string {
+	if direct := strings.TrimSpace(os.Getenv("AIGATE_SKILL_METRICS_URL")); direct != "" {
+		return strings.TrimRight(direct, "/")
+	}
+	registryURL := strings.TrimSpace(os.Getenv("AIGATE_SKILL_REPO_REGISTRY_URL"))
+	if registryURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(registryURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	parsed.Path = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func toolingAnonymousClientIDPath(home string) string {
+	return filepath.Join(aigateDataRoot(home), "tooling", "anonymous-client.json")
+}
+
+func loadOrCreateToolingAnonymousID(home string) (string, error) {
+	path := toolingAnonymousClientIDPath(home)
+	if raw, err := os.ReadFile(path); err == nil {
+		var payload struct {
+			AnonymousID string `json:"anonymous_id"`
+		}
+		if json.Unmarshal(raw, &payload) == nil && strings.TrimSpace(payload.AnonymousID) != "" {
+			return strings.TrimSpace(payload.AnonymousID), nil
+		}
+	}
+	var nonce [16]byte
+	if _, err := crand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	id := fmt.Sprintf("aigate-%x", nonce[:])
+	payload := map[string]string{"anonymous_id": id}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	if err := writeAtomic(path, append(raw, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func reportDiscoveredSkillInstall(home string, id string) {
+	baseURL := skillMetricsBaseURL()
+	if baseURL == "" {
+		return
+	}
+	platform, repoFullName, _, sourcePath, err := parseDiscoveredSkillID(id)
+	if err != nil {
+		return
+	}
+	anonymousID, err := loadOrCreateToolingAnonymousID(home)
+	if err != nil {
+		return
+	}
+	skillName := filepath.Base(strings.Trim(sourcePath, "/"))
+	if skillName == "" || skillName == "." {
+		skillName = sourcePath
+	}
+	payload := map[string]string{
+		"anonymous_id": anonymousID,
+		"skill_name":   skillName,
+		"source_repo":  repoFullName,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(baseURL, "/")+"/events/install", bytes.NewReader(raw))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "ai-gate")
+	if token := strings.TrimSpace(os.Getenv("AIGATE_SKILL_METRICS_INGEST_TOKEN")); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if platform == "" {
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	_ = resp.Body.Close()
+}
+
 func discoverSkillsFromRepos(home string, repos []skillRepoRecord, clients []toolingClientState) ([]discoveredSkillRecord, error) {
 	installed := discoveredInstalledAppsBySource(home, clients)
 	items := make([]discoveredSkillRecord, 0)
-	lastGitHubFetchAt := time.Time{}
+	success := 0
+	var firstErr error
 	for _, repo := range repos {
 		repo = normalizeSkillRepoRecord(repo)
 		if !repo.Enabled {
 			continue
 		}
-		if repo.Platform == "github" && !lastGitHubFetchAt.IsZero() {
-			waitFor := githubRepoRequestInterval - time.Since(lastGitHubFetchAt)
-			if waitFor > 0 {
-				time.Sleep(waitFor)
-			}
-		}
 		repoItems, err := discoverSkillsFromRepo(repo, installed)
 		if err != nil {
-			return nil, err
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s/%s@%s: %w", repo.Owner, repo.Name, repo.Branch, err)
+			}
+			continue
 		}
-		if repo.Platform == "github" {
-			lastGitHubFetchAt = time.Now()
-		}
+		success++
 		items = append(items, repoItems...)
+	}
+	if success == 0 && firstErr != nil {
+		return nil, firstErr
 	}
 	sort.Slice(items, func(i, j int) bool {
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
