@@ -42,7 +42,20 @@ type TrackedRepoItem = {
 
 type UserStats = {
   total_users: number;
-  active_users_1d: number;
+  active_users: number;
+  active_users_1d?: number;
+  active_window_days: number;
+  active_window_label: string;
+};
+
+type OverviewStats = UserStats & {
+  repos_total: number;
+  repos_enabled: number;
+  skills_total: number;
+  ranking_skills_total: number;
+  total_install_events: number;
+  ranking_day: string;
+  catalog_fetched_at: string;
 };
 
 type UserInstallSummary = {
@@ -159,7 +172,7 @@ export default {
         return logoutAdmin();
       }
       if (request.method === "POST" && url.pathname === "/events/install") {
-        await assertBearer(request, env.INGEST_BEARER_TOKEN, { required: true });
+        await assertBearer(request, env.INGEST_BEARER_TOKEN);
         const payload = (await request.json()) as InstallEventPayload;
         const result = await ingestInstallEvent(env, payload);
         return json(result, 201);
@@ -177,6 +190,25 @@ export default {
         const catalog = await getSkillCatalog(env, force);
         const sliced = sliceCatalog(catalog, offset, limit);
         return json(sliced);
+      }
+      if (request.method === "GET" && url.pathname === "/skills/search") {
+        const limit = normalizeCatalogLimit(url.searchParams.get("limit"));
+        const offset = normalizeCatalogOffset(url.searchParams.get("offset"));
+        const query = (url.searchParams.get("q") ?? "").trim();
+        const day = normalizeDay(url.searchParams.get("day")) ?? utcDay();
+        const catalog = await getSkillCatalog(env, false);
+        const ranking = await getSkillRanking(env, day, 10);
+        const { items, total, indexedTotal } = filterAndSliceCatalog(catalog, query, offset, limit, ranking.items.map((item) => item.skill_name));
+        return json({
+          cached: true,
+          fetched_at: catalog.fetched_at,
+          indexed_total: indexedTotal,
+          total,
+          offset,
+          limit,
+          query,
+          items,
+        });
       }
       if (request.method === "GET" && url.pathname === "/tracked-repos") {
         await assertAdmin(request, env);
@@ -211,7 +243,14 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/admin/api/stats/users") {
         await assertAdmin(request, env);
-        const stats = await getUserStats(env);
+        const stats = await getUserStats(env, normalizeActiveWindowDays(url.searchParams.get("window")));
+        return json(stats);
+      }
+      if (request.method === "GET" && url.pathname === "/admin/api/stats/overview") {
+        await assertAdmin(request, env);
+        const windowDays = normalizeActiveWindowDays(url.searchParams.get("window"));
+        const rankingDay = normalizeDay(url.searchParams.get("day")) ?? utcDay();
+        const stats = await getOverviewStats(env, windowDays, rankingDay);
         return json(stats);
       }
       if (request.method === "GET" && url.pathname === "/admin/api/users") {
@@ -410,6 +449,7 @@ async function selectDailyRanking(env: Env, day: string, limit: number): Promise
          COUNT(DISTINCT user_hash) AS unique_users
        FROM install_events
        WHERE event_day = ?1
+         AND skill_name != '__client_active__'
        GROUP BY skill_name, source_repo
        ORDER BY installs DESC, unique_users DESC, skill_name ASC
        LIMIT ?2`,
@@ -419,18 +459,51 @@ async function selectDailyRanking(env: Env, day: string, limit: number): Promise
   return query.results ?? [];
 }
 
-async function getUserStats(env: Env): Promise<UserStats> {
+async function getUserStats(env: Env, windowDays: number): Promise<UserStats> {
+  const normalizedWindowDays = normalizeActiveWindowDays(String(windowDays));
   const totalRes = await env.DB
     .prepare("SELECT COUNT(DISTINCT user_hash) AS total_users FROM install_events")
     .first<{ total_users: number }>();
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const since = new Date(Date.now() - normalizedWindowDays * 24 * 60 * 60 * 1000).toISOString();
   const activeRes = await env.DB
-    .prepare("SELECT COUNT(DISTINCT user_hash) AS active_users_1d FROM install_events WHERE created_at >= ?1")
+    .prepare("SELECT COUNT(DISTINCT user_hash) AS active_users FROM install_events WHERE created_at >= ?1")
     .bind(since)
-    .first<{ active_users_1d: number }>();
+    .first<{ active_users: number }>();
   return {
     total_users: Number(totalRes?.total_users ?? 0),
-    active_users_1d: Number(activeRes?.active_users_1d ?? 0),
+    active_users: Number(activeRes?.active_users ?? 0),
+    active_users_1d: normalizedWindowDays === 1 ? Number(activeRes?.active_users ?? 0) : undefined,
+    active_window_days: normalizedWindowDays,
+    active_window_label: activeWindowLabel(normalizedWindowDays),
+  };
+}
+
+async function getOverviewStats(env: Env, windowDays: number, rankingDay: string): Promise<OverviewStats> {
+  const userStats = await getUserStats(env, windowDays);
+  const repos = await listTrackedRepos(env);
+  const catalog = await getSkillCatalog(env, false);
+  const rankingTotalRes = await env.DB
+    .prepare(
+      `SELECT COUNT(DISTINCT skill_name) AS ranking_skills_total
+       FROM install_events
+       WHERE event_day = ?1
+         AND skill_name != '__client_active__'`,
+    )
+    .bind(rankingDay)
+    .first<{ ranking_skills_total: number }>();
+  const installsRes = await env.DB
+    .prepare("SELECT COUNT(1) AS total_install_events FROM install_events WHERE skill_name != '__client_active__'")
+    .first<{ total_install_events: number }>();
+  const reposEnabled = repos.reduce((acc, repo) => acc + (repo.enabled ? 1 : 0), 0);
+  return {
+    ...userStats,
+    repos_total: repos.length,
+    repos_enabled: reposEnabled,
+    skills_total: catalog.items.length,
+    ranking_skills_total: Number(rankingTotalRes?.ranking_skills_total ?? 0),
+    total_install_events: Number(installsRes?.total_install_events ?? 0),
+    ranking_day: rankingDay,
+    catalog_fetched_at: catalog.fetched_at,
   };
 }
 
@@ -454,6 +527,7 @@ async function listSkillsForUser(env: Env, userHash: string): Promise<UserSkillI
       `SELECT skill_name, COALESCE(source_repo, '') AS source_repo, COUNT(1) AS installs, MAX(created_at) AS last_installed_at
        FROM install_events
        WHERE user_hash = ?1
+         AND skill_name != '__client_active__'
        GROUP BY skill_name, source_repo
        ORDER BY last_installed_at DESC, installs DESC, skill_name ASC`,
     )
@@ -786,6 +860,47 @@ function sliceCatalog(catalog: SkillCatalog, offset: number, limit: number): Ski
   };
 }
 
+function filterAndSliceCatalog(
+  catalog: SkillCatalog,
+  query: string,
+  offset: number,
+  limit: number,
+  recommended: string[],
+): { indexedTotal: number; total: number; items: CatalogSkillItem[] } {
+  const indexedTotal = catalog.items.length;
+  const q = query.trim().toLowerCase();
+  const source = q
+    ? catalog.items.filter((item) =>
+      [item.name, item.repo_owner, item.repo_name, item.source_path].join(" ").toLowerCase().includes(q),
+    )
+    : catalog.items.slice();
+  const recommendedOrder = new Map<string, number>();
+  for (let i = 0; i < recommended.length; i += 1) {
+    const name = recommended[i]?.trim().toLowerCase();
+    if (!name || recommendedOrder.has(name)) continue;
+    recommendedOrder.set(name, i);
+  }
+  source.sort((a, b) => {
+    const leftKey = a.name.trim().toLowerCase();
+    const rightKey = b.name.trim().toLowerCase();
+    const leftRank = recommendedOrder.get(leftKey);
+    const rightRank = recommendedOrder.get(rightKey);
+    if (leftRank !== undefined || rightRank !== undefined) {
+      if (leftRank === undefined) return 1;
+      if (rightRank === undefined) return -1;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+    }
+    const byName = a.name.localeCompare(b.name, "en", { sensitivity: "base" });
+    if (byName !== 0) return byName;
+    return a.id.localeCompare(b.id, "en", { sensitivity: "base" });
+  });
+  return {
+    indexedTotal,
+    total: source.length,
+    items: source.slice(offset, offset + limit),
+  };
+}
+
 function normalizeTrackedRepo(raw: Partial<TrackedRepoItem>, fallbackOrder: number): TrackedRepoItem {
   const platform = normalizePlatform(raw.platform ?? "github");
   const owner = trim(raw.owner ?? "", 120);
@@ -822,6 +937,26 @@ function normalizeDay(input?: string | null): string | null {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed.toISOString().slice(0, 10);
+}
+
+function normalizeActiveWindowDays(input?: string | null): number {
+  const value = (input ?? "").trim().toLowerCase();
+  if (!value) return 1;
+  if (value === "1d" || value === "day" || value === "daily") return 1;
+  if (value === "7d" || value === "1w" || value === "week" || value === "weekly") return 7;
+  if (value === "30d" || value === "1m" || value === "month" || value === "monthly") return 30;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 1;
+  const days = Math.floor(parsed);
+  if (days <= 1) return 1;
+  if (days <= 7) return 7;
+  return 30;
+}
+
+function activeWindowLabel(days: number): string {
+  if (days <= 1) return "1天";
+  if (days <= 7) return "1周";
+  return "1月";
 }
 
 function normalizeLimit(input?: string | null): number {
@@ -1122,10 +1257,25 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         </div>
 
         <div class="panel tab-panel active" id="tab-overview">
-          <h2>用户统计</h2>
+          <h2>总览统计</h2>
+          <div class="row" style="margin-bottom:12px">
+            <span class="muted">活跃周期</span>
+            <select id="activeWindow">
+              <option value="1d">1天</option>
+              <option value="7d">1周</option>
+              <option value="30d">1月</option>
+            </select>
+            <button id="refreshOverviewBtn">刷新总览</button>
+            <span class="muted" id="overviewHint">-</span>
+          </div>
           <div class="stats">
             <div class="stat"><span class="muted">累计匿名用户</span><b id="totalUsers">-</b></div>
-            <div class="stat"><span class="muted">最近 1 天活跃用户</span><b id="activeUsers">-</b></div>
+            <div class="stat"><span class="muted" id="activeUsersLabel">活跃用户（1天）</span><b id="activeUsers">-</b></div>
+            <div class="stat"><span class="muted">仓库总数</span><b id="repoCount">-</b></div>
+            <div class="stat"><span class="muted">启用仓库数</span><b id="repoEnabledCount">-</b></div>
+            <div class="stat"><span class="muted">已收录技能数</span><b id="skillCount">-</b></div>
+            <div class="stat"><span class="muted">排行榜技能数（当日）</span><b id="rankingCount">-</b></div>
+            <div class="stat"><span class="muted">安装事件总数</span><b id="installEventCount">-</b></div>
           </div>
           <div class="row" style="margin-top:12px">
             <button id="startScanBtn" class="primary">手动触发扫描</button>
@@ -1285,9 +1435,18 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       }
 
       async function loadStats() {
-        const s = await request("/admin/api/stats/users");
+        const window = byId("activeWindow").value || "1d";
+        const query = new URLSearchParams({ window });
+        const s = await request("/admin/api/stats/overview?" + query.toString());
         byId("totalUsers").textContent = s.total_users || 0;
-        byId("activeUsers").textContent = s.active_users_1d || 0;
+        byId("activeUsers").textContent = s.active_users || 0;
+        byId("activeUsersLabel").textContent = "活跃用户（" + (s.active_window_label || "1天") + "）";
+        byId("repoCount").textContent = s.repos_total || 0;
+        byId("repoEnabledCount").textContent = s.repos_enabled || 0;
+        byId("skillCount").textContent = s.skills_total || 0;
+        byId("rankingCount").textContent = s.ranking_skills_total || 0;
+        byId("installEventCount").textContent = s.total_install_events || 0;
+        byId("overviewHint").textContent = "目录缓存: " + (s.catalog_fetched_at || "-") + " | 排行榜日期: " + (s.ranking_day || "-");
       }
 
       async function loadCatalog(forceRefresh, customOffset, customLimit) {
@@ -1466,6 +1625,8 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       byId("loadCatalogPageBtn").addEventListener("click", () => loadCatalog(false));
       byId("refreshRankBtn").addEventListener("click", loadRanking);
       byId("refreshUsersBtn").addEventListener("click", loadUsers);
+      byId("refreshOverviewBtn").addEventListener("click", loadStats);
+      byId("activeWindow").addEventListener("change", loadStats);
       byId("startScanBtn").addEventListener("click", startScan);
       byId("stepScanBtn").addEventListener("click", stepScan);
 
