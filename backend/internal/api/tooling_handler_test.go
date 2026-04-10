@@ -1133,6 +1133,60 @@ func TestToolingHandlerDiscoverSkillsMarksInstalledUpdatesByHash(t *testing.T) {
 	}
 }
 
+func TestToolingHandlerDiscoverSkillsSupportsServerSideQuery(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeSkillDiscoveryCache(t, home, map[string]any{
+		"fetched_at": "2026-04-10T10:00:00Z",
+		"items": []map[string]any{
+			{
+				"id":           "github:openai/skills:main:skills/alpha",
+				"name":         "Alpha Skill",
+				"description":  "alpha summary",
+				"platform":     "github",
+				"repo_owner":   "openai",
+				"repo_name":    "skills",
+				"branch":       "main",
+				"repo_url":     "https://github.com/openai/skills",
+				"source_path":  "skills/alpha",
+				"source_url":   "https://github.com/openai/skills/tree/main/skills/alpha",
+				"managed_name": "openai-skills-alpha",
+			},
+			{
+				"id":           "github:openai/skills:main:skills/beta",
+				"name":         "Beta Skill",
+				"description":  "beta summary",
+				"platform":     "github",
+				"repo_owner":   "openai",
+				"repo_name":    "skills",
+				"branch":       "main",
+				"repo_url":     "https://github.com/openai/skills",
+				"source_path":  "skills/beta",
+				"source_url":   "https://github.com/openai/skills/tree/main/skills/beta",
+				"managed_name": "openai-skills-beta",
+			},
+		},
+	})
+
+	handler := api.NewToolingHandler()
+	resp := doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/discover?q=alpha&limit=80&offset=0", nil, nil, http.StatusOK)
+	var payload map[string]any
+	if err := json.Unmarshal(resp, &payload); err != nil {
+		t.Fatalf("unmarshal discover response: %v", err)
+	}
+	if payload["indexed_total"] != float64(2) {
+		t.Fatalf("indexed_total = %v, want 2", payload["indexed_total"])
+	}
+	if payload["total"] != float64(1) {
+		t.Fatalf("total = %v, want 1", payload["total"])
+	}
+	items := payload["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["name"] != "Alpha Skill" {
+		t.Fatalf("items = %v, want only Alpha Skill", payload["items"])
+	}
+}
+
 func TestToolingHandlerRefreshDiscoveryUpdatesRepoStarsAndNextAutoRefresh(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
