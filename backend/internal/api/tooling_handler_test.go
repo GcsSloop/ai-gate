@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/api"
 )
@@ -1129,6 +1130,81 @@ func TestToolingHandlerDiscoverSkillsMarksInstalledUpdatesByHash(t *testing.T) {
 	}
 	if alpha["installed_hash"] == alpha["content_hash"] {
 		t.Fatalf("installed_hash = %v, content_hash = %v, want differing hashes", alpha["installed_hash"], alpha["content_hash"])
+	}
+}
+
+func TestToolingHandlerRefreshDiscoveryUpdatesRepoStarsAndNextAutoRefresh(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
+		"skills/alpha/SKILL.md": "# Alpha Skill\nA summary.\n",
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/openai/codex-skills":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"default_branch":"main","stargazers_count":321}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(archive)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/archive/refs/heads/") && strings.HasSuffix(r.URL.Path, ".zip"):
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(archive)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"default_branch":"main","stargazers_count":321}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("AIGATE_GITHUB_API_BASE", server.URL)
+	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
+
+	writeToolingConfig(t, home, map[string]any{
+		"skill_sync_method": "symlink",
+		"skill_repos": []map[string]any{
+			{
+				"platform":   "github",
+				"owner":      "openai",
+				"name":       "codex-skills",
+				"branch":     "main",
+				"enabled":    true,
+				"star_count": 0,
+			},
+		},
+		"mcp_servers": []any{},
+	})
+
+	handler := api.NewToolingHandler()
+	doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/refresh", bytes.NewBufferString(`{}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
+
+	cfg := readToolingConfig(t, home)
+	repos := cfg["skill_repos"].([]any)
+	repo := repos[0].(map[string]any)
+	if repo["star_count"] != float64(321) {
+		t.Fatalf("star_count = %v, want 321", repo["star_count"])
+	}
+
+	cacheRaw := readSkillDiscoveryCacheRaw(t, home)
+	var cache map[string]any
+	if err := json.Unmarshal([]byte(cacheRaw), &cache); err != nil {
+		t.Fatalf("unmarshal cache: %v", err)
+	}
+	fetchedAt, err := time.Parse(time.RFC3339, cache["fetched_at"].(string))
+	if err != nil {
+		t.Fatalf("parse fetched_at: %v", err)
+	}
+	nextAt, err := time.Parse(time.RFC3339, cache["next_auto_refresh_at"].(string))
+	if err != nil {
+		t.Fatalf("parse next_auto_refresh_at: %v", err)
+	}
+	minNext := fetchedAt.Add(24*time.Hour - time.Minute)
+	maxNext := fetchedAt.Add(27*time.Hour + time.Minute)
+	if nextAt.Before(minNext) || nextAt.After(maxNext) {
+		t.Fatalf("next_auto_refresh_at = %s, want between %s and %s", nextAt.Format(time.RFC3339), minNext.Format(time.RFC3339), maxNext.Format(time.RFC3339))
 	}
 }
 

@@ -276,6 +276,7 @@ export type ToolingSkillRepo = {
   branch: string;
   enabled: boolean;
   skill_count: number;
+  star_count?: number;
 };
 
 export type ToolingRepoOrderItem = {
@@ -323,6 +324,9 @@ export type ToolingDiscoveredSkill = {
 export type ToolingSkillDiscoveryResponse = {
   cached: boolean;
   fetched_at?: string;
+  total: number;
+  offset: number;
+  limit: number;
   items: ToolingDiscoveredSkill[];
 };
 
@@ -1121,8 +1125,16 @@ export async function resolveToolingRepo(input: string): Promise<ToolingResolved
   return response.json();
 }
 
-export async function getToolingDiscoveredSkills(): Promise<ToolingSkillDiscoveryResponse> {
-  const response = await fetch(apiPath("/tooling/skills/discover"));
+export async function getToolingDiscoveredSkills(params?: { limit?: number; offset?: number }): Promise<ToolingSkillDiscoveryResponse> {
+  const search = new URLSearchParams();
+  if (typeof params?.limit === "number" && params.limit > 0) {
+    search.set("limit", String(params.limit));
+  }
+  if (typeof params?.offset === "number" && params.offset >= 0) {
+    search.set("offset", String(params.offset));
+  }
+  const query = search.toString();
+  const response = await fetch(apiPath(`/tooling/skills/discover${query ? `?${query}` : ""}`));
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to load discovered skills");
@@ -1130,8 +1142,16 @@ export async function getToolingDiscoveredSkills(): Promise<ToolingSkillDiscover
   return response.json();
 }
 
-export async function refreshToolingDiscoveredSkills(): Promise<ToolingSkillDiscoveryResponse> {
-  const response = await fetch(apiPath("/tooling/skills/discover/refresh"), {
+export async function refreshToolingDiscoveredSkills(params?: { limit?: number; offset?: number }): Promise<ToolingSkillDiscoveryResponse> {
+  const search = new URLSearchParams();
+  if (typeof params?.limit === "number" && params.limit > 0) {
+    search.set("limit", String(params.limit));
+  }
+  if (typeof params?.offset === "number" && params.offset >= 0) {
+    search.set("offset", String(params.offset));
+  }
+  const query = search.toString();
+  const response = await fetch(apiPath(`/tooling/skills/discover/refresh${query ? `?${query}` : ""}`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: "{}",

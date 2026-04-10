@@ -56,6 +56,7 @@ function buildToolingState(): api.ToolingState {
         branch: "main",
         enabled: true,
         skill_count: 12,
+        star_count: 13600,
       },
     ],
     installed_skills: [
@@ -137,6 +138,9 @@ function buildDiscoveredSkillResponse(overrides?: Partial<api.ToolingSkillDiscov
   return {
     cached: true,
     fetched_at: "2026-04-08T10:00:00Z",
+    total: 2,
+    offset: 0,
+    limit: 30,
     items: [
       {
         id: "github:openai/codex-skills:main:skills/zulu",
@@ -377,10 +381,11 @@ describe("ToolingPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /发现技能/ }));
 
     const dialog = await screen.findByRole("dialog", { name: "发现技能" });
+    expect(vi.mocked(api.getToolingDiscoveredSkills)).toHaveBeenCalledWith({ limit: 30, offset: 0 });
     expect(within(dialog).getByPlaceholderText("搜索发现的技能")).toBeInTheDocument();
-    expect(await within(dialog).findByText("使用缓存")).toBeInTheDocument();
+    expect(await within(dialog).findByText("最新索引")).toBeInTheDocument();
     const skillTitles = (await within(dialog).findAllByTestId("tooling-discovered-skill-title")).map((node) => node.textContent);
-    expect(skillTitles).toEqual(["Alpha Skill", "Zulu Skill"]);
+    expect(skillTitles).toEqual(["Zulu Skill", "Alpha Skill"]);
 
     refreshDeferred.resolve(buildDiscoveredSkillResponse({
       cached: false,
@@ -399,6 +404,7 @@ describe("ToolingPage", () => {
 
     expect(await within(dialog).findByText("Latest alpha summary")).toBeInTheDocument();
     expect(within(dialog).getByText("已更新")).toBeInTheDocument();
+    expect(vi.mocked(api.refreshToolingDiscoveredSkills)).toHaveBeenCalledWith({ limit: 30, offset: 0 });
   });
 
   it("supports manual refresh, viewing source repo, and installing a discovered skill", async () => {
@@ -433,9 +439,7 @@ describe("ToolingPage", () => {
     const dialog = await screen.findByRole("dialog", { name: "发现技能" });
     fireEvent.click(within(dialog).getByRole("button", { name: "刷新技能索引" }));
 
-    await waitFor(() =>
-      expect(vi.mocked((api as typeof api & { refreshToolingDiscoveredSkills: typeof vi.fn }).refreshToolingDiscoveredSkills)).toHaveBeenCalled(),
-    );
+    await waitFor(() => expect(vi.mocked(api.refreshToolingDiscoveredSkills)).toHaveBeenCalledWith({ limit: 30, offset: 0 }));
 
     fireEvent.click(within(dialog).getByRole("button", { name: "查看 Alpha Skill 的仓库页面" }));
     expect(openSpy).toHaveBeenCalledWith("https://github.com/openai/codex-skills/tree/main/skills/alpha", "_blank", "noopener,noreferrer");
@@ -502,7 +506,7 @@ describe("ToolingPage", () => {
     expect(within(dialog).getByRole("button", { name: "已安装 Zulu Skill" })).toBeDisabled();
   });
 
-  it("manages repositories with a compact list, hover actions, and a tertiary add/edit modal", async () => {
+  it("manages repositories with a compact list and edit/delete actions", async () => {
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
     render(<ToolingPage mode="skills" t={(text) => text} />);
 
@@ -516,24 +520,9 @@ describe("ToolingPage", () => {
     expect(within(repoDialog).queryByLabelText("仓库平台")).not.toBeInTheDocument();
     expect(within(repoDialog).getByText("openai/codex-superpowers")).toBeInTheDocument();
     expect(within(repoDialog).getByText("12 skills")).toBeInTheDocument();
+    expect(within(repoDialog).getByText("13.6K stars")).toBeInTheDocument();
     expect(within(repoDialog).getByText("https://github.com/openai/codex-superpowers")).toBeInTheDocument();
-
-    fireEvent.click(within(repoDialog).getByRole("button", { name: "添加仓库" }));
-
-    const createDialog = (await screen.findAllByRole("dialog")).at(-1)!;
-    fireEvent.change(within(createDialog).getByLabelText("仓库链接"), { target: { value: "https://gitlab.com/gitlab-org/codex-superpowers" } });
-
-    await waitFor(() =>
-      expect(vi.mocked((api as typeof api & { resolveToolingRepo: typeof vi.fn }).resolveToolingRepo)).toHaveBeenCalledWith(
-        "https://gitlab.com/gitlab-org/codex-superpowers",
-      ),
-    );
-
-    fireEvent.mouseDown(within(createDialog).getByLabelText("分支"));
-    fireEvent.click((await screen.findAllByText("develop"))[0]);
-    fireEvent.click(within(createDialog).getByRole("button", { name: "确认添加仓库" }));
-
-    await waitFor(() => expect(api.addToolingRepo).toHaveBeenCalledWith("gitlab", "gitlab-org", "codex-superpowers", "develop"));
+    expect(within(repoDialog).queryByRole("button", { name: "添加仓库" })).not.toBeInTheDocument();
 
     fireEvent.click(within(repoDialog).getByRole("button", { name: "查看仓库 openai/codex-superpowers" }));
     expect(openSpy).toHaveBeenCalledWith("https://github.com/openai/codex-superpowers", "_blank", "noopener,noreferrer");
@@ -562,6 +551,51 @@ describe("ToolingPage", () => {
 
     fireEvent.click(within(repoDialog).getByRole("button", { name: "删除仓库 openai/codex-superpowers" }));
     await waitFor(() => expect(api.removeToolingRepo).toHaveBeenCalledWith("github", "openai", "codex-superpowers"));
+  });
+
+  it("supports discovery pagination query", async () => {
+    vi.mocked(api.getToolingDiscoveredSkills)
+      .mockResolvedValueOnce(
+        buildDiscoveredSkillResponse({
+          total: 35,
+          offset: 0,
+          limit: 30,
+        }),
+      )
+      .mockResolvedValueOnce(
+        buildDiscoveredSkillResponse({
+          total: 35,
+          offset: 30,
+          limit: 30,
+          items: [
+            {
+              ...buildDiscoveredSkillResponse().items[0],
+              id: "github:openai/codex-skills:main:skills/page-2",
+              name: "Page Two Skill",
+            },
+          ],
+        }),
+      );
+
+    vi.mocked(api.refreshToolingDiscoveredSkills).mockResolvedValue(
+      buildDiscoveredSkillResponse({
+        cached: false,
+        total: 35,
+        offset: 0,
+        limit: 30,
+      }),
+    );
+
+    render(<ToolingPage mode="skills" t={(text) => text} />);
+    await screen.findByText("Skill 技能");
+    fireEvent.click(screen.getByRole("button", { name: /发现技能/ }));
+    const dialog = await screen.findByRole("dialog", { name: "发现技能" });
+    await within(dialog).findByText("Alpha Skill");
+
+    fireEvent.click(within(dialog).getByRole("listitem", { name: "2" }));
+    await within(dialog).findByText("Page Two Skill");
+
+    expect(vi.mocked(api.getToolingDiscoveredSkills)).toHaveBeenLastCalledWith({ limit: 30, offset: 30 });
   });
 
   it("renders the minimal mcp management layout and toggles codex sync", async () => {

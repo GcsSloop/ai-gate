@@ -6,10 +6,11 @@ import {
   HolderOutlined,
   LinkOutlined,
   PlusOutlined,
+  RightOutlined,
   ReloadOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
-import { Button, Card, Checkbox, Empty, Input, Modal, Select, Space, Spin, Typography, message } from "antd";
+import { Button, Card, Checkbox, Empty, Input, Modal, Pagination, Select, Space, Spin, Typography, message } from "antd";
 import {
   DndContext,
   DragOverlay,
@@ -26,7 +27,6 @@ import { CSS } from "@dnd-kit/utilities";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import {
-  addToolingRepo,
   applyToolingMcpServer,
   deleteToolingMcpServer,
   deleteToolingSkill,
@@ -69,8 +69,6 @@ type ManagedClientStatus = ManagedClientDescriptor & {
   enabled: boolean;
 };
 
-type RepoEditorMode = "create" | "edit";
-
 type RepoEditorForm = {
   input: string;
   platform: "github" | "gitlab";
@@ -79,6 +77,8 @@ type RepoEditorForm = {
   branch: string;
   branchOptions: string[];
 };
+
+const DISCOVERY_PAGE_SIZE = 30;
 
 const managedClients: ManagedClientDescriptor[] = [
   {
@@ -99,11 +99,11 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [discoveryRefreshing, setDiscoveryRefreshing] = useState(false);
   const [discoveryStatus, setDiscoveryStatus] = useState("");
+  const [discoveryPage, setDiscoveryPage] = useState(1);
   const [discoveryBusyId, setDiscoveryBusyId] = useState<string | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [repoBusyKey, setRepoBusyKey] = useState<string | null>(null);
   const [repoEditorOpen, setRepoEditorOpen] = useState(false);
-  const [repoEditorMode, setRepoEditorMode] = useState<RepoEditorMode>("create");
   const [repoEditing, setRepoEditing] = useState<ToolingSkillRepo | null>(null);
   const [repoDragKey, setRepoDragKey] = useState<string | null>(null);
   const [repoOrdering, setRepoOrdering] = useState(false);
@@ -145,14 +145,15 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       return;
     }
     let active = true;
+    const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
     setDiscoveryLoading(true);
-    void getToolingDiscoveredSkills()
+    void getToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset })
       .then((response) => {
         if (!active) {
           return;
         }
-        setDiscoveryResponse(sortDiscoveryResponse(response));
-        setDiscoveryStatus(response.cached ? t("使用缓存") : t("最新索引"));
+        setDiscoveryResponse(response);
+        setDiscoveryStatus(t("最新索引"));
       })
       .catch((error) => {
         if (!active) {
@@ -165,14 +166,24 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
           setDiscoveryLoading(false);
         }
       });
+    return () => {
+      active = false;
+    };
+  }, [skillDiscoverOpen, mode, discoveryPage]);
 
+  useEffect(() => {
+    if (!skillDiscoverOpen || mode !== "skills") {
+      return;
+    }
+    let active = true;
+    const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
     setDiscoveryRefreshing(true);
-    void refreshToolingDiscoveredSkills()
+    void refreshToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset })
       .then((response) => {
         if (!active) {
           return;
         }
-        setDiscoveryResponse(sortDiscoveryResponse(response));
+        setDiscoveryResponse(response);
         setDiscoveryStatus(t("已更新"));
         void reload({ background: true });
       })
@@ -180,16 +191,13 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
         if (!active) {
           return;
         }
-        if (!discoveryResponse) {
-          void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
-        }
+        void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
       })
       .finally(() => {
         if (active) {
           setDiscoveryRefreshing(false);
         }
       });
-
     return () => {
       active = false;
     };
@@ -202,23 +210,9 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   const mcpCount = state?.mcp_servers.length ?? 0;
   const skills = useMemo(() => state?.installed_skills ?? [], [state?.installed_skills]);
   const skillRepos = useMemo(() => state?.skill_repos ?? [], [state?.skill_repos]);
-  const repoRanks = useMemo(() => {
-    const index = new Map<string, number>();
-    skillRepos.forEach((repo, order) => {
-      index.set(repoRecordKey(repo.platform ?? "github", repo.owner, repo.name), order);
-    });
-    return index;
-  }, [skillRepos]);
   const mcpServers = useMemo(() => state?.mcp_servers ?? [], [state?.mcp_servers]);
   const discoveredSkills = useMemo(() => {
-    const items = [...(discoveryResponse?.items ?? [])].sort((a, b) => {
-      const leftRank = repoRanks.get(repoRecordKey(a.platform, a.repo_owner, a.repo_name)) ?? Number.MAX_SAFE_INTEGER;
-      const rightRank = repoRanks.get(repoRecordKey(b.platform, b.repo_owner, b.repo_name)) ?? Number.MAX_SAFE_INTEGER;
-      if (leftRank !== rightRank) {
-        return leftRank - rightRank;
-      }
-      return a.name.localeCompare(b.name);
-    });
+    const items = discoveryResponse?.items ?? [];
     const query = discoveryQuery.trim().toLowerCase();
     if (!query) {
       return items;
@@ -226,7 +220,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     return items.filter((item) =>
       [item.name, item.description ?? "", item.repo_owner, item.repo_name, item.source_path].join(" ").toLowerCase().includes(query),
     );
-  }, [discoveryQuery, discoveryResponse?.items, repoRanks]);
+  }, [discoveryQuery, discoveryResponse?.items]);
 
   async function handleImportSkills() {
     setImportBusy(true);
@@ -350,8 +344,9 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   async function handleDiscoveryRefresh() {
     setDiscoveryLoading(true);
     try {
-      const response = await refreshToolingDiscoveredSkills();
-      setDiscoveryResponse(sortDiscoveryResponse(response));
+      const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
+      const response = await refreshToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset });
+      setDiscoveryResponse(response);
       setDiscoveryStatus(t("已更新"));
       await reload({ background: true });
     } catch (error) {
@@ -370,9 +365,10 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       setDiscoveryStatus(skill.update_available ? t("已更新") : t("已安装"));
       void messageApi.success(nextAction);
       void reload({ background: true });
-      void refreshToolingDiscoveredSkills()
+      const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
+      void refreshToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset })
         .then((response) => {
-          setDiscoveryResponse(sortDiscoveryResponse(response));
+          setDiscoveryResponse(response);
           setDiscoveryStatus(t("已更新"));
         })
         .catch((error) => {
@@ -422,27 +418,8 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     }
   }
 
-  async function handleRepoAdd() {
-    const key = repoRecordKey(repoForm.platform, repoForm.owner, repoForm.name);
-    setRepoBusyKey(key);
-    try {
-      await addToolingRepo(repoForm.platform, repoForm.owner, repoForm.name, repoForm.branch);
-      void messageApi.success(t("仓库已添加"));
-      resetRepoForm();
-      await reload({ background: true });
-      const response = await refreshToolingDiscoveredSkills();
-      setDiscoveryResponse(sortDiscoveryResponse(response));
-      setDiscoveryStatus(t("已更新"));
-    } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : t("添加失败"));
-    } finally {
-      setRepoBusyKey(null);
-    }
-  }
-
   async function handleRepoSave() {
-    if (repoEditorMode === "create" || !repoEditing) {
-      await handleRepoAdd();
+    if (!repoEditing) {
       return;
     }
     const key = repoRecordKey(repoEditing.platform ?? "github", repoEditing.owner, repoEditing.name);
@@ -457,23 +434,15 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       void messageApi.success(t("仓库已更新"));
       resetRepoForm();
       await reload({ background: true });
-      const response = await refreshToolingDiscoveredSkills();
-      setDiscoveryResponse(sortDiscoveryResponse(response));
+      const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
+      const response = await refreshToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset });
+      setDiscoveryResponse(response);
       setDiscoveryStatus(t("已更新"));
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("更新失败"));
     } finally {
       setRepoBusyKey(null);
     }
-  }
-
-  function openRepoCreate() {
-    setRepoEditorMode("create");
-    setRepoEditing(null);
-    setRepoResolveError("");
-    setRepoResolving(false);
-    setRepoForm(createEmptyRepoForm());
-    setRepoEditorOpen(true);
   }
 
   function openRepoEdit(repo: ToolingSkillRepo) {
@@ -487,7 +456,6 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       branchOptions: [repo.branch],
     };
     repoResolveRequestRef.current += 1;
-    setRepoEditorMode("edit");
     setRepoEditing(repo);
     setRepoResolveError("");
     setRepoResolving(false);
@@ -499,7 +467,6 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   function resetRepoForm() {
     repoResolveRequestRef.current += 1;
     setRepoEditing(null);
-    setRepoEditorMode("create");
     setRepoEditorOpen(false);
     setRepoResolving(false);
     setRepoResolveError("");
@@ -513,8 +480,9 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       await removeToolingRepo(repo.platform ?? "github", repo.owner, repo.name);
       void messageApi.success(t("仓库已删除"));
       await reload({ background: true });
-      const response = await refreshToolingDiscoveredSkills();
-      setDiscoveryResponse(sortDiscoveryResponse(response));
+      const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
+      const response = await refreshToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset });
+      setDiscoveryResponse(response);
       setDiscoveryStatus(t("已更新"));
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("删除失败"));
@@ -611,7 +579,11 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
                 type="text"
                 className="tooling-action-button"
                 icon={<SearchOutlined />}
-                onClick={() => setSkillDiscoverOpen(true)}
+                onClick={() => {
+                  setDiscoveryPage(1);
+                  setDiscoveryQuery("");
+                  setSkillDiscoverOpen(true);
+                }}
               >
                 {t("发现技能")}
               </Button>
@@ -688,7 +660,8 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
                 {t("刷新")}
               </Button>
               <Button aria-label={t("仓库管理")} onClick={() => setRepoManagerOpen(true)}>
-                {t("仓库管理")}
+                {t("仓库")}
+                <RightOutlined />
               </Button>
             </Space>
           </div>
@@ -713,6 +686,15 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
               <Empty description={t("暂无发现技能")} />
             )}
           </div>
+          <div className="tooling-discovery-pagination">
+            <Pagination
+              current={discoveryPage}
+              pageSize={DISCOVERY_PAGE_SIZE}
+              total={discoveryResponse?.total ?? 0}
+              showSizeChanger={false}
+              onChange={(nextPage) => setDiscoveryPage(nextPage)}
+            />
+          </div>
         </div>
       </Modal>
 
@@ -732,9 +714,6 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
         <div className="tooling-repo-manager-shell">
           <div className="tooling-repo-manager-toolbar">
             <Typography.Text type="secondary">{t("仅管理公开 GitHub / GitLab 仓库")}</Typography.Text>
-            <Button type="primary" icon={<PlusOutlined />} aria-label={t("添加仓库")} onClick={openRepoCreate}>
-              {t("添加仓库")}
-            </Button>
           </div>
 
           <div className="tooling-discovery-list tooling-repo-manager-list">
@@ -774,7 +753,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
 
       <Modal
         open={repoEditorOpen}
-        title={repoEditorMode === "edit" ? t("编辑仓库") : t("添加仓库")}
+        title={t("编辑仓库")}
         onCancel={() => resetRepoForm()}
         footer={null}
         destroyOnHidden
@@ -787,7 +766,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
               aria-label={t("仓库链接")}
               className="tooling-repo-editor-input"
               value={repoForm.input}
-              disabled={repoEditorMode === "edit"}
+              disabled
               onChange={(event) => {
                 const nextInput = event.target.value;
                 setRepoForm((current) => ({ ...current, input: nextInput }));
@@ -822,7 +801,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
               disabled={repoResolving || !repoForm.owner || !repoForm.name || !repoForm.branch}
               onClick={() => void handleRepoSave()}
             >
-              {repoEditorMode === "edit" ? t("保存仓库") : t("确认添加仓库")}
+              {t("保存仓库")}
             </Button>
             <Button onClick={() => resetRepoForm()}>{t("取消")}</Button>
           </Space>
@@ -830,13 +809,6 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       </Modal>
     </div>
   );
-}
-
-function sortDiscoveryResponse(response: ToolingSkillDiscoveryResponse): ToolingSkillDiscoveryResponse {
-  return {
-    ...response,
-    items: [...response.items].sort((left, right) => left.name.localeCompare(right.name)),
-  };
 }
 
 function markDiscoveredSkillInstalled(
@@ -1048,6 +1020,9 @@ function RepoManageRow({
           <div className="tooling-repo-title-row">
             <div className="tooling-repo-title">{repoName}</div>
             <span className="tooling-repo-count-tag">{`${repo.skill_count} skills`}</span>
+            {typeof repo.star_count === "number" && repo.star_count > 0 ? (
+              <span className="tooling-repo-count-tag">{`${formatRepoStars(repo.star_count)} stars`}</span>
+            ) : null}
           </div>
           <button type="button" className="tooling-repo-link" aria-label={`查看 ${repoName}`} title={repoUrl} onClick={onView}>
             {repoUrl}
@@ -1074,6 +1049,13 @@ function RepoManageRow({
       </div>
     </div>
   );
+}
+
+function formatRepoStars(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(Math.max(0, value));
 }
 
 function SortableRepoManageRow({
