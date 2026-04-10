@@ -7,51 +7,116 @@
 </p>
 
 <p align="center">
-  <strong>A local-first Codex gateway for account switching, thin routing, and desktop control.</strong>
+  <strong>A local-first entry layer for Codex workflows: unify accounts, switch without breaking the session, and stop hand-editing config.</strong>
 </p>
 
 <p align="center">
-  <img alt="Go" src="https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white">
-  <img alt="React" src="https://img.shields.io/badge/React-19-20232A?logo=react&logoColor=61DAFB">
-  <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2.x-24C8DB?logo=tauri&logoColor=white">
-  <img alt="Mode" src="https://img.shields.io/badge/Mode-Local--Only-black">
-  <img alt="API" src="https://img.shields.io/badge/API-Responses-4B32C3">
+  <img alt="Stars" src="https://img.shields.io/github/stars/GcsSloop/ai-gate?style=flat-square&label=stars">
+  <img alt="Forks" src="https://img.shields.io/github/forks/GcsSloop/ai-gate?style=flat-square&label=forks">
+  <img alt="License" src="https://img.shields.io/github/license/GcsSloop/ai-gate?style=flat-square">
+  <img alt="Release" src="https://img.shields.io/github/v/release/GcsSloop/ai-gate?style=flat-square&label=release">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-111827?style=flat-square">
+  <img alt="Status" src="https://img.shields.io/github/actions/workflow/status/GcsSloop/ai-gate/release.yml?branch=main&style=flat-square&label=status">
 </p>
 
-AI Gate is a local gateway and desktop shell for Codex-style workflows. It focuses on a narrow, explicit contract:
+AI Gate is not another model and not a hosted proxy service. It is a lightweight local gateway and desktop shell that sits above AI tooling and fixes the real operational pain: managing multiple official and third-party accounts, surviving quota exhaustion without stopping the conversation, and bringing proxy, Skill, MCP, statistics, and backups into one local entry point while account data and keys stay on your machine.
 
-- switch between official and compatible accounts locally
-- route requests to native upstream `/responses` APIs
-- preserve upstream response semantics instead of re-implementing them
-- provide lightweight local observability and desktop controls
+## Why AI Gate Exists
 
-This repository is intentionally **not** a cloud deployment stack and **not** a protocol emulation layer.
+Once people start using Codex heavily, the main problem is rarely the model itself. It becomes workflow friction:
 
-## Why This Project Exists
+- one official account is not enough, but multiple accounts are tedious to manage
+- third-party APIs help with budget, but mixing them with official accounts quickly turns config into a mess
+- long-running conversations break when the active account runs out of quota or becomes unstable
+- Skill, MCP, statistics, proxy control, and restore flows live in different places
+- users want less setup work without giving their keys to a remote relay service
 
-Codex users often need a stable local entry point for:
+AI Gate is a local-first answer to that layer of the problem.
 
-- switching between multiple authenticated accounts
-- routing requests without changing client behavior
-- observing usage and health locally
-- packaging the experience into a desktop app for non-terminal workflows
+## Core Highlights
 
-AI Gate solves that by staying thin. It does not synthesize response state, fake retrieval endpoints, or reconstruct multi-turn semantics locally.
+### 1. Unified account routing
 
-## Product Advantages
+- Manage multiple official accounts and third-party accounts together
+- Keep one stable local endpoint instead of repeatedly editing client config
+- Import, switch, and inspect account state from the desktop shell
 
-- **Low-friction multi-account switching**: keep one local entry point instead of repeatedly editing Codex client config.
-- **Automatic failover**: when the active account runs out of quota, errors out, or becomes temporarily unavailable, AI Gate can switch to the next available account with minimal interruption.
-- **Local-first control**: account state, proxy control, audit data, and backups stay on the local machine, which keeps the operating boundary clear.
+### 2. Session-safe failover
 
-## Core Principles
+- When the active account runs out of quota or becomes temporarily unavailable, AI Gate can move to the next available account
+- The goal is to keep the conversation moving without forcing a manual restart
+- Better suited for long tasks, sustained debugging, and heavy coding sessions
 
-- **Local only**: backend binds to loopback only and the desktop bundle starts the sidecar locally.
-- **Thin gateway**: upstream owns `response_id`, `previous_response_id`, status codes, and SSE lifecycle.
-- **No protocol cosplay**: unsupported semantics are removed instead of being faked.
-- **Operational clarity**: account switching, audit data, and monitoring stay visible locally.
+### 3. Local-first security
 
-## Architecture
+- The backend listens on loopback only and the desktop app launches a local sidecar only
+- Account data, keys, config patches, and backup snapshots stay on your machine
+- The code is open for inspection instead of asking users to trust a black box
+
+### 4. Skill and MCP management
+
+- Skill and MCP workflows are brought under the same desktop entry point
+- Easier to connect local tools, knowledge bases, and custom workflows to Codex
+- Better fit for users who rely on Obsidian, scripts, or private tool services
+
+### 5. Observability without extra friction
+
+- Includes proxy control, statistics, backup and restore, and tray operations
+- Keeps the engineering surface visible while staying usable for non-terminal users
+- The goal is not feature sprawl. It is a setup you can keep using every day
+
+## Who It Is For
+
+- People running multiple official accounts
+- People mixing official accounts with third-party APIs
+- People who do not want to keep editing `~/.codex/config.toml`
+- People who want Skill, MCP, statistics, and proxy control in one desktop app
+- People who care about local security boundaries and auditable code
+
+## Product Tour
+
+### Main dashboard
+
+![AI Gate main dashboard](../assets/screenshot-main.png)
+
+### Proxy settings
+
+![AI Gate proxy settings](../assets/screenshot-proxy.png)
+
+### Statistics page
+
+![AI Gate statistics page](../assets/screenshot-statistics.png)
+
+### MCP management
+
+![AI Gate MCP management](../assets/screenshot-mcp.png)
+
+### Skill management
+
+![AI Gate Skill management](../assets/screenshot-skill.png)
+
+## Quick Start
+
+### End users
+
+1. Download the desktop app from [the latest release](https://github.com/GcsSloop/ai-gate/releases/latest)
+2. Import an official account or add a third-party API account
+3. Enable the proxy and start using Codex
+4. If the current account is exhausted, AI Gate will try to continue on the next available account
+
+### Developers
+
+```bash
+cp .env.example .env
+make backend
+make frontend
+npm --prefix desktop install
+npm --prefix desktop run dev
+```
+
+The frontend dev server proxies the local API surface to `http://127.0.0.1:6789`.
+
+## Architecture And Safety Boundary
 
 ```mermaid
 flowchart LR
@@ -62,7 +127,7 @@ flowchart LR
     C --> G["Router database<br/>audit + monitoring"]
 ```
 
-### Request Flow
+### Request flow
 
 ```mermaid
 sequenceDiagram
@@ -85,105 +150,19 @@ sequenceDiagram
     Router->>Desktop: expose local status, audit, monitoring
 ```
 
-### Component Responsibilities
+### Boundary rules
 
-- **Codex client**: keeps the normal client workflow and points to one stable local gateway entry.
-- **AI Gate desktop**: manages accounts, proxy state, backups, restore flows, and local operator controls.
-- **AI Gate router**: resolves the active account, forwards native `/responses` traffic, and keeps local audit and monitoring records.
-- **Official / compatible upstreams**: remain authoritative for `response_id`, `previous_response_id`, tool-call semantics, and streaming lifecycle.
-
-### Data And Safety Boundary
-
-- AI Gate stays local-first: the router binds to loopback and the desktop app launches only a local sidecar.
-- Desktop-managed state and backup snapshots live under `~/.aigate/data`.
-- Codex client configuration remains in `~/.codex/config.toml` and `~/.codex/auth.json`; AI Gate only patches these files when proxy or restore operations require it.
-- The router database path is still configurable through `CODEX_ROUTER_DATABASE_PATH`, so audit and monitoring storage can stay local without being hard-coded into one deployment shape.
-- Unsupported upstream behavior is removed instead of emulated, which keeps request semantics closer to official Codex behavior.
-
-## Screenshots
-
-### Main Dashboard
-
-![AI Gate main dashboard](../assets/screenshot-main.png)
-
-### Proxy Settings
-
-![AI Gate proxy settings](../assets/screenshot-proxy.png)
-
-### Statistics Page
-
-![AI Gate statistics page](../assets/screenshot-statistics.png)
-
-## What It Does
-
-- Routes `POST /responses` and `GET /models` through a local gateway endpoint.
-- Supports official account auth flows and token refresh.
-- Supports third-party providers only when they natively implement `/responses`.
-- Exposes a React frontend and Tauri desktop shell for local control.
-- Stores local audit and monitoring data for observability.
-
-## What It Explicitly Does Not Do
-
-- Fall back from `/responses` to `/chat/completions`
-- Generate local `response_id`
-- Rebuild `previous_response_id` chains from local history
-- Emulate response retrieval endpoints
-- Act as a public remote gateway or hosted SaaS deployment target
+- **Local only**: the backend binds to loopback and the desktop shell starts a local sidecar only
+- **Thin gateway**: upstream remains authoritative for `response_id`, `previous_response_id`, status codes, and the SSE lifecycle
+- **No protocol cosplay**: unsupported semantics are removed instead of being faked
+- **Local-first state**: desktop-managed state and backup snapshots live under `~/.aigate/data`
+- **Recoverable patches**: AI Gate only edits `~/.codex/config.toml` and `~/.codex/auth.json` when proxy or restore flows require it
 
 For the precise boundary, see [thin-gateway-mode.md](thin-gateway-mode.md).
 
-## Quick Start
+## How Codex, Skill, And MCP Fit Together
 
-### For End Users
-
-- **Download the desktop app**: get the latest client from [the latest release](https://github.com/GcsSloop/ai-gate/releases/latest).
-- **Official account users**: launch the app, import the current account, enable the proxy, and start using Codex.
-- **Third-party API users**: launch the app, add an API account, choose the model you want, and enable the proxy when needed.
-- **Low-friction setup**: the desktop app is the default path, so most users should not need to edit `~/.codex/config.toml` manually.
-
-### For Developers
-
-### 1. Prepare environment
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` and replace `CODEX_ROUTER_ENCRYPTION_KEY` with a real random secret before starting the backend.
-
-Current local defaults:
-
-```env
-CODEX_ROUTER_LISTEN_ADDR=127.0.0.1:6789
-CODEX_ROUTER_DATABASE_PATH=data/codex-router.sqlite
-CODEX_ROUTER_SCHEDULER_INTERVAL=5m
-CODEX_ROUTER_ENCRYPTION_KEY=change-this-to-a-random-32-plus-char-secret
-```
-
-### 2. Start backend
-
-```bash
-make backend
-```
-
-### 3. Start frontend
-
-```bash
-make frontend
-```
-
-The frontend dev server proxies the local API surface to `http://127.0.0.1:6789`.
-
-### 4. Start desktop shell
-
-```bash
-npm --prefix desktop install
-npm --prefix desktop run dev
-```
-
-## Use With Codex CLI
-
-AI Gate is intended to sit behind a standard Codex client configuration while preserving upstream Responses semantics.
+### Codex CLI
 
 Recommended local config:
 
@@ -202,50 +181,59 @@ Gateway contract:
 - `POST /ai-router/api/v1/responses`
 - `GET /ai-router/api/v1/models`
 
-Important notes:
+### Skill workflows
 
-- Official accounts are routed to `https://chatgpt.com/backend-api/codex`.
-- Third-party accounts must already support `/responses`.
-- Upstream `response_id` is authoritative.
-- AI Gate does not fake retrieval or continuation semantics that require local response reconstruction.
+- AI Gate does not replace Skills. It gives them a steadier local entry point
+- You can keep using repository Skills or custom Skills for migration, local scripting, or knowledge workflows
+- The migration Skill lives at [skills/migrating-codex-history/SKILL.md](../skills/migrating-codex-history/SKILL.md)
 
-Proxy toggle behavior:
+### MCP workflows
 
-- Enabling the proxy for the default Codex provider writes a temporary `[model_providers.aigate]` block and switches `model_provider` to `aigate`.
-- Disabling the proxy for the default Codex provider removes the temporary `aigate` provider block and deletes the top-level `model_provider` key so Codex falls back to its default provider behavior.
-- If the proxy patched an existing third-party provider, disabling restores that provider's original name and `base_url`, and leaves unrelated config edits untouched.
+- MCP configuration can be managed alongside accounts and proxy state in the desktop shell
+- This is a better fit for local knowledge bases, script services, and private tool services
+- Users who rely on MCP heavily usually benefit from one place to manage those connections
 
-## Session Migration Skill
+## What It Does
 
-Get the migration skill here:
+- Routes `POST /responses` and `GET /models` through a local gateway endpoint
+- Supports official account auth flows and token refresh
+- Supports third-party providers only when they natively implement `/responses`
+- Exposes a React frontend and Tauri desktop shell for local control
+- Stores local audit and monitoring data for observability
+- Provides entry points for Skill, MCP, statistics, proxy control, and backup workflows
 
-- [GitHub skill link](https://github.com/GcsSloop/ai-gate/blob/main/skills/migrating-codex-history/SKILL.md)
+## What It Explicitly Does Not Do
 
-Use it like this:
-
-1. Open the link and copy the full skill text into Codex.
-2. Tell Codex: `Use this skill and migrate my ~/.codex history from openai to aigate. Run a dry-run first, show me the summary, then wait for confirmation before the real migration.` The skill will use the local script if this repository is present, otherwise it will fetch the script from the `main` branch raw URL.
-3. On Windows, the skill tells Codex to translate the shell script behavior into equivalent PowerShell or native Windows steps before execution.
-
-The repository source of truth is [skills/migrating-codex-history/SKILL.md](../skills/migrating-codex-history/SKILL.md).
+- Fall back from `/responses` to `/chat/completions`
+- Generate local `response_id`
+- Rebuild `previous_response_id` chains from local history
+- Emulate response retrieval endpoints
+- Act as a public remote gateway or hosted SaaS deployment target
 
 ## Local Development
 
-### Backend
+### Prepare environment
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and replace `CODEX_ROUTER_ENCRYPTION_KEY` with a real random secret before starting the backend.
+
+Current local defaults:
+
+```env
+CODEX_ROUTER_LISTEN_ADDR=127.0.0.1:6789
+CODEX_ROUTER_DATABASE_PATH=data/codex-router.sqlite
+CODEX_ROUTER_SCHEDULER_INTERVAL=5m
+CODEX_ROUTER_ENCRYPTION_KEY=change-this-to-a-random-32-plus-char-secret
+```
+
+### Common commands
 
 ```bash
 make backend
-```
-
-### Frontend
-
-```bash
 make frontend
-```
-
-### Tests
-
-```bash
 make test
 ```
 
@@ -277,50 +265,8 @@ bash scripts/desktop/notarize_macos.sh
 bash scripts/desktop/collect_release_assets.sh
 ```
 
-Artifacts are collected into `release-assets/`:
+Release assets are collected in `release-assets/`:
 
 - `aigate-<tag>-macOS.dmg`
 - `aigate-<tag>-macOS.zip`
 - `aigate-<tag>-darwin-universal.app.tar.gz`
-- `aigate-<tag>-darwin-universal.app.tar.gz.sig`
-- `aigate-<tag>-<platform>-SHA256SUMS.txt`
-
-GitHub release updater also requires a signing key:
-
-- `TAURI_SIGNING_PRIVATE_KEY`
-- optional `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-
-Tag releases upload the manual installers above plus:
-
-- `aigate-<tag>-windows.msi.sig`
-- `latest.json`
-
-`latest.json` is generated during the release workflow and consumed by the desktop updater from GitHub Releases.
-
-GitLab CI supports macOS packaging on tags and can optionally sign/notarize when the required Apple credentials are present.
-
-## Repository Layout
-
-```text
-backend/              Go router backend
-frontend/             React + Vite web UI
-desktop/              Tauri desktop shell
-docs/                 operational notes and design docs
-scripts/              packaging, migration, and smoke scripts
-references/           upstream source references used for reverse engineering
-```
-
-## Documentation
-
-- [thin-gateway-mode.md](thin-gateway-mode.md) - exact protocol boundary for the thin gateway
-- [testing.md](testing.md) - backend, frontend, and Codex CLI verification flow
-
-## Local-Only Policy
-
-AI Gate is local-only by design:
-
-- backend listen address is restricted to loopback (`127.0.0.1` / `localhost` / `::1`)
-- desktop bundle starts the Go sidecar locally
-- this repository does not ship cloud/server deployment artifacts
-
-If you need a hosted gateway, that is a different product shape and should be designed explicitly rather than inferred from this codebase.
