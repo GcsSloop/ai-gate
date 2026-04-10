@@ -476,6 +476,14 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   color: var(--text-primary);
 }
 
+.tooling-item-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .tooling-item-title.is-account {
   font-size: 14px;
   line-height: 1.4;
@@ -998,6 +1006,11 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
 }
 
+.tooling-repo-row.is-dragging {
+  opacity: 0.72;
+  border-color: rgba(62, 91, 232, 0.36);
+}
+
 .tooling-repo-main {
   min-width: 0;
   flex: 1;
@@ -1038,6 +1051,14 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   gap: 8px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.tooling-repo-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a39b;
+  cursor: grab;
 }
 
 .tooling-repo-actions {
