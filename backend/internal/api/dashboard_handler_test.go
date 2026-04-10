@@ -134,6 +134,11 @@ func TestDashboardHandlerModelDistribution(t *testing.T) {
 func TestDashboardHandlerBuildsCalendarAlignedFilter(t *testing.T) {
 	t.Setenv("TZ", "Asia/Shanghai")
 	now := time.Date(2026, 3, 17, 13, 45, 0, 0, time.FixedZone("CST", 8*3600))
+	previousLocal := time.Local
+	time.Local = now.Location()
+	defer func() {
+		time.Local = previousLocal
+	}()
 
 	stub := &dashboardUsageStub{
 		summary: usage.EventSummary{RequestCount: 1},
