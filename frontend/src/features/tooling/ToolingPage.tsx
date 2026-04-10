@@ -6,11 +6,10 @@ import {
   HolderOutlined,
   LinkOutlined,
   PlusOutlined,
-  RightOutlined,
   ReloadOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
-import { Button, Card, Checkbox, Empty, Input, Modal, Pagination, Select, Space, Spin, Typography, message } from "antd";
+import { Button, Card, Checkbox, Empty, Input, Modal, Select, Space, Spin, Typography, message } from "antd";
 import {
   DndContext,
   DragOverlay,
@@ -37,7 +36,6 @@ import {
   installToolingDiscoveredSkill,
   removeToolingRepo,
   resolveToolingRepo,
-  refreshToolingDiscoveredSkills,
   reorderToolingRepos,
   updateToolingSkill,
   updateToolingRepo,
@@ -46,7 +44,6 @@ import {
   type ToolingResolvedRepo,
   type ToolingSkillRecord,
   type ToolingSkillRepo,
-  type ToolingSkillDiscoveryResponse,
   type ToolingState,
 } from "../../lib/api";
 import sourceOpenAIIcon from "../../assets/providers/openai.png";
@@ -78,7 +75,9 @@ type RepoEditorForm = {
   branchOptions: string[];
 };
 
-const DISCOVERY_PAGE_SIZE = 30;
+const DISCOVERY_PAGE_SIZE = 80;
+const DISCOVERY_ROW_HEIGHT = 104;
+const DISCOVERY_OVERSCAN = 6;
 
 const managedClients: ManagedClientDescriptor[] = [
   {
@@ -94,12 +93,18 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   const [state, setState] = useState<ToolingState | null>(null);
   const [skillDiscoverOpen, setSkillDiscoverOpen] = useState(false);
   const [repoManagerOpen, setRepoManagerOpen] = useState(false);
+  const [discoveryQueryInput, setDiscoveryQueryInput] = useState("");
   const [discoveryQuery, setDiscoveryQuery] = useState("");
-  const [discoveryResponse, setDiscoveryResponse] = useState<ToolingSkillDiscoveryResponse | null>(null);
+  const [discoveryItems, setDiscoveryItems] = useState<ToolingDiscoveredSkill[]>([]);
+  const [discoveryTotal, setDiscoveryTotal] = useState(0);
+  const [discoveryIndexedTotal, setDiscoveryIndexedTotal] = useState(0);
+  const [discoveryOffset, setDiscoveryOffset] = useState(0);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
-  const [discoveryRefreshing, setDiscoveryRefreshing] = useState(false);
+  const [discoveryLoadingMore, setDiscoveryLoadingMore] = useState(false);
+  const [discoveryHasMore, setDiscoveryHasMore] = useState(true);
   const [discoveryStatus, setDiscoveryStatus] = useState("");
-  const [discoveryPage, setDiscoveryPage] = useState(1);
+  const [discoveryScrollTop, setDiscoveryScrollTop] = useState(0);
+  const [discoveryViewportHeight, setDiscoveryViewportHeight] = useState(520);
   const [discoveryBusyId, setDiscoveryBusyId] = useState<string | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [repoBusyKey, setRepoBusyKey] = useState<string | null>(null);
@@ -112,6 +117,8 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   const [repoResolveError, setRepoResolveError] = useState("");
   const repoResolveRequestRef = useRef(0);
   const repoDragSnapshotRef = useRef<ToolingSkillRepo[] | null>(null);
+  const discoveryRequestRef = useRef(0);
+  const discoveryListRef = useRef<HTMLDivElement | null>(null);
   const [skillBusyName, setSkillBusyName] = useState<string | null>(null);
   const [mcpBusyId, setMcpBusyId] = useState<string | null>(null);
   const repoDragSensors = useSensors(
@@ -140,68 +147,92 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     void reload();
   }, []);
 
-  useEffect(() => {
-    if (!skillDiscoverOpen || mode !== "skills") {
-      return;
+  async function loadDiscoveredSkillsPage(params?: { reset?: boolean; query?: string; forceStatus?: string }) {
+    const reset = params?.reset ?? false;
+    const query = params?.query ?? discoveryQuery;
+    const requestId = discoveryRequestRef.current + 1;
+    discoveryRequestRef.current = requestId;
+    if (reset) {
+      setDiscoveryLoading(true);
+      setDiscoveryLoadingMore(false);
+      setDiscoveryScrollTop(0);
+      if (discoveryListRef.current) {
+        discoveryListRef.current.scrollTop = 0;
+      }
+    } else {
+      setDiscoveryLoadingMore(true);
     }
-    let active = true;
-    const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
-    setDiscoveryLoading(true);
-    void getToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset })
-      .then((response) => {
-        if (!active) {
-          return;
-        }
-        setDiscoveryResponse(response);
-        setDiscoveryStatus(t("最新索引"));
-      })
-      .catch((error) => {
-        if (!active) {
-          return;
-        }
-        void messageApi.error(error instanceof Error ? error.message : t("加载发现技能失败"));
-      })
-      .finally(() => {
-        if (active) {
-          setDiscoveryLoading(false);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [skillDiscoverOpen, mode, discoveryPage]);
+    try {
+      const nextOffset = reset ? 0 : discoveryOffset;
+      const response = await getToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset: nextOffset, query });
+      if (discoveryRequestRef.current !== requestId) {
+        return;
+      }
+      const nextItems = reset ? response.items : [...discoveryItems, ...response.items];
+      setDiscoveryItems(nextItems);
+      setDiscoveryTotal(response.total);
+      setDiscoveryIndexedTotal(typeof response.indexed_total === "number" ? response.indexed_total : response.total);
+      setDiscoveryOffset(nextItems.length);
+      setDiscoveryHasMore(nextItems.length < response.total);
+      setDiscoveryStatus(params?.forceStatus ?? t("最新索引"));
+    } catch (error) {
+      if (discoveryRequestRef.current !== requestId) {
+        return;
+      }
+      void messageApi.error(error instanceof Error ? error.message : t("加载发现技能失败"));
+    } finally {
+      if (discoveryRequestRef.current === requestId) {
+        setDiscoveryLoading(false);
+        setDiscoveryLoadingMore(false);
+      }
+    }
+  }
 
   useEffect(() => {
     if (!skillDiscoverOpen || mode !== "skills") {
       return;
     }
-    let active = true;
-    const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
-    setDiscoveryRefreshing(true);
-    void refreshToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset })
-      .then((response) => {
-        if (!active) {
-          return;
-        }
-        setDiscoveryResponse(response);
-        setDiscoveryStatus(t("已更新"));
-        void reload({ background: true });
-      })
-      .catch((error) => {
-        if (!active) {
-          return;
-        }
-        void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
-      })
-      .finally(() => {
-        if (active) {
-          setDiscoveryRefreshing(false);
-        }
-      });
+    void loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("最新索引") });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skillDiscoverOpen, mode, discoveryQuery]);
+
+  useEffect(() => {
+    if (!skillDiscoverOpen || mode !== "skills") {
+      return;
+    }
+    const element = discoveryListRef.current;
+    if (!element) {
+      return;
+    }
+    if (typeof ResizeObserver === "undefined") {
+      setDiscoveryViewportHeight(Math.max(320, element.clientHeight || 520));
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) {
+        return;
+      }
+      const height = Math.max(320, Math.round(entry.contentRect.height));
+      setDiscoveryViewportHeight(height);
+    });
+    observer.observe(element);
     return () => {
-      active = false;
+      observer.disconnect();
     };
   }, [skillDiscoverOpen, mode]);
+
+  useEffect(() => {
+    if (!skillDiscoverOpen || mode !== "skills" || !discoveryHasMore || discoveryLoading || discoveryLoadingMore) {
+      return;
+    }
+    const prefetchThreshold = 220;
+    if (discoveryScrollTop + discoveryViewportHeight + prefetchThreshold < discoveryItems.length * DISCOVERY_ROW_HEIGHT) {
+      return;
+    }
+    void loadDiscoveredSkillsPage({ reset: false, query: discoveryQuery });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skillDiscoverOpen, mode, discoveryHasMore, discoveryLoading, discoveryLoadingMore, discoveryScrollTop, discoveryViewportHeight, discoveryItems.length, discoveryQuery]);
 
   const skillCount = useMemo(
     () => (state?.installed_skills ?? []).reduce((count, skill) => count + (skill.installed_apps?.codex ? 1 : 0), 0),
@@ -211,16 +242,13 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   const skills = useMemo(() => state?.installed_skills ?? [], [state?.installed_skills]);
   const skillRepos = useMemo(() => state?.skill_repos ?? [], [state?.skill_repos]);
   const mcpServers = useMemo(() => state?.mcp_servers ?? [], [state?.mcp_servers]);
-  const discoveredSkills = useMemo(() => {
-    const items = discoveryResponse?.items ?? [];
-    const query = discoveryQuery.trim().toLowerCase();
-    if (!query) {
-      return items;
-    }
-    return items.filter((item) =>
-      [item.name, item.description ?? "", item.repo_owner, item.repo_name, item.source_path].join(" ").toLowerCase().includes(query),
-    );
-  }, [discoveryQuery, discoveryResponse?.items]);
+  const discoveryStartIndex = Math.max(0, Math.floor(discoveryScrollTop / DISCOVERY_ROW_HEIGHT) - DISCOVERY_OVERSCAN);
+  const discoveryVisibleCount = Math.ceil(discoveryViewportHeight / DISCOVERY_ROW_HEIGHT) + DISCOVERY_OVERSCAN * 2;
+  const discoveryEndIndex = Math.min(discoveryItems.length, discoveryStartIndex + discoveryVisibleCount);
+  const visibleDiscoveredSkills = useMemo(
+    () => discoveryItems.slice(discoveryStartIndex, discoveryEndIndex),
+    [discoveryEndIndex, discoveryItems, discoveryStartIndex],
+  );
 
   async function handleImportSkills() {
     setImportBusy(true);
@@ -342,17 +370,11 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   }
 
   async function handleDiscoveryRefresh() {
-    setDiscoveryLoading(true);
     try {
-      const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
-      const response = await refreshToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset });
-      setDiscoveryResponse(response);
-      setDiscoveryStatus(t("已更新"));
+      await loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("最新索引") });
       await reload({ background: true });
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
-    } finally {
-      setDiscoveryLoading(false);
     }
   }
 
@@ -361,19 +383,11 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     try {
       await installToolingDiscoveredSkill({ id: skill.id, apps: ["codex"] });
       const nextAction = skill.update_available ? t("已更新") : t("安装成功");
-      setDiscoveryResponse((current) => markDiscoveredSkillInstalled(current, skill.id));
+      setDiscoveryItems((current) => markDiscoveredSkillInstalled(current, skill.id));
       setDiscoveryStatus(skill.update_available ? t("已更新") : t("已安装"));
       void messageApi.success(nextAction);
       void reload({ background: true });
-      const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
-      void refreshToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset })
-        .then((response) => {
-          setDiscoveryResponse(response);
-          setDiscoveryStatus(t("已更新"));
-        })
-        .catch((error) => {
-          void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
-        });
+      void loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("已更新") });
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("安装失败"));
     } finally {
@@ -434,10 +448,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       void messageApi.success(t("仓库已更新"));
       resetRepoForm();
       await reload({ background: true });
-      const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
-      const response = await refreshToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset });
-      setDiscoveryResponse(response);
-      setDiscoveryStatus(t("已更新"));
+      await loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("已更新") });
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("更新失败"));
     } finally {
@@ -480,10 +491,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       await removeToolingRepo(repo.platform ?? "github", repo.owner, repo.name);
       void messageApi.success(t("仓库已删除"));
       await reload({ background: true });
-      const offset = Math.max(0, (discoveryPage - 1) * DISCOVERY_PAGE_SIZE);
-      const response = await refreshToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset });
-      setDiscoveryResponse(response);
-      setDiscoveryStatus(t("已更新"));
+      await loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("已更新") });
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("删除失败"));
     } finally {
@@ -580,8 +588,13 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
                 className="tooling-action-button"
                 icon={<SearchOutlined />}
                 onClick={() => {
-                  setDiscoveryPage(1);
                   setDiscoveryQuery("");
+                  setDiscoveryQueryInput("");
+                  setDiscoveryItems([]);
+                  setDiscoveryTotal(0);
+                  setDiscoveryIndexedTotal(0);
+                  setDiscoveryOffset(0);
+                  setDiscoveryHasMore(true);
                   setSkillDiscoverOpen(true);
                 }}
               >
@@ -638,7 +651,13 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
 
       <Modal
         open={skillDiscoverOpen}
-        title={t("发现技能")}
+        title={
+          <div className="tooling-discovery-title">
+            <span>{t("发现技能")}</span>
+            <span className="tooling-repo-count-tag">{`${discoveryIndexedTotal} skills`}</span>
+            {discoveryQuery ? <span className="tooling-discovery-match-count">{`匹配 ${discoveryTotal}`}</span> : null}
+          </div>
+        }
         onCancel={() => setSkillDiscoverOpen(false)}
         footer={null}
         width="100vw"
@@ -648,52 +667,66 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       >
         <div className="tooling-discovery-shell">
           <div className="tooling-discovery-toolbar">
-            <Input
-              value={discoveryQuery}
-              onChange={(event) => setDiscoveryQuery(event.target.value)}
+            <Input.Search
+              value={discoveryQueryInput}
+              onChange={(event) => setDiscoveryQueryInput(event.target.value)}
+              onSearch={(value) => {
+                const next = value.trim();
+                setDiscoveryQuery(next);
+                if (next === discoveryQuery) {
+                  void loadDiscoveredSkillsPage({ reset: true, query: next, forceStatus: t("最新索引") });
+                }
+              }}
               placeholder={t("搜索发现的技能")}
               className="tooling-discovery-search"
+              enterButton={t("搜索")}
+              allowClear
             />
             <Space wrap size={10}>
-              <Typography.Text type="secondary">{discoveryStatus || (discoveryRefreshing ? t("正在更新") : "")}</Typography.Text>
+              <Typography.Text type="secondary">{discoveryStatus || (discoveryLoading ? t("正在加载") : "")}</Typography.Text>
               <Button icon={<ReloadOutlined />} loading={discoveryLoading} aria-label={t("刷新技能索引")} onClick={() => void handleDiscoveryRefresh()}>
                 {t("刷新")}
-              </Button>
-              <Button aria-label={t("仓库管理")} onClick={() => setRepoManagerOpen(true)}>
-                {t("仓库")}
-                <RightOutlined />
               </Button>
             </Space>
           </div>
 
-          <div className="tooling-discovery-list tooling-discovery-grid">
-            {discoveryLoading && !discoveryResponse ? (
+          <div
+            ref={discoveryListRef}
+            className="tooling-discovery-list tooling-discovery-virtual-list"
+            onScroll={(event) => {
+              setDiscoveryScrollTop(event.currentTarget.scrollTop);
+            }}
+          >
+            {discoveryLoading && discoveryItems.length === 0 ? (
               <div className="tooling-discovery-loading">
                 <Spin size="large" />
               </div>
-            ) : discoveredSkills.length > 0 ? (
-              discoveredSkills.map((skill) => (
-                <DiscoveredSkillCard
-                  key={skill.id}
-                  skill={skill}
-                  busy={discoveryBusyId === skill.id}
-                  t={t}
-                  onView={() => handleViewDiscoveredSkill(skill)}
-                  onInstall={() => void handleDiscoveredSkillInstall(skill)}
-                />
-              ))
+            ) : discoveryItems.length > 0 ? (
+              <div
+                style={{
+                  paddingTop: discoveryStartIndex * DISCOVERY_ROW_HEIGHT,
+                  paddingBottom: Math.max(0, (discoveryItems.length - discoveryEndIndex) * DISCOVERY_ROW_HEIGHT),
+                }}
+              >
+                {visibleDiscoveredSkills.map((skill) => (
+                  <DiscoveredSkillRow
+                    key={skill.id}
+                    skill={skill}
+                    busy={discoveryBusyId === skill.id}
+                    t={t}
+                    onView={() => handleViewDiscoveredSkill(skill)}
+                    onInstall={() => void handleDiscoveredSkillInstall(skill)}
+                  />
+                ))}
+              </div>
             ) : (
               <Empty description={t("暂无发现技能")} />
             )}
-          </div>
-          <div className="tooling-discovery-pagination">
-            <Pagination
-              current={discoveryPage}
-              pageSize={DISCOVERY_PAGE_SIZE}
-              total={discoveryResponse?.total ?? 0}
-              showSizeChanger={false}
-              onChange={(nextPage) => setDiscoveryPage(nextPage)}
-            />
+            {discoveryLoadingMore ? (
+              <div className="tooling-discovery-loading-more">
+                <Spin size="small" />
+              </div>
+            ) : null}
           </div>
         </div>
       </Modal>
@@ -811,30 +844,21 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   );
 }
 
-function markDiscoveredSkillInstalled(
-  response: ToolingSkillDiscoveryResponse | null,
-  id: string,
-): ToolingSkillDiscoveryResponse | null {
-  if (!response) {
-    return response;
-  }
-  return {
-    ...response,
-    items: response.items.map((item) => {
-      if (item.id !== id) {
-        return item;
-      }
-      return {
-        ...item,
-        installed_apps: {
-          ...item.installed_apps,
-          codex: true,
-        },
-        installed_hash: item.content_hash,
-        update_available: false,
-      };
-    }),
-  };
+function markDiscoveredSkillInstalled(items: ToolingDiscoveredSkill[], id: string): ToolingDiscoveredSkill[] {
+  return items.map((item) => {
+    if (item.id !== id) {
+      return item;
+    }
+    return {
+      ...item,
+      installed_apps: {
+        ...item.installed_apps,
+        codex: true,
+      },
+      installed_hash: item.content_hash,
+      update_available: false,
+    };
+  });
 }
 
 function repoRecordKey(platform: string, owner: string, name: string): string {
@@ -920,7 +944,7 @@ function DeleteMcpConfirmContent({
   );
 }
 
-function DiscoveredSkillCard({
+function DiscoveredSkillRow({
   skill,
   busy,
   t,
@@ -938,9 +962,9 @@ function DiscoveredSkillCard({
   const actionLabel = updateAvailable ? t("更新") : installed ? t("已安装") : t("安装");
   const statusLabel = updateAvailable ? t("可更新") : installed ? t("已安装") : t("未安装");
   return (
-    <div className="tooling-discovered-card">
-      <div className="tooling-discovered-card-main">
-        <div className="tooling-discovered-card-meta">
+    <div className="tooling-discovered-row">
+      <div className="tooling-discovered-row-main">
+        <div className="tooling-discovered-row-meta">
           <span className="tooling-discovered-platform">{skill.platform.toUpperCase()}</span>
           <span className="tooling-discovered-repo">{`${skill.repo_owner}/${skill.repo_name}`}</span>
           <span className={`tooling-status-pill ${updateAvailable ? "is-update" : installed ? "is-enabled" : "is-disabled"}`}>{statusLabel}</span>
@@ -948,14 +972,15 @@ function DiscoveredSkillCard({
         <button type="button" className="tooling-discovered-title-button" data-testid="tooling-discovered-skill-title" aria-label={`打开 ${skill.name} 的源目录`} onClick={onView}>
           {skill.name}
         </button>
-        {skill.description ? <div className="tooling-item-description is-default">{skill.description}</div> : null}
+        {skill.description ? <div className="tooling-discovered-row-description">{skill.description}</div> : null}
       </div>
-      <div className="tooling-discovered-card-actions">
-        <Button icon={<LinkOutlined />} aria-label={`查看 ${skill.name} 的仓库页面`} onClick={onView}>
+      <div className="tooling-discovered-row-actions">
+        <Button size="small" icon={<LinkOutlined />} aria-label={`查看 ${skill.name} 的仓库页面`} onClick={onView}>
           {t("查看")}
         </Button>
         <Button
-          type="primary"
+          size="small"
+          type={updateAvailable || !installed ? "primary" : "default"}
           icon={updateAvailable ? <ReloadOutlined /> : <PlusOutlined />}
           loading={busy}
           disabled={installed && !updateAvailable}
