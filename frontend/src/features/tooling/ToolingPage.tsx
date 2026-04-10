@@ -2,14 +2,28 @@ import {
   CheckCircleOutlined,
   CloudDownloadOutlined,
   DeleteOutlined,
-  DragOutlined,
+  EditOutlined,
+  HolderOutlined,
   LinkOutlined,
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
 import { Button, Card, Checkbox, Empty, Input, Modal, Select, Space, Spin, Typography, message } from "antd";
-import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import {
+  DndContext,
+  DragOverlay,
+  MouseSensor,
+  PointerSensor,
+  closestCenter,
+  type DragEndEvent,
+  type DragStartEvent,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import {
   addToolingRepo,
@@ -97,8 +111,13 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   const [repoResolving, setRepoResolving] = useState(false);
   const [repoResolveError, setRepoResolveError] = useState("");
   const repoResolveRequestRef = useRef(0);
+  const repoDragSnapshotRef = useRef<ToolingSkillRepo[] | null>(null);
   const [skillBusyName, setSkillBusyName] = useState<string | null>(null);
   const [mcpBusyId, setMcpBusyId] = useState<string | null>(null);
+  const repoDragSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+  );
 
   async function reload(options?: { background?: boolean }) {
     const background = options?.background ?? false;
@@ -508,15 +527,25 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     void openExternalUrl(buildRepoURL(repo.platform ?? "github", repo.owner, repo.name));
   }
 
-  async function handleRepoReorder(targetRepo: ToolingSkillRepo) {
-    if (!repoDragKey) {
+  function handleRepoDragStart(event: DragStartEvent) {
+    repoDragSnapshotRef.current = skillRepos;
+    setRepoDragKey(String(event.active.id));
+  }
+
+  async function handleRepoDragEnd(event: DragEndEvent) {
+    const sourceKey = String(event.active.id);
+    const targetKey = event.over ? String(event.over.id) : "";
+    setRepoDragKey(null);
+    repoDragSnapshotRef.current = null;
+    if (!targetKey || sourceKey === targetKey) {
       return;
     }
-    const targetKey = repoRecordKey(targetRepo.platform ?? "github", targetRepo.owner, targetRepo.name);
-    const reordered = reorderReposByKey(skillRepos, repoDragKey, targetKey);
-    if (reordered === skillRepos) {
+    const sourceIndex = skillRepos.findIndex((repo) => repoRecordKey(repo.platform ?? "github", repo.owner, repo.name) === sourceKey);
+    const targetIndex = skillRepos.findIndex((repo) => repoRecordKey(repo.platform ?? "github", repo.owner, repo.name) === targetKey);
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
       return;
     }
+    const reordered = arrayMove(skillRepos, sourceIndex, targetIndex);
     setState((current) => (current ? { ...current, skill_repos: reordered } : current));
     setRepoOrdering(true);
     try {
@@ -533,9 +562,19 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       await reload({ background: true });
     } finally {
       setRepoOrdering(false);
-      setRepoDragKey(null);
     }
   }
+
+  const draggingRepo = useMemo(() => {
+    if (!repoDragKey) {
+      return null;
+    }
+    return (
+      skillRepos.find((repo) => repoRecordKey(repo.platform ?? "github", repo.owner, repo.name) === repoDragKey) ??
+      repoDragSnapshotRef.current?.find((repo) => repoRecordKey(repo.platform ?? "github", repo.owner, repo.name) === repoDragKey) ??
+      null
+    );
+  }, [repoDragKey, skillRepos]);
 
   if (loading || !state) {
     return (
@@ -686,6 +725,8 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
         }}
         footer={null}
         destroyOnHidden
+        width="100vw"
+        style={{ top: 0, paddingBottom: 0 }}
         className="tooling-repo-manager-modal"
       >
         <div className="tooling-repo-manager-shell">
@@ -697,26 +738,36 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
           </div>
 
           <div className="tooling-discovery-list tooling-repo-manager-list">
-            {skillRepos.length > 0 ? skillRepos.map((repo) => (
-              <RepoManageRow
-                key={repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
-                repo={repo}
-                busy={repoOrdering || repoBusyKey === repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
-                dragging={repoDragKey === repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
-                onDragStart={() => setRepoDragKey(repoRecordKey(repo.platform ?? "github", repo.owner, repo.name))}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                }}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  void handleRepoReorder(repo);
-                }}
-                onDragEnd={() => setRepoDragKey(null)}
-                onView={() => handleRepoView(repo)}
-                onEdit={() => openRepoEdit(repo)}
-                onDelete={() => void handleRepoRemove(repo)}
-              />
-            )) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("暂无已管理仓库")} />}
+            {skillRepos.length > 0 ? (
+              <DndContext sensors={repoDragSensors} collisionDetection={closestCenter} onDragStart={handleRepoDragStart} onDragEnd={(event) => void handleRepoDragEnd(event)}>
+                <SortableContext items={skillRepos.map((repo) => repoRecordKey(repo.platform ?? "github", repo.owner, repo.name))} strategy={verticalListSortingStrategy}>
+                  {skillRepos.map((repo) => (
+                    <SortableRepoManageRow
+                      key={repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
+                      repo={repo}
+                      busy={repoOrdering || repoBusyKey === repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
+                      onView={() => handleRepoView(repo)}
+                      onEdit={() => openRepoEdit(repo)}
+                      onDelete={() => void handleRepoRemove(repo)}
+                    />
+                  ))}
+                </SortableContext>
+                <DragOverlay>
+                  {draggingRepo ? (
+                    <RepoManageRow
+                      repo={draggingRepo}
+                      dragging
+                      overlay
+                      onView={() => {}}
+                      onEdit={() => {}}
+                      onDelete={() => {}}
+                    />
+                  ) : null}
+                </DragOverlay>
+              </DndContext>
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("暂无已管理仓库")} />
+            )}
           </div>
         </div>
       </Modal>
@@ -950,10 +1001,12 @@ function RepoManageRow({
   repo,
   busy,
   dragging,
-  onDragStart,
-  onDragOver,
-  onDrop,
-  onDragEnd,
+  overlay,
+  rowRef,
+  style,
+  handleAttributes,
+  handleListeners,
+  setHandleRef,
   onView,
   onEdit,
   onDelete,
@@ -961,45 +1014,101 @@ function RepoManageRow({
   repo: ToolingSkillRepo;
   busy?: boolean;
   dragging?: boolean;
-  onDragStart: () => void;
-  onDragOver: (event: DragEvent<HTMLDivElement>) => void;
-  onDrop: (event: DragEvent<HTMLDivElement>) => void;
-  onDragEnd: () => void;
+  overlay?: boolean;
+  rowRef?: (node: HTMLDivElement | null) => void;
+  style?: CSSProperties;
+  handleAttributes?: Record<string, unknown>;
+  handleListeners?: Record<string, unknown>;
+  setHandleRef?: (node: HTMLButtonElement | null) => void;
   onView: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const repoUrl = buildRepoURL(repo.platform ?? "github", repo.owner, repo.name);
+  const repoName = `${repo.owner}/${repo.name}`;
   return (
     <div
-      className={`tooling-repo-row ${dragging ? "is-dragging" : ""}`}
-      draggable
-      onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
-      onDragEnd={onDragEnd}
+      ref={rowRef}
+      className={`tooling-repo-row ${dragging ? "is-sortable-dragging" : ""} ${overlay ? "is-overlay" : ""}`}
+      style={style}
     >
-      <div className="tooling-repo-main">
-        <div className="tooling-repo-title">
-          <span className="tooling-repo-drag-handle" aria-hidden="true">
-            <DragOutlined />
-          </span>
-          {`${repo.owner}/${repo.name}`}
+      <div className="tooling-repo-leading">
+        <button
+          type="button"
+          ref={setHandleRef}
+          className="tooling-repo-drag-handle"
+          aria-label={`拖拽排序 ${repoName}`}
+          disabled={busy || overlay}
+          {...(handleAttributes as Record<string, unknown> | undefined)}
+          {...(handleListeners as Record<string, unknown> | undefined)}
+        >
+          <HolderOutlined />
+        </button>
+        <div className="tooling-repo-main">
+          <div className="tooling-repo-title-row">
+            <div className="tooling-repo-title">{repoName}</div>
+            <span className="tooling-repo-count-tag">{`${repo.skill_count} skills`}</span>
+          </div>
+          <button type="button" className="tooling-repo-link" aria-label={`查看 ${repoName}`} title={repoUrl} onClick={onView}>
+            {repoUrl}
+          </button>
         </div>
-        <div className="stats-subtitle">{`${repo.skill_count} skills · ${repoUrl}`}</div>
       </div>
       <div className="tooling-repo-actions">
-        <button type="button" className="tooling-repo-action-button" aria-label={`查看 ${repo.owner}/${repo.name}`} onClick={onView}>
-          查看
+        <button type="button" className="tooling-repo-action-icon" aria-label={`查看仓库 ${repoName}`} title="查看" onClick={onView} disabled={overlay}>
+          <LinkOutlined />
         </button>
-        <button type="button" className="tooling-repo-action-button" aria-label={`编辑 ${repo.owner}/${repo.name}`} onClick={onEdit}>
-          编辑
+        <button type="button" className="tooling-repo-action-icon" aria-label={`编辑仓库 ${repoName}`} title="编辑" onClick={onEdit} disabled={overlay}>
+          <EditOutlined />
         </button>
-        <button type="button" className="tooling-repo-action-button is-danger" aria-label={`删除 ${repo.owner}/${repo.name}`} disabled={busy} onClick={onDelete}>
-          删除
+        <button
+          type="button"
+          className="tooling-repo-action-icon is-danger"
+          aria-label={`删除仓库 ${repoName}`}
+          title="删除"
+          onClick={onDelete}
+          disabled={busy || overlay}
+        >
+          <DeleteOutlined />
         </button>
       </div>
     </div>
+  );
+}
+
+function SortableRepoManageRow({
+  repo,
+  busy,
+  onView,
+  onEdit,
+  onDelete,
+}: {
+  repo: ToolingSkillRepo;
+  busy?: boolean;
+  onView: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const id = repoRecordKey(repo.platform ?? "github", repo.owner, repo.name);
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+  return (
+    <RepoManageRow
+      repo={repo}
+      busy={busy}
+      dragging={isDragging}
+      rowRef={setNodeRef}
+      style={style}
+      handleAttributes={attributes as Record<string, unknown>}
+      handleListeners={listeners as Record<string, unknown>}
+      setHandleRef={setActivatorNodeRef}
+      onView={onView}
+      onEdit={onEdit}
+      onDelete={onDelete}
+    />
   );
 }
 
@@ -1128,21 +1237,6 @@ function ManagedCard({
       </div>
     </div>
   );
-}
-
-function reorderReposByKey(repos: ToolingSkillRepo[], sourceKey: string, targetKey: string): ToolingSkillRepo[] {
-  if (sourceKey === targetKey) {
-    return repos;
-  }
-  const fromIndex = repos.findIndex((repo) => repoRecordKey(repo.platform ?? "github", repo.owner, repo.name) === sourceKey);
-  const toIndex = repos.findIndex((repo) => repoRecordKey(repo.platform ?? "github", repo.owner, repo.name) === targetKey);
-  if (fromIndex < 0 || toIndex < 0) {
-    return repos;
-  }
-  const next = [...repos];
-  const [moved] = next.splice(fromIndex, 1);
-  next.splice(toIndex, 0, moved);
-  return next;
 }
 
 function DiscoveryRow({
