@@ -515,7 +515,8 @@ describe("ToolingPage", () => {
     const repoDialog = (await screen.findAllByRole("dialog")).at(-1)!;
     expect(within(repoDialog).queryByLabelText("仓库平台")).not.toBeInTheDocument();
     expect(within(repoDialog).getByText("openai/codex-superpowers")).toBeInTheDocument();
-    expect(within(repoDialog).getByText("12 skills · https://github.com/openai/codex-superpowers")).toBeInTheDocument();
+    expect(within(repoDialog).getByText("12 skills")).toBeInTheDocument();
+    expect(within(repoDialog).getByText("https://github.com/openai/codex-superpowers")).toBeInTheDocument();
 
     fireEvent.click(within(repoDialog).getByRole("button", { name: "添加仓库" }));
 
@@ -534,10 +535,10 @@ describe("ToolingPage", () => {
 
     await waitFor(() => expect(api.addToolingRepo).toHaveBeenCalledWith("gitlab", "gitlab-org", "codex-superpowers", "develop"));
 
-    fireEvent.click(within(repoDialog).getByRole("button", { name: "查看 openai/codex-superpowers" }));
+    fireEvent.click(within(repoDialog).getByRole("button", { name: "查看仓库 openai/codex-superpowers" }));
     expect(openSpy).toHaveBeenCalledWith("https://github.com/openai/codex-superpowers", "_blank", "noopener,noreferrer");
 
-    fireEvent.click(within(repoDialog).getByRole("button", { name: "编辑 openai/codex-superpowers" }));
+    fireEvent.click(within(repoDialog).getByRole("button", { name: "编辑仓库 openai/codex-superpowers" }));
 
     const editDialog = (await screen.findAllByRole("dialog")).at(-1)!;
     expect(within(editDialog).getByDisplayValue("https://github.com/openai/codex-superpowers")).toBeDisabled();
@@ -559,8 +560,7 @@ describe("ToolingPage", () => {
       ),
     );
 
-    await waitFor(() => expect(within(repoDialog).getByRole("button", { name: "删除 openai/codex-superpowers" })).not.toBeDisabled());
-    fireEvent.click(within(repoDialog).getByRole("button", { name: "删除 openai/codex-superpowers" }));
+    fireEvent.click(within(repoDialog).getByRole("button", { name: "删除仓库 openai/codex-superpowers" }));
     await waitFor(() => expect(api.removeToolingRepo).toHaveBeenCalledWith("github", "openai", "codex-superpowers"));
   });
 
