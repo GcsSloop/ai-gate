@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -665,6 +666,41 @@ func TestSettingsHandlerProxyDisableRestoreDoesNotRestoreAuthJSON(t *testing.T) 
 	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "openai"`)
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-updated"`)
 	assertFileNotContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
+}
+
+func TestSettingsHandlerProxyEnableWithoutAuthJSONSkipsAuthBackup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	prepareCodexFiles(t, home, "model_provider = \"openai\"\n", `{"access_token":"token-before"}`)
+	if err := os.Remove(filepath.Join(home, ".codex", "auth.json")); err != nil {
+		t.Fatalf("remove auth.json: %v", err)
+	}
+
+	handler, _ := newSettingsHandler(t)
+
+	enableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/enable", nil)
+	enableRec := httptest.NewRecorder()
+	handler.ServeHTTP(enableRec, enableReq)
+	if enableRec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/proxy/enable status = %d, want %d; body=%s", enableRec.Code, http.StatusOK, enableRec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(enableRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal enable response: %v", err)
+	}
+	backupID, _ := payload["last_backup_id"].(string)
+	if strings.TrimSpace(backupID) == "" {
+		t.Fatal("last_backup_id is empty")
+	}
+
+	backupDir := filepath.Join(home, ".aigate", "data", "codex", "backup", backupID)
+	if _, err := os.Stat(filepath.Join(backupDir, "config.toml")); err != nil {
+		t.Fatalf("stat backup config.toml: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(backupDir, "auth.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("backup auth.json err = %v, want not exists", err)
+	}
 }
 
 func TestSettingsHandlerUpdatingProxyAddressRewritesEnabledConfig(t *testing.T) {
