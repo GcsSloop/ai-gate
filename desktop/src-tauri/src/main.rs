@@ -556,11 +556,16 @@ fn get_update_state<R: Runtime>(app: AppHandle<R>) -> Result<UpdateStatePayload,
 #[tauri::command]
 async fn check_for_app_update<R: Runtime>(app: AppHandle<R>) -> Result<UpdateStatePayload, String> {
     let current_version = app.package_info().version.to_string();
-    {
+    let checking_snapshot = {
         let mut manager = lock_update_manager()?;
         if !manager.begin_check() {
-            return Ok(current_update_snapshot(&current_version));
+            Some(normalize_update_snapshot(manager.snapshot(), &current_version))
+        } else {
+            None
         }
+    };
+    if let Some(snapshot) = checking_snapshot {
+        return Ok(snapshot);
     }
 
     match resolve_update_future_with_timeout(fetch_update(&app), UPDATE_CHECK_TIMEOUT, "check update").await {
