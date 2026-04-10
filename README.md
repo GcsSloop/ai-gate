@@ -6,40 +6,117 @@
   <img src="assets/aigate_1024_1024.png" alt="AI Gate icon" width="128" height="128">
 </p>
 
-AI Gate 是一个面向 Codex 工作流的本地优先网关与桌面外壳，核心目标非常明确：
+<p align="center">
+  <strong>为 Codex 工作流设计的本地优先入口层：统一多账号、不中断切换、少折腾配置。</strong>
+</p>
 
-- 在本地切换官方账号和兼容账号
-- 将请求路由到原生上游 `/responses` 接口
-- 保持上游响应语义，而不是在本地重造协议
-- 提供轻量的本地观测、审计与桌面控制能力
+<p align="center">
+  <img alt="Stars" src="https://img.shields.io/github/stars/GcsSloop/ai-gate?style=flat-square&label=stars">
+  <img alt="Forks" src="https://img.shields.io/github/forks/GcsSloop/ai-gate?style=flat-square&label=forks">
+  <img alt="License" src="https://img.shields.io/github/license/GcsSloop/ai-gate?style=flat-square">
+  <img alt="Release" src="https://img.shields.io/github/v/release/GcsSloop/ai-gate?style=flat-square&label=release">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-111827?style=flat-square">
+  <img alt="Status" src="https://img.shields.io/github/actions/workflow/status/GcsSloop/ai-gate/release.yml?branch=main&style=flat-square&label=status">
+</p>
 
-这个仓库**不是**云端部署方案，也**不是**协议兼容模拟层。
+AI Gate 不是另一个 AI 模型，也不是云端代理平台。它是在 AI 之上加的一层轻量级本地网关和桌面壳，解决真实使用里最烦的几件事：多个官方账户和第三方账户怎么统一管理，额度耗尽时怎么不中断切换，代理、Skill、MCP、统计和备份怎么收敛到一个入口，而且账号信息和 Key 仍然留在本机。
 
-## 项目定位
+## 为什么是 AI Gate
 
-很多 Codex 用户真正需要的不是一个“全能代理”，而是一个稳定、可控、可观测的本地入口，用来解决几类现实问题：
+很多人开始高频使用 Codex 之后，真正卡住的已经不是模型本身，而是工作流：
 
-- 多账号切换成本高
-- 不希望频繁修改客户端配置
-- 希望保留统一的本地入口和观测面板
-- 希望通过桌面应用降低使用门槛
+- 一个官方账户不够用，多号切换很烦
+- 第三方 API 能补额度，但和官方混用时配置容易乱
+- 正在对话中途，当前账户额度耗尽或临时异常，流程直接断掉
+- Skill、MCP、统计、代理开关、备份恢复散落在不同位置，维护成本高
+- 想省事，但又不想把账号和 Key 交给远端服务
 
-AI Gate 的做法是保持“薄网关”边界：只做认证、路由、透传和观测，不伪造对话语义，不本地拼装响应协议。
+AI Gate 的目标很简单：把这些问题收成一个本地优先、边界清晰、足够稳定的入口层。
 
-## 产品优势
+## 核心亮点
 
-- **多账号低折腾**：统一本地入口，不需要反复修改 Codex 客户端配置。
-- **自动故障回退**：当前账户额度耗尽、异常或暂时不可用时，可以自动切到下一个可用账户，尽量做到无感切换。
-- **本地优先更安心**：账号状态、代理控制、审计与备份都留在本机，边界清楚，方便排查。
+### 1. 多账号统一接入
 
-## 核心原则
+- 同时管理多个官方账户和第三方账户
+- 保留一个稳定的本地入口，不用反复修改客户端配置
+- 桌面端直接导入、切换、查看状态，降低日常运维成本
 
-- **仅本地运行**：后端只监听回环地址，桌面应用只启动本地 sidecar。
-- **薄网关优先**：`response_id`、`previous_response_id`、状态码和 SSE 生命周期全部以上游为准。
-- **不做伪实现**：做不到就显式删除，不用“看起来像支持”来掩盖语义缺失。
-- **工程可控**：账号切换、运行审计、监控摘要都保留在本地。
+### 2. 对话不中断切换
 
-## 架构概览
+- 当前账户额度耗尽、异常或暂时不可用时，自动切到下一个可用账户
+- 切换尽量发生在对话内部，不要求用户手动重开一轮流程
+- 更适合长任务、连续调试和高频编码场景
+
+### 3. 本地优先更安心
+
+- 后端只监听 loopback，桌面端只拉起本地 sidecar
+- 账户信息、Key、配置补丁、备份快照都保留在本机
+- 开源可审查，不需要把信任建立在黑盒服务上
+
+### 4. Skill 与 MCP 管理
+
+- 在桌面端统一管理 Skill 和 MCP 相关配置
+- 更容易把本地工具链、知识库和工作流接到 Codex 上
+- 适合把 Obsidian、脚本工具和自定义能力纳入同一个入口
+
+### 5. 可观测与低折腾
+
+- 提供代理、统计、备份恢复和菜单栏控制
+- 既保留工程可控性，也尽量降低普通用户的使用门槛
+- 目标不是“功能越多越好”，而是“每天能稳定用下去”
+
+## 适合谁用
+
+- 有多个官方账户，想统一管理的人
+- 官方账户和第三方 API 混着用的人
+- 不希望频繁手改 `~/.codex/config.toml` 的人
+- 想把 Skill、MCP、统计和代理入口收进一个桌面端的人
+- 重视本地安全边界，不想把账号信息交给远端中转的人
+
+## 产品巡览
+
+### 首页总览
+
+![AI Gate 首页](assets/screenshot-main.png)
+
+### 代理配置
+
+![AI Gate 代理配置页](assets/screenshot-proxy.png)
+
+### 统计页
+
+![AI Gate 统计页](assets/screenshot-statistics.png)
+
+### MCP 管理
+
+![AI Gate MCP 管理](assets/screenshot-mcp.png)
+
+### Skill 管理
+
+![AI Gate Skill 管理](assets/screenshot-skill.png)
+
+## 3 分钟上手
+
+### 普通用户
+
+1. 从 [最新版本](https://github.com/GcsSloop/ai-gate/releases/latest) 下载桌面客户端
+2. 导入当前官方账户，或添加第三方 API 账户
+3. 打开代理，开始在 Codex 里使用
+4. 如果当前账户用量耗尽，AI Gate 会尽量自动切到下一个可用账户
+
+### 开发者
+
+```bash
+cp .env.example .env
+make backend
+make frontend
+npm --prefix desktop install
+npm --prefix desktop run dev
+```
+
+前端开发服务器会将本地 API 请求代理到 `http://127.0.0.1:6789`。
+
+## 架构与安全边界
 
 ```mermaid
 flowchart LR
@@ -73,103 +150,19 @@ sequenceDiagram
     Router->>Desktop: 暴露本地状态、审计和监控信息
 ```
 
-### 核心组件职责
+### 边界说明
 
-- **Codex 客户端**：保留原有使用方式，只需要指向一个稳定的本地入口。
-- **AI Gate 桌面端**：负责账号管理、代理开关、备份恢复、菜单栏控制和本地运维入口。
-- **AI Gate 路由后端**：负责解析当前账号、转发原生 `/responses` 请求，并记录本地审计与监控数据。
-- **官方与兼容上游**：继续负责 `response_id`、`previous_response_id`、工具调用语义以及流式响应生命周期。
-
-### 数据与安全边界
-
-- AI Gate 坚持本地优先：后端只监听 loopback，桌面端只拉起本地 sidecar。
-- 桌面端管理的状态和备份快照位于 `~/.aigate/data`。
-- Codex 客户端的配置仍然位于 `~/.codex/config.toml` 和 `~/.codex/auth.json`；只有在开启代理、关闭代理或执行恢复时，AI Gate 才会修改这些文件。
-- 路由数据库路径仍然通过 `CODEX_ROUTER_DATABASE_PATH` 配置，因此审计和监控数据可以保持本地化，同时不把部署形态写死。
-- 对于上游不支持的能力，AI Gate 会显式移除而不是伪造兼容层，这样更接近官方 Codex 的真实语义。
-
-## 界面预览
-
-### 首页总览
-
-![AI Gate 首页](assets/screenshot-main.png)
-
-### 代理配置页
-
-![AI Gate 代理配置页](assets/screenshot-proxy.png)
-
-### 统计页
-
-![AI Gate 统计页](assets/screenshot-statistics.png)
-
-## 当前能力
-
-- 通过本地网关暴露 `POST /responses` 与 `GET /models`
-- 支持官方账号认证与 token 刷新
-- 支持原生实现 `/responses` 的第三方提供方
-- 提供 React 前端与 Tauri 桌面外壳
-- 保留本地审计数据与运行观测数据
-
-## 明确不支持的能力
-
-- 从 `/responses` 回退到 `/chat/completions`
-- 在本地生成 `response_id`
-- 用本地历史重建 `previous_response_id`
-- 模拟响应检索类接口
-- 作为公网托管网关或 SaaS 服务直接部署
+- **仅本地运行**：后端只监听回环地址，桌面应用只启动本地 sidecar
+- **薄网关优先**：`response_id`、`previous_response_id`、状态码和 SSE 生命周期全部以上游为准
+- **不做伪实现**：做不到就显式删除，不用“看起来像支持”来掩盖语义缺失
+- **本地优先**：桌面端管理的状态和备份快照位于 `~/.aigate/data`
+- **配置补丁可恢复**：只有在开启代理、关闭代理或执行恢复时，AI Gate 才会修改 `~/.codex/config.toml` 和 `~/.codex/auth.json`
 
 更完整的边界说明见 [thin-gateway-mode.md](docs/thin-gateway-mode.md)。
 
-## 快速开始
+## Codex、Skill 与 MCP 如何协作
 
-### 普通用户
-
-- **下载客户端**：从 [最新版本](https://github.com/GcsSloop/ai-gate/releases/latest) 下载桌面客户端。
-- **官方账户用户**：启动客户端，导入当前账户，开启代理后即可直接使用。
-- **第三方 API 用户**：启动客户端，添加 API 账户，选择需要的模型，按需开启代理后开始使用。
-- **低折腾方式**：优先使用桌面客户端，常规情况下不需要手动编辑 `~/.codex/config.toml`。
-
-### 开发者
-
-### 1. 准备环境变量
-
-```bash
-cp .env.example .env
-```
-
-修改 `.env`，至少替换 `CODEX_ROUTER_ENCRYPTION_KEY`，不要继续使用示例值。
-
-默认本地配置如下：
-
-```env
-CODEX_ROUTER_LISTEN_ADDR=127.0.0.1:6789
-CODEX_ROUTER_DATABASE_PATH=data/codex-router.sqlite
-CODEX_ROUTER_SCHEDULER_INTERVAL=5m
-CODEX_ROUTER_ENCRYPTION_KEY=change-this-to-a-random-32-plus-char-secret
-```
-
-### 2. 启动后端
-
-```bash
-make backend
-```
-
-### 3. 启动前端
-
-```bash
-make frontend
-```
-
-前端开发服务器会将本地 API 请求代理到 `http://127.0.0.1:6789`。
-
-### 4. 启动桌面壳
-
-```bash
-npm --prefix desktop install
-npm --prefix desktop run dev
-```
-
-## 与 Codex CLI 配合使用
+### Codex CLI
 
 推荐本地配置如下：
 
@@ -188,50 +181,59 @@ requires_openai_auth = true
 - `POST /ai-router/api/v1/responses`
 - `GET /ai-router/api/v1/models`
 
-关键说明：
+### Skill 工作流
 
-- 官方账号默认转发到 `https://chatgpt.com/backend-api/codex`
-- 第三方账号必须原生支持 `/responses`
-- `response_id` 以上游返回为准
-- 本地不会伪造依赖响应状态重建的检索/续写语义
+- AI Gate 不替代 Skill，而是给 Skill 提供一个更稳定的本地入口
+- 可以继续使用仓库内 Skill 或自定义 Skill，把会话迁移、本地脚本、知识整理等能力接入 Codex
+- 会话迁移 Skill 见 [skills/migrating-codex-history/SKILL.md](skills/migrating-codex-history/SKILL.md)
 
-代理开关行为：
+### MCP 工作流
 
-- 为默认 Codex provider 开启代理时，会临时写入 `[model_providers.aigate]`，并将 `model_provider` 切到 `aigate`
-- 默认官方模式关闭代理时，会删除临时的 `aigate` provider 配置，并删除顶层 `model_provider` 字段，让 Codex 回到默认 provider 行为
-- 如果开启代理时是对现有第三方 provider 做 `base_url` 补丁，关闭时会恢复原始 provider 名称和 `base_url`，不会覆盖其它独立配置修改
+- MCP 配置可以和账户、代理一起放在桌面端统一管理
+- 更适合需要接本地知识库、脚本服务或工具服务的工作流
+- 对于频繁使用 MCP 的用户，统一入口比手工维护多个配置更稳
 
-## 会话迁移 Skill
+## 当前能力
 
-获取 skill 的链接：
+- 通过本地网关暴露 `POST /responses` 与 `GET /models`
+- 支持官方账号认证与 token 刷新
+- 支持原生实现 `/responses` 的第三方提供方
+- 提供 React 前端与 Tauri 桌面外壳
+- 保留本地审计数据与运行观测数据
+- 提供 Skill、MCP、统计、代理和备份恢复入口
 
-- [GitHub skill 链接](https://github.com/GcsSloop/ai-gate/blob/main/skills/migrating-codex-history/SKILL.md)
+## 明确不支持的能力
 
-使用方式：
-
-1. 打开上面的链接，把完整 skill 文本复制到 Codex 对话里。
-2. 对 Codex 说：`使用这个 skill，把我 ~/.codex 里 openai 的会话迁移到 aigate，先 dry-run 并把 summary 给我确认，确认后再正式执行。` 如果本地有这个仓库，skill 会直接用本地脚本；如果没有，skill 会从 `main` 分支的 raw 地址拉取脚本。
-3. 如果用户在 Windows 上使用，skill 会要求 Codex 先把 `.sh` 的逻辑转换成等价的 PowerShell 或原生 Windows 步骤，再执行迁移。
-
-这个流程在仓库里的单一事实来源是 [skills/migrating-codex-history/SKILL.md](skills/migrating-codex-history/SKILL.md)。
+- 从 `/responses` 回退到 `/chat/completions`
+- 在本地生成 `response_id`
+- 用本地历史重建 `previous_response_id`
+- 模拟响应检索类接口
+- 作为公网托管网关或 SaaS 服务直接部署
 
 ## 本地开发
 
-### 后端
+### 准备环境变量
+
+```bash
+cp .env.example .env
+```
+
+修改 `.env`，至少替换 `CODEX_ROUTER_ENCRYPTION_KEY`，不要继续使用示例值。
+
+默认本地配置如下：
+
+```env
+CODEX_ROUTER_LISTEN_ADDR=127.0.0.1:6789
+CODEX_ROUTER_DATABASE_PATH=data/codex-router.sqlite
+CODEX_ROUTER_SCHEDULER_INTERVAL=5m
+CODEX_ROUTER_ENCRYPTION_KEY=change-this-to-a-random-32-plus-char-secret
+```
+
+### 常用命令
 
 ```bash
 make backend
-```
-
-### 前端
-
-```bash
 make frontend
-```
-
-### 测试
-
-```bash
 make test
 ```
 
@@ -268,43 +270,3 @@ bash scripts/desktop/collect_release_assets.sh
 - `aigate-<tag>-macOS.dmg`
 - `aigate-<tag>-macOS.zip`
 - `aigate-<tag>-darwin-universal.app.tar.gz`
-- `aigate-<tag>-darwin-universal.app.tar.gz.sig`
-- `aigate-<tag>-<platform>-SHA256SUMS.txt`
-
-GitHub Releases 更新还依赖 updater 签名密钥：
-
-- `TAURI_SIGNING_PRIVATE_KEY`
-- 可选 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-
-Tag 发布时，除了手动安装包，还会额外上传：
-
-- `aigate-<tag>-windows.msi.sig`
-- `latest.json`
-
-`latest.json` 会在 release workflow 中生成，并作为桌面端检查更新的数据源。
-
-## 仓库结构
-
-```text
-backend/              Go 路由后端
-frontend/             React + Vite Web UI
-desktop/              Tauri 桌面壳
-docs/                 设计文档与操作说明
-scripts/              打包、迁移、冒烟测试脚本
-references/           上游源码参考与逆向分析材料
-```
-
-## 相关文档
-
-- [thin-gateway-mode.md](docs/thin-gateway-mode.md) - 薄网关模式边界
-- [testing.md](docs/testing.md) - 测试与验证流程
-
-## 仅本地运行策略
-
-AI Gate 明确是本地优先产品：
-
-- 后端监听地址限制在 loopback
-- 桌面包只启动本地 sidecar
-- 当前仓库不提供云端部署产物
-
-如果你需要公网托管网关，那是另一类产品，不应该从这个仓库的现状里“顺手推导”出来。
