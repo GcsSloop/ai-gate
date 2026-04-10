@@ -1,0 +1,33 @@
+{
+  "items": [
+    { "platform": "github", "owner": "obra", "name": "superpowers", "branch": "main", "enabled": true, "sort_order": 0 },
+    { "platform": "github", "owner": "anthropics", "name": "skills", "branch": "main", "enabled": true, "sort_order": 1 },
+    { "platform": "github", "owner": "shadcn", "name": "ui", "branch": "main", "enabled": true, "sort_order": 2 },
+    { "platform": "github", "owner": "browser-use", "name": "browser-use", "branch": "main", "enabled": true, "sort_order": 3 },
+    { "platform": "github", "owner": "nextlevelbuilder", "name": "ui-ux-pro-max-skill", "branch": "main", "enabled": true, "sort_order": 4 },
+    { "platform": "github", "owner": "ComposioHQ", "name": "awesome-claude-skills", "branch": "master", "enabled": true, "sort_order": 5 },
+    { "platform": "github", "owner": "wshobson", "name": "agents", "branch": "main", "enabled": true, "sort_order": 6 },
+    { "platform": "github", "owner": "vercel-labs", "name": "agent-browser", "branch": "main", "enabled": true, "sort_order": 7 },
+    { "platform": "github", "owner": "vercel-labs", "name": "agent-skills", "branch": "main", "enabled": true, "sort_order": 8 },
+    { "platform": "github", "owner": "coreyhaines31", "name": "marketingskills", "branch": "main", "enabled": true, "sort_order": 9 },
+    { "platform": "github", "owner": "pbakaus", "name": "impeccable", "branch": "main", "enabled": true, "sort_order": 10 },
+    { "platform": "github", "owner": "JimLiu", "name": "baoyu-skills", "branch": "main", "enabled": true, "sort_order": 11 },
+    { "platform": "github", "owner": "vercel-labs", "name": "skills", "branch": "main", "enabled": true, "sort_order": 12 },
+    { "platform": "github", "owner": "larksuite", "name": "cli", "branch": "main", "enabled": true, "sort_order": 13 },
+    { "platform": "github", "owner": "google-labs-code", "name": "stitch-skills", "branch": "main", "enabled": true, "sort_order": 14 },
+    { "platform": "github", "owner": "remotion-dev", "name": "skills", "branch": "main", "enabled": true, "sort_order": 15 },
+    { "platform": "github", "owner": "cexll", "name": "myclaude", "branch": "master", "enabled": true, "sort_order": 16 },
+    { "platform": "github", "owner": "supabase", "name": "agent-skills", "branch": "main", "enabled": true, "sort_order": 17 },
+    { "platform": "github", "owner": "vercel-labs", "name": "next-skills", "branch": "main", "enabled": true, "sort_order": 18 },
+    { "platform": "github", "owner": "microsoft", "name": "azure-skills", "branch": "main", "enabled": true, "sort_order": 19 },
+    { "platform": "github", "owner": "sleekdotdesign", "name": "agent-skills", "branch": "main", "enabled": true, "sort_order": 20 },
+    { "platform": "github", "owner": "microsoft", "name": "github-copilot-for-azure", "branch": "main", "enabled": true, "sort_order": 21 },
+    { "platform": "github", "owner": "better-auth", "name": "skills", "branch": "main", "enabled": true, "sort_order": 22 },
+    { "platform": "github", "owner": "lc2panda", "name": "wps-skills", "branch": "main", "enabled": true, "sort_order": 23 },
+    { "platform": "github", "owner": "squirrelscan", "name": "skills", "branch": "main", "enabled": true, "sort_order": 24 },
+    { "platform": "github", "owner": "openai", "name": "skills", "branch": "main", "enabled": true, "sort_order": 25 },
+    { "platform": "github", "owner": "xixu-me", "name": "skills", "branch": "main", "enabled": true, "sort_order": 26 },
+    { "platform": "github", "owner": "roin-orca", "name": "skills", "branch": "main", "enabled": true, "sort_order": 27 },
+    { "platform": "github", "owner": "soultrace-ai", "name": "soultrace-skill", "branch": "main", "enabled": true, "sort_order": 28 }
+  ]
+}

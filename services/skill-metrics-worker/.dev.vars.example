@@ -1,0 +1,4 @@
+# Optional: protects POST /events/install in production.
+# Create local .dev.vars and set your value.
+INGEST_BEARER_TOKEN=replace-with-your-token
+TRACKED_REPOS_ADMIN_TOKEN=replace-with-admin-token

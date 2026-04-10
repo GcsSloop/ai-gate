@@ -1,0 +1,18 @@
+{
+	"name": "skill-metrics-worker",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"deploy": "npx wrangler deploy --config wrangler.jsonc",
+		"dev": "npx wrangler dev --config wrangler.jsonc",
+		"start": "npx wrangler dev --config wrangler.jsonc",
+		"test": "vitest",
+		"cf-typegen": "npx wrangler types --config wrangler.jsonc"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.12.4",
+		"typescript": "^5.5.2",
+		"vitest": "~3.2.0",
+		"wrangler": "^3.101.0"
+	}
+}
