@@ -278,6 +278,12 @@ export type ToolingSkillRepo = {
   skill_count: number;
 };
 
+export type ToolingRepoOrderItem = {
+  platform?: "github" | "gitlab";
+  owner: string;
+  name: string;
+};
+
 export type ToolingRepoSearchResult = {
   platform?: "github" | "gitlab";
   owner: string;
@@ -329,6 +335,7 @@ export type ToolingSkillRecord = {
   source_kind: string;
   managed_path: string;
   installed_apps: Record<string, boolean>;
+  update_available?: boolean;
 };
 
 export type ToolingMcpTemplate = {
@@ -1078,6 +1085,19 @@ export async function removeToolingRepo(platform: "github" | "gitlab", owner: st
     const details = await response.text();
     throw new Error(details || "failed to remove tooling repo");
   }
+}
+
+export async function reorderToolingRepos(items: ToolingRepoOrderItem[]): Promise<ToolingSkillRepo[]> {
+  const response = await fetch(apiPath("/tooling/skills/repos/order"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to reorder tooling repos");
+  }
+  return response.json();
 }
 
 export async function searchToolingRepos(query: string): Promise<{ items: ToolingRepoSearchResult[] }> {

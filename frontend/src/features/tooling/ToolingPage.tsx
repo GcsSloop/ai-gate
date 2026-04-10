@@ -2,14 +2,14 @@ import {
   CheckCircleOutlined,
   CloudDownloadOutlined,
   DeleteOutlined,
-  EditOutlined,
+  DragOutlined,
   LinkOutlined,
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
 import { Button, Card, Checkbox, Empty, Input, Modal, Select, Space, Spin, Typography, message } from "antd";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 
 import {
   addToolingRepo,
@@ -24,6 +24,7 @@ import {
   removeToolingRepo,
   resolveToolingRepo,
   refreshToolingDiscoveredSkills,
+  reorderToolingRepos,
   updateToolingSkill,
   updateToolingRepo,
   type ToolingDiscoveredSkill,
@@ -90,6 +91,8 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   const [repoEditorOpen, setRepoEditorOpen] = useState(false);
   const [repoEditorMode, setRepoEditorMode] = useState<RepoEditorMode>("create");
   const [repoEditing, setRepoEditing] = useState<ToolingSkillRepo | null>(null);
+  const [repoDragKey, setRepoDragKey] = useState<string | null>(null);
+  const [repoOrdering, setRepoOrdering] = useState(false);
   const [repoForm, setRepoForm] = useState<RepoEditorForm>(() => createEmptyRepoForm());
   const [repoResolving, setRepoResolving] = useState(false);
   const [repoResolveError, setRepoResolveError] = useState("");
@@ -173,16 +176,30 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     };
   }, [skillDiscoverOpen, mode]);
 
-  const skillCount = state?.skill_stats.by_source.codex ?? 0;
+  const skillCount = useMemo(
+    () => (state?.installed_skills ?? []).reduce((count, skill) => count + (skill.installed_apps?.codex ? 1 : 0), 0),
+    [state?.installed_skills],
+  );
   const mcpCount = state?.mcp_servers.length ?? 0;
   const skills = useMemo(() => state?.installed_skills ?? [], [state?.installed_skills]);
-  const skillRepos = useMemo(
-    () => [...(state?.skill_repos ?? [])].sort((a, b) => `${a.platform ?? "github"}:${a.owner}/${a.name}`.localeCompare(`${b.platform ?? "github"}:${b.owner}/${b.name}`)),
-    [state?.skill_repos],
-  );
+  const skillRepos = useMemo(() => state?.skill_repos ?? [], [state?.skill_repos]);
+  const repoRanks = useMemo(() => {
+    const index = new Map<string, number>();
+    skillRepos.forEach((repo, order) => {
+      index.set(repoRecordKey(repo.platform ?? "github", repo.owner, repo.name), order);
+    });
+    return index;
+  }, [skillRepos]);
   const mcpServers = useMemo(() => state?.mcp_servers ?? [], [state?.mcp_servers]);
   const discoveredSkills = useMemo(() => {
-    const items = [...(discoveryResponse?.items ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+    const items = [...(discoveryResponse?.items ?? [])].sort((a, b) => {
+      const leftRank = repoRanks.get(repoRecordKey(a.platform, a.repo_owner, a.repo_name)) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = repoRanks.get(repoRecordKey(b.platform, b.repo_owner, b.repo_name)) ?? Number.MAX_SAFE_INTEGER;
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      return a.name.localeCompare(b.name);
+    });
     const query = discoveryQuery.trim().toLowerCase();
     if (!query) {
       return items;
@@ -190,7 +207,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     return items.filter((item) =>
       [item.name, item.description ?? "", item.repo_owner, item.repo_name, item.source_path].join(" ").toLowerCase().includes(query),
     );
-  }, [discoveryQuery, discoveryResponse?.items]);
+  }, [discoveryQuery, discoveryResponse?.items, repoRanks]);
 
   async function handleImportSkills() {
     setImportBusy(true);
@@ -491,6 +508,35 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     void openExternalUrl(buildRepoURL(repo.platform ?? "github", repo.owner, repo.name));
   }
 
+  async function handleRepoReorder(targetRepo: ToolingSkillRepo) {
+    if (!repoDragKey) {
+      return;
+    }
+    const targetKey = repoRecordKey(targetRepo.platform ?? "github", targetRepo.owner, targetRepo.name);
+    const reordered = reorderReposByKey(skillRepos, repoDragKey, targetKey);
+    if (reordered === skillRepos) {
+      return;
+    }
+    setState((current) => (current ? { ...current, skill_repos: reordered } : current));
+    setRepoOrdering(true);
+    try {
+      const next = await reorderToolingRepos(
+        reordered.map((repo) => ({
+          platform: repo.platform ?? "github",
+          owner: repo.owner,
+          name: repo.name,
+        })),
+      );
+      setState((current) => (current ? { ...current, skill_repos: next } : current));
+    } catch (error) {
+      void messageApi.error(error instanceof Error ? error.message : t("仓库排序失败"));
+      await reload({ background: true });
+    } finally {
+      setRepoOrdering(false);
+      setRepoDragKey(null);
+    }
+  }
+
   if (loading || !state) {
     return (
       <div className="dashboard-page tooling-page tooling-loading">
@@ -542,6 +588,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
                   key={skill.managed_path}
                   title={skill.name}
                   description={skill.description || skill.directory}
+                  updateAvailable={Boolean(skill.update_available)}
                   statuses={buildManagedStatuses(skill.installed_apps)}
                   busy={skillBusyName === skill.name}
                   toggleLabel={skill.installed_apps?.codex ? t(`停用 ${skill.name} 于 Codex`) : t(`启用 ${skill.name} 到 Codex`)}
@@ -654,7 +701,17 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
               <RepoManageRow
                 key={repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
                 repo={repo}
-                busy={repoBusyKey === repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
+                busy={repoOrdering || repoBusyKey === repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
+                dragging={repoDragKey === repoRecordKey(repo.platform ?? "github", repo.owner, repo.name)}
+                onDragStart={() => setRepoDragKey(repoRecordKey(repo.platform ?? "github", repo.owner, repo.name))}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  void handleRepoReorder(repo);
+                }}
+                onDragEnd={() => setRepoDragKey(null)}
                 onView={() => handleRepoView(repo)}
                 onEdit={() => openRepoEdit(repo)}
                 onDelete={() => void handleRepoRemove(repo)}
@@ -758,7 +815,7 @@ function markDiscoveredSkillInstalled(
 }
 
 function repoRecordKey(platform: string, owner: string, name: string): string {
-  return `${platform}:${owner}/${name}`;
+  return `${(platform || "github").toLowerCase()}:${owner.toLowerCase()}/${name.toLowerCase()}`;
 }
 
 function createEmptyRepoForm(): RepoEditorForm {
@@ -892,21 +949,43 @@ function DiscoveredSkillCard({
 function RepoManageRow({
   repo,
   busy,
+  dragging,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
   onView,
   onEdit,
   onDelete,
 }: {
   repo: ToolingSkillRepo;
   busy?: boolean;
+  dragging?: boolean;
+  onDragStart: () => void;
+  onDragOver: (event: DragEvent<HTMLDivElement>) => void;
+  onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
   onView: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const repoUrl = buildRepoURL(repo.platform ?? "github", repo.owner, repo.name);
   return (
-    <div className="tooling-repo-row">
+    <div
+      className={`tooling-repo-row ${dragging ? "is-dragging" : ""}`}
+      draggable
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+    >
       <div className="tooling-repo-main">
-        <div className="tooling-repo-title">{`${repo.owner}/${repo.name}`}</div>
+        <div className="tooling-repo-title">
+          <span className="tooling-repo-drag-handle" aria-hidden="true">
+            <DragOutlined />
+          </span>
+          {`${repo.owner}/${repo.name}`}
+        </div>
         <div className="stats-subtitle">{`${repo.skill_count} skills · ${repoUrl}`}</div>
       </div>
       <div className="tooling-repo-actions">
@@ -976,6 +1055,7 @@ function ManagedCard({
   description,
   titleVariant = "default",
   descriptionVariant = "default",
+  updateAvailable = false,
   statuses,
   busy,
   toggleLabel,
@@ -987,6 +1067,7 @@ function ManagedCard({
   description?: string;
   titleVariant?: "default" | "account";
   descriptionVariant?: "default" | "account";
+  updateAvailable?: boolean;
   statuses: ManagedClientStatus[];
   busy?: boolean;
   toggleLabel: string;
@@ -999,7 +1080,10 @@ function ManagedCard({
   return (
     <div className="tooling-item-card">
       <div className="tooling-item-main">
-        <div className={`tooling-item-title ${titleVariant === "account" ? "is-account" : ""}`}>{title}</div>
+        <div className="tooling-item-title-row">
+          <div className={`tooling-item-title ${titleVariant === "account" ? "is-account" : ""}`}>{title}</div>
+          {updateAvailable ? <span className="tooling-status-pill is-update">可更新</span> : null}
+        </div>
         {description ? (
           <div className={`tooling-item-description ${descriptionVariant === "account" ? "is-account" : "is-default"}`}>
             {description}
@@ -1044,6 +1128,21 @@ function ManagedCard({
       </div>
     </div>
   );
+}
+
+function reorderReposByKey(repos: ToolingSkillRepo[], sourceKey: string, targetKey: string): ToolingSkillRepo[] {
+  if (sourceKey === targetKey) {
+    return repos;
+  }
+  const fromIndex = repos.findIndex((repo) => repoRecordKey(repo.platform ?? "github", repo.owner, repo.name) === sourceKey);
+  const toIndex = repos.findIndex((repo) => repoRecordKey(repo.platform ?? "github", repo.owner, repo.name) === targetKey);
+  if (fromIndex < 0 || toIndex < 0) {
+    return repos;
+  }
+  const next = [...repos];
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, moved);
+  return next;
 }
 
 function DiscoveryRow({

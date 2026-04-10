@@ -21,6 +21,7 @@ vi.mock("../../lib/api", async () => {
     addToolingRepo: vi.fn(),
     updateToolingRepo: vi.fn(),
     removeToolingRepo: vi.fn(),
+    reorderToolingRepos: vi.fn(),
     importToolingMcpServers: vi.fn(),
     applyToolingMcpServer: vi.fn(),
     installToolingMcpServer: vi.fn(),
@@ -251,6 +252,16 @@ describe("ToolingPage", () => {
       skill_count: 12,
     });
     vi.mocked(api.removeToolingRepo).mockResolvedValue();
+    vi.mocked((api as typeof api & { reorderToolingRepos: typeof vi.fn }).reorderToolingRepos).mockImplementation(async (items) => {
+      return items.map((item) => ({
+        platform: item.platform ?? "github",
+        owner: item.owner,
+        name: item.name,
+        branch: "main",
+        enabled: true,
+        skill_count: item.name === "codex-superpowers" ? 12 : 0,
+      }));
+    });
     vi.mocked(api.importToolingMcpServers).mockResolvedValue({ imported: 1 });
     vi.mocked(api.applyToolingMcpServer).mockResolvedValue();
     vi.mocked(api.installToolingMcpServer).mockResolvedValue(buildToolingState().mcp_servers[0]);
@@ -261,7 +272,7 @@ describe("ToolingPage", () => {
     render(<ToolingPage mode="skills" t={(text) => text} />);
 
     expect(await screen.findByText("Skill 技能")).toBeInTheDocument();
-    expect(screen.getByText("Codex 2")).toBeInTheDocument();
+    expect(screen.getByText("Codex 1")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /导入已有/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /发现技能/ })).toBeInTheDocument();
     expect(screen.getByText("superpowers")).toBeInTheDocument();
