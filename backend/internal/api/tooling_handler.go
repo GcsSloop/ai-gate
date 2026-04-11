@@ -3295,11 +3295,11 @@ func discoverSkillsFromCentral(home string, clients []toolingClientState) ([]dis
 			Branch:   raw.Branch,
 			Enabled:  true,
 		})
-		sourcePath := strings.Trim(strings.TrimSpace(raw.SourcePath), "/")
+		sourcePath := normalizeDiscoveredSourcePath(raw.SourcePath)
 		if sourcePath == "" {
-			sourcePath = strings.Trim(strings.TrimSpace(raw.Name), "/")
+			sourcePath = normalizeDiscoveredSourcePath(raw.Name)
 		}
-		key := firstNonEmpty(strings.TrimSpace(raw.ID), discoveredSkillKey(repo.Platform, repo.Owner+"/"+repo.Name, repo.Branch, sourcePath))
+		key := discoveredSkillKey(repo.Platform, repo.Owner+"/"+repo.Name, repo.Branch, sourcePath)
 		record := discoveredSkillRecord{
 			ID:              key,
 			Name:            firstNonEmpty(strings.TrimSpace(raw.Name), filepath.Base(sourcePath), "Skill"),
@@ -4273,12 +4273,26 @@ func discoveredSkillKey(platform string, sourceRepo string, branch string, sourc
 	if strings.TrimSpace(sourceRepo) == "" {
 		return ""
 	}
+	normalizedSourcePath := normalizeDiscoveredSourcePath(sourcePath)
+	if normalizedSourcePath == "" {
+		return ""
+	}
 	return strings.ToLower(strings.Join([]string{
 		normalizeSkillRepoPlatform(platform),
 		strings.TrimSpace(sourceRepo),
 		firstNonEmpty(branch, "main"),
-		strings.Trim(strings.TrimSpace(sourcePath), "/"),
+		normalizedSourcePath,
 	}, ":"))
+}
+
+func normalizeDiscoveredSourcePath(raw string) string {
+	path := strings.Trim(strings.TrimSpace(raw), "/")
+	path = strings.ReplaceAll(path, "\\", "/")
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, "/skill.md") {
+		path = path[:len(path)-len("/skill.md")]
+	}
+	return strings.Trim(path, "/")
 }
 
 func encodeRepoPath(path string) string {
@@ -4343,10 +4357,22 @@ func installDiscoveredSkillCollection(home string, id string, method string, app
 
 func parseDiscoveredSkillID(id string) (platform string, repoFullName string, branch string, sourcePath string, err error) {
 	parts := strings.SplitN(strings.TrimSpace(id), ":", 4)
-	if len(parts) != 4 {
+	switch len(parts) {
+	case 4:
+		sourcePath = normalizeDiscoveredSourcePath(parts[3])
+		if sourcePath == "" {
+			return "", "", "", "", fmt.Errorf("invalid discovered skill id: %s", id)
+		}
+		return normalizeSkillRepoPlatform(parts[0]), parts[1], firstNonEmpty(parts[2], "main"), sourcePath, nil
+	case 3:
+		legacySourcePath := normalizeDiscoveredSourcePath(parts[2])
+		if legacySourcePath == "" {
+			return "", "", "", "", fmt.Errorf("invalid discovered skill id: %s", id)
+		}
+		return normalizeSkillRepoPlatform(parts[0]), parts[1], "main", legacySourcePath, nil
+	default:
 		return "", "", "", "", fmt.Errorf("invalid discovered skill id: %s", id)
 	}
-	return normalizeSkillRepoPlatform(parts[0]), parts[1], firstNonEmpty(parts[2], "main"), strings.Trim(parts[3], "/"), nil
 }
 
 func fetchDiscoveredSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]string, error) {
