@@ -5,6 +5,7 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -4174,9 +4175,7 @@ func fetchDiscoveredSkillFiles(repo skillRepoRecord, sourcePath string) (map[str
 
 func fetchGitHubSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]string, error) {
 	prefix := strings.Trim(sourcePath, "/")
-	files, err := fetchGitHubArchiveFiles(repo, func(filePath string) bool {
-		return pathWithinDiscoveredSkill(prefix, filePath)
-	})
+	files, err := fetchGitHubSkillFilesViaTree(repo, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -4185,6 +4184,97 @@ func fetchGitHubSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]
 		result[strings.TrimPrefix(strings.TrimPrefix(filePath, prefix), "/")] = raw
 	}
 	return result, nil
+}
+
+func fetchGitHubSkillFilesViaTree(repo skillRepoRecord, prefix string) (map[string]string, error) {
+	req, err := newGitHubAPIRequest(
+		http.MethodGet,
+		fmt.Sprintf(
+			"%s/repos/%s/%s/git/trees/%s",
+			githubAPIBase(),
+			url.PathEscape(repo.Owner),
+			url.PathEscape(repo.Name),
+			url.PathEscape(repo.Branch),
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+	params := req.URL.Query()
+	params.Set("recursive", "1")
+	req.URL.RawQuery = params.Encode()
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, describeGitHubHTTPError("tree", resp)
+	}
+	var payload struct {
+		Tree []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+			SHA  string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	files := map[string]string{}
+	for _, entry := range payload.Tree {
+		if entry.Type != "blob" || strings.TrimSpace(entry.SHA) == "" || !pathWithinDiscoveredSkill(prefix, entry.Path) {
+			continue
+		}
+		raw, err := fetchGitHubBlob(repo, entry.SHA)
+		if err != nil {
+			return nil, err
+		}
+		files[entry.Path] = raw
+	}
+	return files, nil
+}
+
+func fetchGitHubBlob(repo skillRepoRecord, sha string) (string, error) {
+	req, err := newGitHubAPIRequest(
+		http.MethodGet,
+		fmt.Sprintf(
+			"%s/repos/%s/%s/git/blobs/%s",
+			githubAPIBase(),
+			url.PathEscape(repo.Owner),
+			url.PathEscape(repo.Name),
+			url.PathEscape(strings.TrimSpace(sha)),
+		),
+	)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", describeGitHubHTTPError("blob", resp)
+	}
+	var payload struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	switch strings.ToLower(strings.TrimSpace(payload.Encoding)) {
+	case "", "base64":
+		decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(payload.Content, "\n", ""))
+		if err != nil {
+			return "", err
+		}
+		return string(decoded), nil
+	default:
+		return "", fmt.Errorf("unsupported github blob encoding: %s", payload.Encoding)
+	}
 }
 
 func fetchGitLabSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]string, error) {
