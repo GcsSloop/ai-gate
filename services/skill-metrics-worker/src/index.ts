@@ -46,6 +46,9 @@ type UserStats = {
 };
 
 type OverviewStats = UserStats & {
+  active_users_7d: number;
+  active_users_30d: number;
+  new_users_window: number;
   repos_total: number;
   repos_enabled: number;
   skills_total: number;
@@ -53,12 +56,17 @@ type OverviewStats = UserStats & {
   total_install_events: number;
   ranking_day: string;
   catalog_fetched_at: string;
+  catalog_version: string;
+  scan_success_rate: number;
+  scan_avg_duration_ms: number;
 };
 
 type UserInstallSummary = {
   user_hash: string;
+  total_events: number;
   installs: number;
   last_seen: string;
+  first_seen: string;
 };
 
 type UserSkillInstall = {
@@ -111,6 +119,7 @@ type ScanStatus = {
   current_index: number;
   current_repo?: string;
   message?: string;
+  batch_size?: number;
 };
 
 type ScanWorking = {
@@ -119,6 +128,23 @@ type ScanWorking = {
   repo_skill_counts: Record<string, number>;
   repo_stars: Record<string, number>;
   repo_errors: Record<string, string>;
+};
+
+type ScanFailureItem = {
+  repo_key: string;
+  repo: string;
+  error: string;
+};
+
+type ScanHistory = {
+  runs: Array<{
+    started_at: string;
+    finished_at?: string;
+    total_repos: number;
+    success_repos: number;
+    failed_repos: number;
+    duration_ms: number;
+  }>;
 };
 
 const CORS_HEADERS = {
@@ -135,6 +161,7 @@ const SKILL_CATALOG_CACHE_KEY = "catalog:skills:v1";
 const SKILL_CATALOG_TTL_SECONDS = 12 * 60 * 60;
 const SCAN_STATUS_CACHE_KEY = "scan:skills:status:v1";
 const SCAN_WORKING_CACHE_KEY = "scan:skills:working:v1";
+const SCAN_HISTORY_CACHE_KEY = "scan:skills:history:v1";
 const SCAN_WORKING_TTL_SECONDS = 2 * 24 * 60 * 60;
 const SCAN_DEFAULT_BATCH_SIZE = 12;
 const SKILLS_SOURCE_PAGES = [
@@ -254,8 +281,11 @@ export default {
         await assertAdmin(request, env);
         const limit = normalizeUsersLimit(url.searchParams.get("limit"));
         const offset = normalizeUsersOffset(url.searchParams.get("offset"));
-        const items = await listUsers(env, limit, offset);
-        return json({ items, limit, offset });
+        const query = trim(url.searchParams.get("q") ?? "", 120);
+        const sort = normalizeUserSort(url.searchParams.get("sort"));
+        const items = await listUsers(env, { limit, offset, query, sort });
+        const total = await countUsers(env, query);
+        return json({ items, total, limit, offset, query, sort });
       }
       if (request.method === "GET" && url.pathname.startsWith("/admin/api/users/") && url.pathname.endsWith("/skills")) {
         await assertAdmin(request, env);
@@ -263,8 +293,11 @@ export default {
         if (!userHash.trim()) {
           throw httpError(400, "invalid_user_hash");
         }
-        const items = await listSkillsForUser(env, userHash.trim());
-        return json({ user_hash: userHash.trim(), items });
+        const limit = normalizeUsersLimit(url.searchParams.get("limit"));
+        const offset = normalizeUsersOffset(url.searchParams.get("offset"));
+        const query = trim(url.searchParams.get("q") ?? "", 120);
+        const items = await listSkillsForUser(env, userHash.trim(), { limit, offset, query });
+        return json({ user_hash: userHash.trim(), items, limit, offset, query });
       }
       if (request.method === "GET" && url.pathname === "/admin/api/rankings/skills") {
         await assertAdmin(request, env);
@@ -278,24 +311,47 @@ export default {
         const force = url.searchParams.get("refresh") === "1";
         const limit = normalizeCatalogLimit(url.searchParams.get("limit"));
         const offset = normalizeCatalogOffset(url.searchParams.get("offset"));
+        const query = trim(url.searchParams.get("q") ?? "", 160);
         const catalog = await getSkillCatalog(env, force);
-        const sliced = sliceCatalog(catalog, offset, limit);
-        return json(sliced);
+        if (query) {
+          const filtered = filterAndSliceCatalog(catalog, query, offset, limit, []);
+          return json({
+            fetched_at: catalog.fetched_at,
+            repos: catalog.repos,
+            items: filtered.items,
+            total_items: filtered.total,
+            indexed_total: filtered.indexedTotal,
+            offset,
+            limit,
+            query,
+          });
+        }
+        return json(sliceCatalog(catalog, offset, limit));
       }
       if (request.method === "GET" && url.pathname === "/admin/api/scan/status") {
         await assertAdmin(request, env);
         const status = await getScanStatus(env);
-        return json(status);
+        return json({ ...status, failures: await listScanFailures(env) });
       }
       if (request.method === "POST" && url.pathname === "/admin/api/scan/start") {
         await assertAdmin(request, env);
         const status = await startCatalogScan(env);
         return json(status);
       }
+      if (request.method === "POST" && url.pathname === "/admin/api/scan/stop") {
+        await assertAdmin(request, env);
+        const status = await stopCatalogScan(env);
+        return json(status);
+      }
       if (request.method === "POST" && url.pathname === "/admin/api/scan/step") {
         await assertAdmin(request, env);
         const batchSize = normalizeScanBatchSize(url.searchParams.get("batch"));
         const status = await stepCatalogScan(env, batchSize);
+        return json(status);
+      }
+      if (request.method === "POST" && url.pathname === "/admin/api/scan/retry-failures") {
+        await assertAdmin(request, env);
+        const status = await retryFailedCatalogScan(env);
         return json(status);
       }
       if (request.method === "GET" && url.pathname === "/admin/api/tracked-repos") {
@@ -473,8 +529,17 @@ async function getUserStats(env: Env, windowDays: number): Promise<UserStats> {
 
 async function getOverviewStats(env: Env, windowDays: number, rankingDay: string): Promise<OverviewStats> {
   const userStats = await getUserStats(env, windowDays);
+  const active7d = await getUserStats(env, 7);
+  const active30d = await getUserStats(env, 30);
   const repos = await listTrackedRepos(env);
   const catalog = await getSkillCatalog(env, false);
+  const history = await getScanHistory(env);
+  const durationRows = history.runs.filter((item) => item.duration_ms > 0);
+  const avgDuration = durationRows.length
+    ? Math.round(durationRows.reduce((acc, item) => acc + item.duration_ms, 0) / durationRows.length)
+    : 0;
+  const totalRuns = history.runs.length;
+  const successRuns = history.runs.filter((item) => item.failed_repos === 0).length;
   const rankingTotalRes = await env.DB
     .prepare(
       `SELECT COUNT(DISTINCT skill_name) AS ranking_skills_total
@@ -487,9 +552,26 @@ async function getOverviewStats(env: Env, windowDays: number, rankingDay: string
   const installsRes = await env.DB
     .prepare("SELECT COUNT(1) AS total_install_events FROM install_events WHERE skill_name != '__client_active__'")
     .first<{ total_install_events: number }>();
+  const newUsersSince = new Date(Date.now() - userStats.active_window_days * 24 * 60 * 60 * 1000).toISOString();
+  const newUsersRes = await env.DB
+    .prepare(
+      `SELECT COUNT(1) AS new_users_window
+       FROM (
+         SELECT user_hash, MIN(created_at) AS first_seen
+         FROM install_events
+         GROUP BY user_hash
+       ) t
+       WHERE first_seen >= ?1`,
+    )
+    .bind(newUsersSince)
+    .first<{ new_users_window: number }>();
   const reposEnabled = repos.reduce((acc, repo) => acc + (repo.enabled ? 1 : 0), 0);
+  const catalogVersion = await sha256Hex(JSON.stringify([catalog.fetched_at, catalog.items.length, catalog.repos.length]));
   return {
     ...userStats,
+    active_users_7d: active7d.active_users,
+    active_users_30d: active30d.active_users,
+    new_users_window: Number(newUsersRes?.new_users_window ?? 0),
     repos_total: repos.length,
     repos_enabled: reposEnabled,
     skills_total: catalog.items.length,
@@ -497,24 +579,69 @@ async function getOverviewStats(env: Env, windowDays: number, rankingDay: string
     total_install_events: Number(installsRes?.total_install_events ?? 0),
     ranking_day: rankingDay,
     catalog_fetched_at: catalog.fetched_at,
+    catalog_version: catalogVersion.slice(0, 12),
+    scan_success_rate: totalRuns > 0 ? Number(((successRuns / totalRuns) * 100).toFixed(2)) : 0,
+    scan_avg_duration_ms: avgDuration,
   };
 }
 
-async function listUsers(env: Env, limit: number, offset: number): Promise<UserInstallSummary[]> {
-  const query = await env.DB
-    .prepare(
-      `SELECT user_hash, COUNT(1) AS installs, MAX(created_at) AS last_seen
-       FROM install_events
-       GROUP BY user_hash
-       ORDER BY last_seen DESC
-       LIMIT ?1 OFFSET ?2`,
-    )
-    .bind(limit, offset)
-    .all<UserInstallSummary>();
+async function listUsers(
+  env: Env,
+  options: { limit: number; offset: number; query: string; sort: "last_seen_desc" | "installs_desc" },
+): Promise<UserInstallSummary[]> {
+  const where = options.query ? "WHERE user_hash LIKE ?3" : "";
+  const orderBy = options.sort === "installs_desc" ? "installs DESC, last_seen DESC" : "last_seen DESC, installs DESC";
+  const stmt = env.DB.prepare(
+    `SELECT
+       user_hash,
+       COUNT(1) AS total_events,
+       SUM(CASE WHEN skill_name != '__client_active__' THEN 1 ELSE 0 END) AS installs,
+       MIN(created_at) AS first_seen,
+       MAX(created_at) AS last_seen
+     FROM install_events
+     ${where}
+     GROUP BY user_hash
+     ORDER BY ${orderBy}
+     LIMIT ?1 OFFSET ?2`,
+  );
+  const query = options.query
+    ? await stmt.bind(options.limit, options.offset, `%${options.query}%`).all<UserInstallSummary>()
+    : await stmt.bind(options.limit, options.offset).all<UserInstallSummary>();
   return query.results ?? [];
 }
 
-async function listSkillsForUser(env: Env, userHash: string): Promise<UserSkillInstall[]> {
+async function countUsers(env: Env, query: string): Promise<number> {
+  if (query) {
+    const row = await env.DB
+      .prepare("SELECT COUNT(DISTINCT user_hash) AS total FROM install_events WHERE user_hash LIKE ?1")
+      .bind(`%${query}%`)
+      .first<{ total: number }>();
+    return Number(row?.total ?? 0);
+  }
+  const row = await env.DB.prepare("SELECT COUNT(DISTINCT user_hash) AS total FROM install_events").first<{ total: number }>();
+  return Number(row?.total ?? 0);
+}
+
+async function listSkillsForUser(
+  env: Env,
+  userHash: string,
+  options: { limit: number; offset: number; query: string },
+): Promise<UserSkillInstall[]> {
+  if (options.query) {
+    const query = await env.DB
+      .prepare(
+        `SELECT skill_name, COALESCE(source_repo, '') AS source_repo, COUNT(1) AS installs, MAX(created_at) AS last_installed_at
+         FROM install_events
+         WHERE user_hash = ?1
+           AND skill_name != '__client_active__'
+           AND skill_name LIKE ?2
+         GROUP BY skill_name, source_repo
+         ORDER BY last_installed_at DESC, installs DESC, skill_name ASC`,
+      )
+      .bind(userHash, `%${options.query}%`)
+      .all<UserSkillInstall>();
+    return (query.results ?? []).slice(options.offset, options.offset + options.limit);
+  }
   const query = await env.DB
     .prepare(
       `SELECT skill_name, COALESCE(source_repo, '') AS source_repo, COUNT(1) AS installs, MAX(created_at) AS last_installed_at
@@ -526,7 +653,7 @@ async function listSkillsForUser(env: Env, userHash: string): Promise<UserSkillI
     )
     .bind(userHash)
     .all<UserSkillInstall>();
-  return query.results ?? [];
+  return (query.results ?? []).slice(options.offset, options.offset + options.limit);
 }
 
 async function listTrackedRepos(env: Env): Promise<TrackedRepoItem[]> {
@@ -657,17 +784,79 @@ async function getScanStatus(env: Env): Promise<ScanStatus> {
   return JSON.parse(raw) as ScanStatus;
 }
 
+async function getScanWorking(env: Env): Promise<ScanWorking | null> {
+  const raw = await env.SKILL_METRICS_CACHE.get(SCAN_WORKING_CACHE_KEY);
+  if (!raw) return null;
+  return JSON.parse(raw) as ScanWorking;
+}
+
+async function listScanFailures(env: Env): Promise<ScanFailureItem[]> {
+  const working = await getScanWorking(env);
+  if (working) {
+    const failures = Object.entries(working.repo_errors).map(([key, error]) => ({
+      repo_key: key,
+      repo: key.split(":")[1] ?? key,
+      error,
+    }));
+    failures.sort((a, b) => a.repo.localeCompare(b.repo, "en", { sensitivity: "base" }));
+    return failures;
+  }
+  const catalogRaw = await env.SKILL_METRICS_CACHE.get(SKILL_CATALOG_CACHE_KEY);
+  if (!catalogRaw) return [];
+  const catalog = JSON.parse(catalogRaw) as SkillCatalog;
+  const failures = (catalog.repos ?? [])
+    .filter((item) => item.error)
+    .map((item) => ({
+      repo_key: repoKey(item.platform, item.owner, item.name),
+      repo: `${item.owner}/${item.name}`,
+      error: item.error ?? "",
+    }));
+  failures.sort((a, b) => a.repo.localeCompare(b.repo, "en", { sensitivity: "base" }));
+  return failures;
+}
+
+async function getScanHistory(env: Env): Promise<ScanHistory> {
+  const raw = await env.SKILL_METRICS_CACHE.get(SCAN_HISTORY_CACHE_KEY);
+  if (!raw) return { runs: [] };
+  try {
+    const parsed = JSON.parse(raw) as ScanHistory;
+    if (!Array.isArray(parsed.runs)) return { runs: [] };
+    return { runs: parsed.runs.slice(0, 20) };
+  } catch {
+    return { runs: [] };
+  }
+}
+
+async function appendScanHistory(env: Env, status: ScanStatus): Promise<void> {
+  if (!status.started_at) return;
+  const finishedAt = status.finished_at || new Date().toISOString();
+  const durationMs = Math.max(0, Date.parse(finishedAt) - Date.parse(status.started_at));
+  const history = await getScanHistory(env);
+  history.runs.unshift({
+    started_at: status.started_at,
+    finished_at: status.finished_at,
+    total_repos: status.total_repos,
+    success_repos: status.success_repos,
+    failed_repos: status.failed_repos,
+    duration_ms: Number.isFinite(durationMs) ? durationMs : 0,
+  });
+  history.runs = history.runs.slice(0, 20);
+  await env.SKILL_METRICS_CACHE.put(SCAN_HISTORY_CACHE_KEY, JSON.stringify(history), { expirationTtl: SCAN_WORKING_TTL_SECONDS });
+}
+
 async function startCatalogScan(env: Env): Promise<ScanStatus> {
   const repos = (await listTrackedRepos(env)).filter((item) => item.enabled);
+  const now = new Date().toISOString();
   const status: ScanStatus = {
     running: true,
-    started_at: new Date().toISOString(),
+    started_at: now,
     total_repos: repos.length,
     processed_repos: 0,
     success_repos: 0,
     failed_repos: 0,
     current_index: 0,
     message: "running",
+    batch_size: SCAN_DEFAULT_BATCH_SIZE,
   };
   const sourceCounts = await fetchSkillCountsBySource();
   const working: ScanWorking = {
@@ -682,16 +871,31 @@ async function startCatalogScan(env: Env): Promise<ScanStatus> {
   return status;
 }
 
+async function stopCatalogScan(env: Env): Promise<ScanStatus> {
+  const status = await getScanStatus(env);
+  if (!status.running) return status;
+  const stopped: ScanStatus = {
+    ...status,
+    running: false,
+    finished_at: new Date().toISOString(),
+    message: "stopped_by_admin",
+  };
+  await env.SKILL_METRICS_CACHE.put(SCAN_STATUS_CACHE_KEY, JSON.stringify(stopped), { expirationTtl: SCAN_WORKING_TTL_SECONDS });
+  await appendScanHistory(env, stopped);
+  return stopped;
+}
+
 async function stepCatalogScan(env: Env, batchSize: number): Promise<ScanStatus> {
   const status = await getScanStatus(env);
   if (!status.running) return status;
-  const workingRaw = await env.SKILL_METRICS_CACHE.get(SCAN_WORKING_CACHE_KEY);
-  if (!workingRaw) {
+  status.batch_size = batchSize;
+  const working = await getScanWorking(env);
+  if (!working) {
     const stopped: ScanStatus = { ...status, running: false, finished_at: new Date().toISOString(), message: "working_state_missing" };
     await env.SKILL_METRICS_CACHE.put(SCAN_STATUS_CACHE_KEY, JSON.stringify(stopped), { expirationTtl: SCAN_WORKING_TTL_SECONDS });
+    await appendScanHistory(env, stopped);
     return stopped;
   }
-  const working = JSON.parse(workingRaw) as ScanWorking;
   const startIndex = status.current_index;
   const endIndex = Math.min(startIndex + batchSize, working.repos.length);
 
@@ -719,10 +923,52 @@ async function stepCatalogScan(env: Env, batchSize: number): Promise<ScanStatus>
     status.finished_at = new Date().toISOString();
     status.last_scan_at = status.finished_at;
     status.message = "completed";
+    await appendScanHistory(env, status);
   } else {
     status.message = "running";
   }
 
+  await env.SKILL_METRICS_CACHE.put(SCAN_STATUS_CACHE_KEY, JSON.stringify(status), { expirationTtl: SCAN_WORKING_TTL_SECONDS });
+  await env.SKILL_METRICS_CACHE.put(SCAN_WORKING_CACHE_KEY, JSON.stringify(working), { expirationTtl: SCAN_WORKING_TTL_SECONDS });
+  return status;
+}
+
+async function retryFailedCatalogScan(env: Env): Promise<ScanStatus> {
+  const failures = await listScanFailures(env);
+  if (!failures.length) {
+    return {
+      running: false,
+      started_at: "",
+      total_repos: 0,
+      processed_repos: 0,
+      success_repos: 0,
+      failed_repos: 0,
+      current_index: 0,
+      message: "no_failures",
+    };
+  }
+  const allRepos = await listTrackedRepos(env);
+  const failedKeys = new Set(failures.map((item) => item.repo_key));
+  const repos = allRepos.filter((item) => item.enabled && failedKeys.has(repoKey(item.platform, item.owner, item.name)));
+  const status: ScanStatus = {
+    running: true,
+    started_at: new Date().toISOString(),
+    total_repos: repos.length,
+    processed_repos: 0,
+    success_repos: 0,
+    failed_repos: 0,
+    current_index: 0,
+    message: "retry_failures",
+    batch_size: SCAN_DEFAULT_BATCH_SIZE,
+  };
+  const sourceCounts = await fetchSkillCountsBySource();
+  const working: ScanWorking = {
+    started_at: status.started_at,
+    repos,
+    repo_skill_counts: sourceCounts,
+    repo_stars: {},
+    repo_errors: {},
+  };
   await env.SKILL_METRICS_CACHE.put(SCAN_STATUS_CACHE_KEY, JSON.stringify(status), { expirationTtl: SCAN_WORKING_TTL_SECONDS });
   await env.SKILL_METRICS_CACHE.put(SCAN_WORKING_CACHE_KEY, JSON.stringify(working), { expirationTtl: SCAN_WORKING_TTL_SECONDS });
   return status;
@@ -1265,6 +1511,12 @@ function normalizeUsersOffset(input?: string | null): number {
   return Math.floor(parsed);
 }
 
+function normalizeUserSort(input?: string | null): "last_seen_desc" | "installs_desc" {
+  const value = (input ?? "").trim().toLowerCase();
+  if (value === "installs_desc") return "installs_desc";
+  return "last_seen_desc";
+}
+
 function normalizeCatalogLimit(input?: string | null): number {
   const parsed = Number(input ?? 300);
   if (!Number.isFinite(parsed) || parsed <= 0) return 300;
@@ -1559,15 +1811,28 @@ function renderAdminPage(initialAuthenticated: boolean): string {
           <div class="stats">
             <div class="stat"><span class="muted">累计匿名用户</span><b id="totalUsers">-</b></div>
             <div class="stat"><span class="muted" id="activeUsersLabel">活跃用户（1天）</span><b id="activeUsers">-</b></div>
+            <div class="stat"><span class="muted">活跃用户（7天）</span><b id="activeUsers7d">-</b></div>
+            <div class="stat"><span class="muted">活跃用户（30天）</span><b id="activeUsers30d">-</b></div>
+            <div class="stat"><span class="muted" id="newUsersLabel">窗口新增用户</span><b id="newUsersWindow">-</b></div>
             <div class="stat"><span class="muted">仓库总数</span><b id="repoCount">-</b></div>
             <div class="stat"><span class="muted">启用仓库数</span><b id="repoEnabledCount">-</b></div>
             <div class="stat"><span class="muted">已收录技能数</span><b id="skillCount">-</b></div>
             <div class="stat"><span class="muted">排行榜技能数（当日）</span><b id="rankingCount">-</b></div>
             <div class="stat"><span class="muted">安装事件总数</span><b id="installEventCount">-</b></div>
+            <div class="stat"><span class="muted">扫描成功率</span><b id="scanSuccessRate">-</b></div>
+            <div class="stat"><span class="muted">扫描平均耗时</span><b id="scanAvgDuration">-</b></div>
+            <div class="stat"><span class="muted">目录版本</span><b class="mono" id="catalogVersion">-</b></div>
           </div>
           <div class="row" style="margin-top:12px">
             <button id="startScanBtn" class="primary">手动触发扫描</button>
+            <button id="stopScanBtn">停止扫描</button>
+            <button id="retryFailedScanBtn">失败重试</button>
             <button id="stepScanBtn">继续扫描一步</button>
+            <select id="scanBatchSize">
+              <option value="6">批次 6</option>
+              <option value="12" selected>批次 12</option>
+              <option value="24">批次 24</option>
+            </select>
             <span class="muted" id="scanProgress">未开始</span>
           </div>
           <div class="progress-wrap">
@@ -1580,6 +1845,13 @@ function renderAdminPage(initialAuthenticated: boolean): string {
               <span id="scanProgressSuccess">成功 0</span>
               <span id="scanProgressFailed">失败 0</span>
             </div>
+          </div>
+          <div class="row" style="margin-top:12px"><span class="muted">扫描失败明细</span></div>
+          <div class="table-wrap" style="max-height:220px">
+            <table>
+              <thead><tr><th>仓库</th><th>错误</th></tr></thead>
+              <tbody id="scanFailureRows"></tbody>
+            </table>
           </div>
         </div>
 
@@ -1606,6 +1878,7 @@ function renderAdminPage(initialAuthenticated: boolean): string {
             <span class="muted">按技能名称排序，含来源仓库和原始链接</span>
           </div>
           <div class="row" style="margin-bottom:10px">
+            <input id="catalogQuery" placeholder="按名称/仓库/路径搜索（回车触发）" style="min-width:360px;max-width:100%" />
             <input id="catalogOffset" type="number" value="0" style="width:120px" />
             <input id="catalogLimit" type="number" value="300" style="width:120px" />
             <button id="loadCatalogPageBtn">加载分页</button>
@@ -1637,8 +1910,15 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         <div class="panel tab-panel" id="tab-users">
           <h2>用户安装技能</h2>
           <div class="row" style="margin-bottom:10px">
+            <input id="userQuery" placeholder="按匿名ID搜索（前缀）" style="min-width:260px;max-width:100%" />
+            <select id="userSort">
+              <option value="last_seen_desc">按最近活跃</option>
+              <option value="installs_desc">按安装数</option>
+            </select>
+            <input id="userOffset" type="number" value="0" style="width:120px" />
+            <input id="userLimit" type="number" value="100" style="width:120px" />
             <button id="refreshUsersBtn">刷新用户列表</button>
-            <span class="muted">点击用户查看安装明细</span>
+            <span class="muted" id="usersPageInfo">点击用户查看安装明细</span>
           </div>
           <div class="row" style="align-items:flex-start">
             <div style="flex:1; min-width:360px">
@@ -1651,6 +1931,12 @@ function renderAdminPage(initialAuthenticated: boolean): string {
             </div>
             <div style="flex:1; min-width:360px">
               <div class="mono muted" id="userSkillTitle">选择左侧用户</div>
+              <div class="row" style="margin:8px 0">
+                <input id="userSkillQuery" placeholder="筛选 skill 名称" style="min-width:220px;max-width:100%" />
+                <input id="userSkillOffset" type="number" value="0" style="width:100px" />
+                <input id="userSkillLimit" type="number" value="100" style="width:100px" />
+                <button id="refreshUserSkillBtn">刷新明细</button>
+              </div>
               <div class="table-wrap">
                 <table>
                   <thead><tr><th>Skill</th><th>来源</th><th>次数</th><th>最近时间</th></tr></thead>
@@ -1663,7 +1949,7 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       </div>
     </div>
     <script>
-      const state = { authenticated: ${initialAuthenticated ? "true" : "false"} };
+      const state = { authenticated: ${initialAuthenticated ? "true" : "false"}, selectedUser: "" };
       const byId = (id) => document.getElementById(id);
 
       async function request(path, options) {
@@ -1724,25 +2010,35 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         const s = await request("/admin/api/stats/overview?" + query.toString());
         byId("totalUsers").textContent = s.total_users || 0;
         byId("activeUsers").textContent = s.active_users || 0;
+        byId("activeUsers7d").textContent = s.active_users_7d || 0;
+        byId("activeUsers30d").textContent = s.active_users_30d || 0;
+        byId("newUsersWindow").textContent = s.new_users_window || 0;
         byId("activeUsersLabel").textContent = "活跃用户（" + (s.active_window_label || "1天") + "）";
+        byId("newUsersLabel").textContent = (s.active_window_label || "1天") + "内新增用户";
         byId("repoCount").textContent = s.repos_total || 0;
         byId("repoEnabledCount").textContent = s.repos_enabled || 0;
         byId("skillCount").textContent = s.skills_total || 0;
         byId("rankingCount").textContent = s.ranking_skills_total || 0;
         byId("installEventCount").textContent = s.total_install_events || 0;
+        byId("scanSuccessRate").textContent = (s.scan_success_rate || 0) + "%";
+        byId("scanAvgDuration").textContent = formatDuration(s.scan_avg_duration_ms || 0);
+        byId("catalogVersion").textContent = s.catalog_version || "-";
         byId("overviewHint").textContent = "目录缓存: " + (s.catalog_fetched_at || "-") + " | 排行榜日期: " + (s.ranking_day || "-");
       }
 
       async function loadCatalog(forceRefresh, customOffset, customLimit) {
         const offset = typeof customOffset === "number" ? customOffset : Number(byId("catalogOffset").value || 0);
         const limit = typeof customLimit === "number" ? customLimit : Number(byId("catalogLimit").value || 300);
+        const q = (byId("catalogQuery").value || "").trim();
         const query = new URLSearchParams();
         if (forceRefresh) query.set("refresh", "1");
         query.set("offset", String(offset));
         query.set("limit", String(limit));
+        if (q) query.set("q", q);
         const data = await request("/admin/api/skills/final?" + query.toString());
         byId("catalogFetchedAt").textContent = "技能目录缓存时间: " + (data.fetched_at || "-");
-        byId("catalogPageInfo").textContent = "总计 " + (data.total_items || 0) + "，当前 offset=" + (data.offset || 0) + "，limit=" + (data.limit || 0);
+        const indexed = typeof data.indexed_total === "number" ? "，索引总量 " + data.indexed_total : "";
+        byId("catalogPageInfo").textContent = "总计 " + (data.total_items || 0) + indexed + "，当前 offset=" + (data.offset || 0) + "，limit=" + (data.limit || 0);
 
         const tbody = byId("repoRows");
         tbody.innerHTML = "";
@@ -1788,6 +2084,7 @@ function renderAdminPage(initialAuthenticated: boolean): string {
           byId("scanProgressCount").textContent = "0/0";
           byId("scanProgressSuccess").textContent = "成功 0";
           byId("scanProgressFailed").textContent = "失败 0";
+          byId("scanFailureRows").innerHTML = "";
           return;
         }
         const total = Number(data.total_repos || 0);
@@ -1805,6 +2102,13 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         byId("scanProgressCount").textContent = processed + "/" + total;
         byId("scanProgressSuccess").textContent = "成功 " + (data.success_repos || 0);
         byId("scanProgressFailed").textContent = "失败 " + (data.failed_repos || 0);
+        const failureRows = byId("scanFailureRows");
+        failureRows.innerHTML = "";
+        for (const item of data.failures || []) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = "<td class='mono'>" + item.repo + "</td><td class='mono'>" + item.error + "</td>";
+          failureRows.appendChild(tr);
+        }
       }
 
       async function startScan() {
@@ -1812,14 +2116,26 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         await driveScanUntilComplete();
       }
 
+      async function stopScan() {
+        await request("/admin/api/scan/stop", { method: "POST" });
+        await updateScanStatus();
+      }
+
+      async function retryFailedScan() {
+        await request("/admin/api/scan/retry-failures", { method: "POST" });
+        await driveScanUntilComplete();
+      }
+
       async function stepScan() {
-        await request("/admin/api/scan/step", { method: "POST" });
+        const batch = Number(byId("scanBatchSize").value || 12);
+        await request("/admin/api/scan/step?batch=" + encodeURIComponent(String(batch)), { method: "POST" });
         await updateScanStatus();
       }
 
       async function driveScanUntilComplete() {
+        const batch = Number(byId("scanBatchSize").value || 12);
         for (let i = 0; i < 200; i += 1) {
-          const status = await request("/admin/api/scan/step", { method: "POST" });
+          const status = await request("/admin/api/scan/step?batch=" + encodeURIComponent(String(batch)), { method: "POST" });
           await updateScanStatus();
           if (!status.running) break;
           await new Promise((resolve) => setTimeout(resolve, 300));
@@ -1859,7 +2175,14 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       }
 
       async function loadUsers() {
-        const data = await request("/admin/api/users?limit=100");
+        const query = new URLSearchParams();
+        query.set("limit", String(Number(byId("userLimit").value || 100)));
+        query.set("offset", String(Number(byId("userOffset").value || 0)));
+        const userQuery = (byId("userQuery").value || "").trim();
+        const userSort = (byId("userSort").value || "last_seen_desc").trim();
+        if (userQuery) query.set("q", userQuery);
+        if (userSort) query.set("sort", userSort);
+        const data = await request("/admin/api/users?" + query.toString());
         const tbody = byId("userRows");
         tbody.innerHTML = "";
         for (const item of data.items || []) {
@@ -1867,20 +2190,28 @@ function renderAdminPage(initialAuthenticated: boolean): string {
           const tr = document.createElement("tr");
           tr.innerHTML = "<td class='mono'><a href='#' data-user='" + user + "'>" + user + "</a></td>" +
             "<td>" + item.installs + "</td>" +
-            "<td class='mono'>" + (item.last_seen || "") + "</td>";
+            "<td class='mono'>" + (item.last_seen || "") + "<div class='muted mono'>首次: " + (item.first_seen || "") + " / 事件: " + (item.total_events || 0) + "</div></td>";
           tbody.appendChild(tr);
         }
+        byId("usersPageInfo").textContent = "共 " + (data.total || 0) + " 用户，当前 offset=" + (data.offset || 0) + "，limit=" + (data.limit || 0);
         tbody.querySelectorAll("a[data-user]").forEach((a) => {
           a.addEventListener("click", async (e) => {
             e.preventDefault();
-            await loadUserSkills(a.getAttribute("data-user"));
+            state.selectedUser = a.getAttribute("data-user") || "";
+            await loadUserSkills(state.selectedUser);
           });
         });
       }
 
       async function loadUserSkills(user) {
+        if (!user) return;
         byId("userSkillTitle").textContent = user;
-        const data = await request("/admin/api/users/" + encodeURIComponent(user) + "/skills");
+        const query = new URLSearchParams();
+        query.set("limit", String(Number(byId("userSkillLimit").value || 100)));
+        query.set("offset", String(Number(byId("userSkillOffset").value || 0)));
+        const skillQuery = (byId("userSkillQuery").value || "").trim();
+        if (skillQuery) query.set("q", skillQuery);
+        const data = await request("/admin/api/users/" + encodeURIComponent(user) + "/skills?" + query.toString());
         const tbody = byId("userSkillRows");
         tbody.innerHTML = "";
         for (const item of data.items || []) {
@@ -1898,6 +2229,14 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         await Promise.all([loadStats(), loadCatalog(false), loadRanking(), loadUsers(), updateScanStatus()]);
       }
 
+      function formatDuration(ms) {
+        const value = Number(ms || 0);
+        if (!Number.isFinite(value) || value <= 0) return "-";
+        if (value < 1000) return value + "ms";
+        if (value < 60000) return (value / 1000).toFixed(1) + "s";
+        return Math.round(value / 60000) + "m";
+      }
+
       setupTabs();
       byId("loginBtn").addEventListener("click", login);
       byId("password").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
@@ -1908,10 +2247,16 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       byId("loadCatalogPageBtn").addEventListener("click", () => loadCatalog(false));
       byId("refreshRankBtn").addEventListener("click", loadRanking);
       byId("refreshUsersBtn").addEventListener("click", loadUsers);
+      byId("refreshUserSkillBtn").addEventListener("click", () => loadUserSkills(state.selectedUser));
       byId("refreshOverviewBtn").addEventListener("click", loadStats);
       byId("activeWindow").addEventListener("change", loadStats);
       byId("startScanBtn").addEventListener("click", startScan);
+      byId("stopScanBtn").addEventListener("click", stopScan);
+      byId("retryFailedScanBtn").addEventListener("click", retryFailedScan);
       byId("stepScanBtn").addEventListener("click", stepScan);
+      byId("catalogQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") loadCatalog(false, 0); });
+      byId("userQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") { byId("userOffset").value = "0"; loadUsers(); } });
+      byId("userSkillQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") { byId("userSkillOffset").value = "0"; loadUserSkills(state.selectedUser); } });
 
       loadSession().then(loadAll);
     </script>
