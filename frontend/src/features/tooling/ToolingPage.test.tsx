@@ -432,6 +432,11 @@ describe("ToolingPage", () => {
     await waitFor(() =>
       expect(vi.mocked((api as typeof api & { installToolingDiscoveredSkill: typeof vi.fn }).installToolingDiscoveredSkill)).toHaveBeenCalledWith({
         id: "github:openai/codex-skills:main:skills/zulu",
+        platform: "github",
+        repo_owner: "openai",
+        repo_name: "codex-skills",
+        branch: "main",
+        source_path: "skills/zulu",
         apps: ["codex"],
       }),
     );

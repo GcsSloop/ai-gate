@@ -35,14 +35,12 @@ const (
 	skillDiscoveryAutoRefreshJitterMax = 3 * time.Hour
 	skillMetricsHeartbeatName          = "__client_active__"
 	skillMetricsHeartbeatSource        = "__aigate_client__"
-	skillMetricsActiveReportInterval   = 12 * time.Hour
-	skillMetricsRetryInterval          = time.Hour
-	skillMetricsMaxRetry               = 3
-	skillMetricsPendingQueueMaxItems   = 200
+	skillMetricsActiveReportInterval   = time.Hour
 )
 
 var toolingSupportedApps = []string{"codex"}
 var skillMetricsReportMu sync.Mutex
+var skillMetricsHeartbeatHomes sync.Map
 
 type defaultSkillRepoSeed struct {
 	Platform string
@@ -53,10 +51,7 @@ type defaultSkillRepoSeed struct {
 }
 
 type ToolingHandler struct {
-	mu                  sync.Mutex
-	autoRefreshMu       sync.Mutex
-	autoRefreshInFlight bool
-	autoRefreshLastTry  time.Time
+	mu sync.Mutex
 }
 
 func NewToolingHandler() *ToolingHandler {
@@ -246,8 +241,13 @@ type toolingSkillUpdateRequest struct {
 }
 
 type toolingDiscoveredSkillInstallRequest struct {
-	ID   string   `json:"id"`
-	Apps []string `json:"apps"`
+	ID         string   `json:"id"`
+	Platform   string   `json:"platform,omitempty"`
+	RepoOwner  string   `json:"repo_owner,omitempty"`
+	RepoName   string   `json:"repo_name,omitempty"`
+	Branch     string   `json:"branch,omitempty"`
+	SourcePath string   `json:"source_path,omitempty"`
+	Apps       []string `json:"apps"`
 }
 
 type toolingRepoRequest struct {
@@ -370,12 +370,8 @@ func (h *ToolingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.getState(w)
 	case r.Method == http.MethodPut && r.URL.Path == "/tooling/settings":
 		h.updateSettings(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/tooling/skills/discover":
-		h.getDiscoveredSkills(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/discover/install":
 		h.installDiscoveredSkill(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/discover/refresh":
-		h.refreshDiscoveredSkills(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/import":
 		h.importSkills(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/apply":
@@ -428,13 +424,11 @@ func (h *ToolingHandler) getState(w http.ResponseWriter) {
 	cfg, _ = h.syncManagedCodexMcpServers(home, cfg)
 	clients := toolingClientStates(home)
 	skills := scanManagedSkills(home, clients)
-	cache, _ := loadSkillDiscoveryCache(home)
-	applySkillUpdateFlags(skills, cache.Items)
+	ensureToolingClientActiveHeartbeat(home)
 	go reportToolingClientActive(home)
 	repoResults := defaultRepoSearchResults()
 	discoveredServers := discoverMcpServers(home)
 	servers := h.buildMcpViews(home, cfg)
-	h.maybeScheduleDailySkillDiscoveryRefresh(home, cache)
 
 	writeJSON(w, http.StatusOK, toolingStateResponse{
 		SkillSyncMethod:      normalizeSkillSyncMethod(cfg.SkillSyncMethod),
@@ -449,33 +443,20 @@ func (h *ToolingHandler) getState(w http.ResponseWriter) {
 	})
 }
 
-func (h *ToolingHandler) maybeScheduleDailySkillDiscoveryRefresh(home string, cache skillDiscoveryCache) {
-	now := timeNowUTC()
-	if nextAutoAt, _ := time.Parse(time.RFC3339, strings.TrimSpace(cache.NextAutoRefreshAt)); !nextAutoAt.IsZero() && now.Before(nextAutoAt) {
+func ensureToolingClientActiveHeartbeat(home string) {
+	if strings.TrimSpace(home) == "" {
 		return
 	}
-	parsedFetchedAt, _ := time.Parse(time.RFC3339, strings.TrimSpace(cache.FetchedAt))
-	if !parsedFetchedAt.IsZero() && now.Sub(parsedFetchedAt) < 24*time.Hour {
+	if _, exists := skillMetricsHeartbeatHomes.LoadOrStore(home, struct{}{}); exists {
 		return
 	}
-	h.autoRefreshMu.Lock()
-	defer h.autoRefreshMu.Unlock()
-	if h.autoRefreshInFlight {
-		return
-	}
-	if !h.autoRefreshLastTry.IsZero() && now.Sub(h.autoRefreshLastTry) < 5*time.Minute {
-		return
-	}
-	h.autoRefreshInFlight = true
-	h.autoRefreshLastTry = now
-	go func() {
-		defer func() {
-			h.autoRefreshMu.Lock()
-			h.autoRefreshInFlight = false
-			h.autoRefreshMu.Unlock()
-		}()
-		_, _, _ = h.refreshSkillDiscovery(home)
-	}()
+	go func(homeDir string) {
+		ticker := time.NewTicker(skillMetricsActiveReportInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			reportToolingClientActive(homeDir)
+		}
+	}(home)
 }
 
 func (h *ToolingHandler) updateSettings(w http.ResponseWriter, r *http.Request) {
@@ -500,80 +481,19 @@ func (h *ToolingHandler) updateSettings(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"skill_sync_method": cfg.SkillSyncMethod})
 }
 
-func (h *ToolingHandler) getDiscoveredSkills(w http.ResponseWriter, r *http.Request) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	limit, offset := parseDiscoveredPaging(r.URL.Query())
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	cache, ok := loadSkillDiscoveryCache(home)
-	if ok {
-		matched := filterDiscoveredItems(cache.Items, query)
-		items, total := sliceDiscoveredItems(matched, limit, offset)
-		writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
-			Cached:       true,
-			FetchedAt:    cache.FetchedAt,
-			IndexedTotal: len(cache.Items),
-			Total:        total,
-			Offset:       offset,
-			Limit:        limit,
-			Query:        query,
-			Items:        items,
-		})
-		return
-	}
-	items, fetchedAt, err := h.refreshSkillDiscovery(home)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	matched := filterDiscoveredItems(items, query)
-	paged, total := sliceDiscoveredItems(matched, limit, offset)
-	writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
-		Cached:       false,
-		FetchedAt:    fetchedAt,
-		IndexedTotal: len(items),
-		Total:        total,
-		Offset:       offset,
-		Limit:        limit,
-		Query:        query,
-		Items:        paged,
-	})
-}
-
-func (h *ToolingHandler) refreshDiscoveredSkills(w http.ResponseWriter, r *http.Request) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	items, fetchedAt, err := h.refreshSkillDiscovery(home)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	limit, offset := parseDiscoveredPaging(r.URL.Query())
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	matched := filterDiscoveredItems(items, query)
-	paged, total := sliceDiscoveredItems(matched, limit, offset)
-	writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
-		Cached:       false,
-		FetchedAt:    fetchedAt,
-		IndexedTotal: len(items),
-		Total:        total,
-		Offset:       offset,
-		Limit:        limit,
-		Query:        query,
-		Items:        paged,
-	})
-}
-
 func (h *ToolingHandler) installDiscoveredSkill(w http.ResponseWriter, r *http.Request) {
 	var req toolingDiscoveredSkillInstallRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		repoFullName := strings.Trim(strings.TrimSpace(req.RepoOwner), "/") + "/" + strings.Trim(strings.TrimSpace(req.RepoName), "/")
+		id = discoveredSkillKey(req.Platform, repoFullName, firstNonEmpty(strings.TrimSpace(req.Branch), "main"), req.SourcePath)
+	}
+	if strings.TrimSpace(id) == "" {
+		http.Error(w, "invalid discovered skill install payload", http.StatusBadRequest)
 		return
 	}
 	home, err := os.UserHomeDir()
@@ -583,12 +503,12 @@ func (h *ToolingHandler) installDiscoveredSkill(w http.ResponseWriter, r *http.R
 	}
 	cfg := h.loadConfig(home)
 	method := normalizeSkillSyncMethod(cfg.SkillSyncMethod)
-	applied, err := installDiscoveredSkillCollection(home, req.ID, method, reqApps(req.Apps))
+	applied, err := installDiscoveredSkillCollection(home, id, method, reqApps(req.Apps))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	go reportDiscoveredSkillInstall(home, req.ID)
+	go reportDiscoveredSkillInstall(home, id)
 	writeJSON(w, http.StatusOK, map[string]any{"applied": applied, "enabled": true, "skill_sync_method": method})
 }
 
@@ -3456,18 +3376,6 @@ type skillMetricsReportState struct {
 	LastActiveAt string `json:"last_active_at,omitempty"`
 }
 
-type pendingSkillMetricsEvent struct {
-	Kind        string            `json:"kind"`
-	Payload     map[string]string `json:"payload"`
-	RetryCount  int               `json:"retry_count"`
-	NextRetryAt string            `json:"next_retry_at,omitempty"`
-	CreatedAt   string            `json:"created_at,omitempty"`
-}
-
-type pendingSkillMetricsQueue struct {
-	Items []pendingSkillMetricsEvent `json:"items"`
-}
-
 type skillMetricsHTTPError struct {
 	StatusCode int
 	Body       string
@@ -3487,10 +3395,6 @@ func toolingAnonymousClientIDPath(home string) string {
 
 func toolingSkillMetricsStatePath(home string) string {
 	return filepath.Join(aigateDataRoot(home), "tooling", "skill-metrics-state.json")
-}
-
-func toolingSkillMetricsPendingPath(home string) string {
-	return filepath.Join(aigateDataRoot(home), "tooling", "skill-metrics-pending.json")
 }
 
 func loadOrCreateToolingAnonymousID(home string) (string, error) {
@@ -3555,40 +3459,6 @@ func saveSkillMetricsState(home string, state skillMetricsReportState) error {
 	return writeAtomic(path, append(raw, '\n'), 0o600)
 }
 
-func loadPendingSkillMetricsQueue(home string) pendingSkillMetricsQueue {
-	path := toolingSkillMetricsPendingPath(home)
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return pendingSkillMetricsQueue{}
-	}
-	var queue pendingSkillMetricsQueue
-	if json.Unmarshal(raw, &queue) != nil {
-		return pendingSkillMetricsQueue{}
-	}
-	if len(queue.Items) > skillMetricsPendingQueueMaxItems {
-		queue.Items = queue.Items[len(queue.Items)-skillMetricsPendingQueueMaxItems:]
-	}
-	return queue
-}
-
-func savePendingSkillMetricsQueue(home string, queue pendingSkillMetricsQueue) error {
-	path := toolingSkillMetricsPendingPath(home)
-	if len(queue.Items) == 0 {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
-	raw, err := json.Marshal(queue)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return writeAtomic(path, append(raw, '\n'), 0o600)
-}
-
 func shouldThrottleActiveMetric(home string, now time.Time) bool {
 	state := loadSkillMetricsState(home)
 	lastAt, err := time.Parse(time.RFC3339, strings.TrimSpace(state.LastActiveAt))
@@ -3606,78 +3476,6 @@ func markActiveMetricScheduled(home string, now time.Time) {
 	}
 }
 
-func queueSkillMetricsEvent(home string, kind string, payload map[string]string, nextRetryAt time.Time) {
-	queue := loadPendingSkillMetricsQueue(home)
-	item := pendingSkillMetricsEvent{
-		Kind:        strings.TrimSpace(kind),
-		Payload:     payload,
-		RetryCount:  0,
-		NextRetryAt: nextRetryAt.UTC().Format(time.RFC3339),
-		CreatedAt:   timeNowUTC().UTC().Format(time.RFC3339),
-	}
-	queue.Items = append(queue.Items, item)
-	if len(queue.Items) > skillMetricsPendingQueueMaxItems {
-		queue.Items = queue.Items[len(queue.Items)-skillMetricsPendingQueueMaxItems:]
-	}
-	if err := savePendingSkillMetricsQueue(home, queue); err != nil {
-		fmt.Fprintf(os.Stderr, "save pending skill metrics queue failed: %v\n", err)
-	}
-}
-
-func flushPendingSkillMetricsEvents(home string, baseURL string, now time.Time) {
-	queue := loadPendingSkillMetricsQueue(home)
-	if len(queue.Items) == 0 {
-		return
-	}
-	next := make([]pendingSkillMetricsEvent, 0, len(queue.Items))
-	for _, item := range queue.Items {
-		runAt := parseTimestamp(item.NextRetryAt)
-		if !runAt.IsZero() && now.Before(runAt) {
-			next = append(next, item)
-			continue
-		}
-		statusCode, err := sendSkillMetricsInstallEvent(baseURL, item.Payload)
-		if err == nil {
-			continue
-		}
-		if !shouldRetrySkillMetric(statusCode, err) {
-			fmt.Fprintf(os.Stderr, "drop pending skill metrics event (%s): %v\n", item.Kind, err)
-			continue
-		}
-		item.RetryCount++
-		if item.RetryCount >= skillMetricsMaxRetry {
-			fmt.Fprintf(os.Stderr, "drop pending skill metrics event after retries (%s): %v\n", item.Kind, err)
-			continue
-		}
-		item.NextRetryAt = now.Add(skillMetricsRetryInterval).UTC().Format(time.RFC3339)
-		next = append(next, item)
-	}
-	if err := savePendingSkillMetricsQueue(home, pendingSkillMetricsQueue{Items: next}); err != nil {
-		fmt.Fprintf(os.Stderr, "save pending skill metrics queue failed: %v\n", err)
-	}
-}
-
-func parseTimestamp(raw string) time.Time {
-	if strings.TrimSpace(raw) == "" {
-		return time.Time{}
-	}
-	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
-	if err != nil {
-		return time.Time{}
-	}
-	return parsed
-}
-
-func shouldRetrySkillMetric(statusCode int, err error) bool {
-	if err == nil {
-		return false
-	}
-	if statusCode == 0 {
-		return true
-	}
-	return statusCode == http.StatusTooManyRequests || statusCode >= 500
-}
-
 func reportDiscoveredSkillInstall(home string, id string) {
 	baseURL := skillMetricsBaseURL()
 	if baseURL == "" {
@@ -3685,8 +3483,6 @@ func reportDiscoveredSkillInstall(home string, id string) {
 	}
 	skillMetricsReportMu.Lock()
 	defer skillMetricsReportMu.Unlock()
-	now := timeNowUTC()
-	flushPendingSkillMetricsEvents(home, baseURL, now)
 	platform, repoFullName, _, sourcePath, err := parseDiscoveredSkillID(id)
 	if err != nil {
 		return
@@ -3712,12 +3508,9 @@ func reportDiscoveredSkillInstall(home string, id string) {
 	if platform == "" {
 		return
 	}
-	statusCode, err := sendSkillMetricsInstallEvent(baseURL, payload)
+	_, err = sendSkillMetricsInstallEvent(baseURL, payload)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "report discovered skill install failed: %v\n", err)
-		if shouldRetrySkillMetric(statusCode, err) {
-			queueSkillMetricsEvent(home, "install", payload, now.Add(skillMetricsRetryInterval))
-		}
 	}
 }
 
@@ -3729,7 +3522,6 @@ func reportToolingClientActive(home string) {
 	skillMetricsReportMu.Lock()
 	defer skillMetricsReportMu.Unlock()
 	now := timeNowUTC()
-	flushPendingSkillMetricsEvents(home, baseURL, now)
 	if shouldThrottleActiveMetric(home, now) {
 		return
 	}
@@ -3747,16 +3539,12 @@ func reportToolingClientActive(home string) {
 		"skill_name":   skillMetricsHeartbeatName,
 		"source_repo":  skillMetricsHeartbeatSource,
 	}
-	statusCode, err := sendSkillMetricsInstallEvent(baseURL, payload)
+	markActiveMetricScheduled(home, now)
+	_, err = sendSkillMetricsInstallEvent(baseURL, payload)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "report tooling active failed: %v\n", err)
-		if shouldRetrySkillMetric(statusCode, err) {
-			queueSkillMetricsEvent(home, "active", payload, now.Add(skillMetricsRetryInterval))
-			markActiveMetricScheduled(home, now)
-		}
 		return
 	}
-	markActiveMetricScheduled(home, now)
 }
 
 func sendSkillMetricsInstallEvent(baseURL string, payload map[string]string) (int, error) {

@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/api"
 )
@@ -888,380 +887,6 @@ command = "uvx"
 	}
 }
 
-func TestToolingHandlerDiscoverSkillsUsesCacheAndRefreshesLatest(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	defaultArchive := makeGitHubArchiveZip(t, "skills-main", map[string]string{
-		"README.md": "# OpenAI Skills\n",
-	})
-	anthropicsArchive := makeGitHubArchiveZip(t, "skills-main", map[string]string{
-		"README.md": "# Anthropic Skills\n",
-	})
-	composioArchive := makeGitHubArchiveZip(t, "awesome-claude-skills-master", map[string]string{
-		"README.md": "# Awesome Claude Skills\n",
-	})
-	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
-		"skills/zulu/SKILL.md":  "# Zulu Skill\nA trailing skill.\n\nUNIQUE-ZULU-BODY\n",
-		"skills/alpha/SKILL.md": "---\ndescription: Alpha summary\n---\n# Alpha Skill\nDetailed alpha body that must not be cached.\n",
-	})
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/openai/skills/archive/refs/heads/main.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(defaultArchive)
-		case r.Method == http.MethodGet && r.URL.Path == "/anthropics/skills/archive/refs/heads/main.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(anthropicsArchive)
-		case r.Method == http.MethodGet && r.URL.Path == "/ComposioHQ/awesome-claude-skills/archive/refs/heads/master.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(composioArchive)
-		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(archive)
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/archive/refs/heads/") && strings.HasSuffix(r.URL.Path, ".zip"):
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(defaultArchive)
-		case strings.Contains(r.URL.Path, "/git/trees/"), strings.Contains(r.URL.Path, "/contents/"):
-			http.Error(w, "legacy github api path should not be used", http.StatusForbidden)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
-
-	writeToolingConfig(t, home, map[string]any{
-		"skill_sync_method": "symlink",
-		"skill_repos": []map[string]any{
-			{
-				"platform": "github",
-				"owner":    "openai",
-				"name":     "codex-skills",
-				"branch":   "main",
-				"enabled":  true,
-			},
-		},
-		"mcp_servers": []any{},
-	})
-	writeSkillDiscoveryCache(t, home, map[string]any{
-		"fetched_at": "2026-04-08T10:00:00Z",
-		"items": []map[string]any{
-			{
-				"id":               "github:openai/codex-skills:skills/cached",
-				"name":             "Cached Skill",
-				"description":      "Cached summary",
-				"platform":         "github",
-				"repo_owner":       "openai",
-				"repo_name":        "codex-skills",
-				"branch":           "main",
-				"repo_url":         "https://github.com/openai/codex-skills",
-				"source_path":      "skills/cached",
-				"source_url":       "https://github.com/openai/codex-skills/tree/main/skills/cached",
-				"managed_name":     "cached-skill",
-				"content_hash":     "cached-hash",
-				"installed_apps":   map[string]bool{"codex": false},
-				"update_available": false,
-			},
-		},
-	})
-
-	handler := api.NewToolingHandler()
-
-	cached := doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/discover", nil, nil, http.StatusOK)
-	var cachedPayload map[string]any
-	if err := json.Unmarshal(cached, &cachedPayload); err != nil {
-		t.Fatalf("unmarshal cached discover payload: %v", err)
-	}
-	if cachedPayload["cached"] != true {
-		t.Fatalf("cached flag = %v, want true", cachedPayload["cached"])
-	}
-	items := cachedPayload["items"].([]any)
-	if len(items) != 1 || items[0].(map[string]any)["name"] != "Cached Skill" {
-		t.Fatalf("cached items = %v, want cached skill only", cachedPayload["items"])
-	}
-
-	refreshed := doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/refresh", bytes.NewBufferString(`{}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
-	var refreshedPayload map[string]any
-	if err := json.Unmarshal(refreshed, &refreshedPayload); err != nil {
-		t.Fatalf("unmarshal refreshed discover payload: %v", err)
-	}
-	if refreshedPayload["cached"] != false {
-		t.Fatalf("cached flag after refresh = %v, want false", refreshedPayload["cached"])
-	}
-	refreshedItems := refreshedPayload["items"].([]any)
-	if len(refreshedItems) != 2 {
-		t.Fatalf("refreshed items = %d, want 2", len(refreshedItems))
-	}
-	if refreshedItems[0].(map[string]any)["name"] != "Alpha Skill" || refreshedItems[1].(map[string]any)["name"] != "Zulu Skill" {
-		t.Fatalf("refreshed item order = %v, want alpha then zulu", refreshedPayload["items"])
-	}
-	if strings.TrimSpace(refreshedItems[0].(map[string]any)["content_hash"].(string)) == "" {
-		t.Fatalf("refreshed item content_hash = %v, want non-empty hash", refreshedItems[0].(map[string]any)["content_hash"])
-	}
-
-	cacheRaw := readSkillDiscoveryCacheRaw(t, home)
-	if !strings.Contains(cacheRaw, "Alpha Skill") {
-		t.Fatalf("cache raw = %s, want discovered names cached", cacheRaw)
-	}
-	if strings.Contains(cacheRaw, "Detailed alpha body that must not be cached.") || strings.Contains(cacheRaw, "UNIQUE-ZULU-BODY") {
-		t.Fatalf("cache raw = %s, want index-only cache without full body content", cacheRaw)
-	}
-
-	cfg := readToolingConfig(t, home)
-	repos := cfg["skill_repos"].([]any)
-	var target map[string]any
-	for _, raw := range repos {
-		repo := raw.(map[string]any)
-		if repo["owner"] == "openai" && repo["name"] == "codex-skills" {
-			target = repo
-			break
-		}
-	}
-	if target == nil {
-		t.Fatalf("skill_repos = %v, want openai/codex-skills", cfg["skill_repos"])
-	}
-	if target["skill_count"] != float64(2) {
-		t.Fatalf("skill_count = %v, want 2", target["skill_count"])
-	}
-}
-
-func TestToolingHandlerDiscoverSkillsMarksInstalledUpdatesByHash(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	defaultArchive := makeGitHubArchiveZip(t, "skills-main", map[string]string{
-		"README.md": "# OpenAI Skills\n",
-	})
-	anthropicsArchive := makeGitHubArchiveZip(t, "skills-main", map[string]string{
-		"README.md": "# Anthropic Skills\n",
-	})
-	composioArchive := makeGitHubArchiveZip(t, "awesome-claude-skills-master", map[string]string{
-		"README.md": "# Awesome Claude Skills\n",
-	})
-	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
-		"skills/alpha/SKILL.md":          "# Alpha Skill\nNew upstream summary.\n",
-		"skills/alpha/assets/config.txt": "v2\n",
-		"skills/zulu/SKILL.md":           "# Zulu Skill\nStable upstream summary.\n",
-	})
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/openai/skills/archive/refs/heads/main.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(defaultArchive)
-		case r.Method == http.MethodGet && r.URL.Path == "/anthropics/skills/archive/refs/heads/main.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(anthropicsArchive)
-		case r.Method == http.MethodGet && r.URL.Path == "/ComposioHQ/awesome-claude-skills/archive/refs/heads/master.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(composioArchive)
-		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(archive)
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/archive/refs/heads/") && strings.HasSuffix(r.URL.Path, ".zip"):
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(defaultArchive)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
-
-	writeToolingConfig(t, home, map[string]any{
-		"skill_sync_method": "symlink",
-		"skill_repos": []map[string]any{
-			{
-				"platform": "github",
-				"owner":    "openai",
-				"name":     "codex-skills",
-				"branch":   "main",
-				"enabled":  true,
-			},
-		},
-		"mcp_servers": []any{},
-	})
-
-	managedRoot := filepath.Join(home, ".aigate", "data", "tooling", "skills", "codex-skills-alpha")
-	if err := os.MkdirAll(filepath.Join(managedRoot, "assets"), 0o755); err != nil {
-		t.Fatalf("MkdirAll managed assets: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(managedRoot, "SKILL.md"), []byte("# Alpha Skill\nOld local summary.\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile managed SKILL: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(managedRoot, "assets", "config.txt"), []byte("v1\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile managed asset: %v", err)
-	}
-	if err := writeSkillMetadataForTest(managedRoot, map[string]any{
-		"name":        "codex-skills-alpha",
-		"source_repo": "openai/codex-skills",
-		"source_kind": "discovered",
-		"platform":    "github",
-		"branch":      "main",
-		"source_path": "skills/alpha",
-		"source_url":  "https://github.com/openai/codex-skills/tree/main/skills/alpha",
-	}); err != nil {
-		t.Fatalf("writeSkillMetadata: %v", err)
-	}
-	codexRoot := filepath.Join(home, ".codex", "skills", "codex-skills-alpha")
-	if err := copyDirForTest(managedRoot, codexRoot); err != nil {
-		t.Fatalf("copyDir codex skill: %v", err)
-	}
-
-	handler := api.NewToolingHandler()
-	refreshed := doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/refresh", bytes.NewBufferString(`{}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
-
-	var payload map[string]any
-	if err := json.Unmarshal(refreshed, &payload); err != nil {
-		t.Fatalf("unmarshal refreshed discover payload: %v", err)
-	}
-	items := payload["items"].([]any)
-	alpha := items[0].(map[string]any)
-	if alpha["name"] != "Alpha Skill" {
-		t.Fatalf("first item = %v, want Alpha Skill", alpha["name"])
-	}
-	if alpha["installed_apps"].(map[string]any)["codex"] != true {
-		t.Fatalf("installed_apps = %v, want codex true", alpha["installed_apps"])
-	}
-	if alpha["update_available"] != true {
-		t.Fatalf("update_available = %v, want true", alpha["update_available"])
-	}
-	if alpha["installed_hash"] == alpha["content_hash"] {
-		t.Fatalf("installed_hash = %v, content_hash = %v, want differing hashes", alpha["installed_hash"], alpha["content_hash"])
-	}
-}
-
-func TestToolingHandlerDiscoverSkillsSupportsServerSideQuery(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	writeSkillDiscoveryCache(t, home, map[string]any{
-		"fetched_at": "2026-04-10T10:00:00Z",
-		"items": []map[string]any{
-			{
-				"id":           "github:openai/skills:main:skills/alpha",
-				"name":         "Alpha Skill",
-				"description":  "alpha summary",
-				"platform":     "github",
-				"repo_owner":   "openai",
-				"repo_name":    "skills",
-				"branch":       "main",
-				"repo_url":     "https://github.com/openai/skills",
-				"source_path":  "skills/alpha",
-				"source_url":   "https://github.com/openai/skills/tree/main/skills/alpha",
-				"managed_name": "openai-skills-alpha",
-			},
-			{
-				"id":           "github:openai/skills:main:skills/beta",
-				"name":         "Beta Skill",
-				"description":  "beta summary",
-				"platform":     "github",
-				"repo_owner":   "openai",
-				"repo_name":    "skills",
-				"branch":       "main",
-				"repo_url":     "https://github.com/openai/skills",
-				"source_path":  "skills/beta",
-				"source_url":   "https://github.com/openai/skills/tree/main/skills/beta",
-				"managed_name": "openai-skills-beta",
-			},
-		},
-	})
-
-	handler := api.NewToolingHandler()
-	resp := doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/discover?q=alpha&limit=80&offset=0", nil, nil, http.StatusOK)
-	var payload map[string]any
-	if err := json.Unmarshal(resp, &payload); err != nil {
-		t.Fatalf("unmarshal discover response: %v", err)
-	}
-	if payload["indexed_total"] != float64(2) {
-		t.Fatalf("indexed_total = %v, want 2", payload["indexed_total"])
-	}
-	if payload["total"] != float64(1) {
-		t.Fatalf("total = %v, want 1", payload["total"])
-	}
-	items := payload["items"].([]any)
-	if len(items) != 1 || items[0].(map[string]any)["name"] != "Alpha Skill" {
-		t.Fatalf("items = %v, want only Alpha Skill", payload["items"])
-	}
-}
-
-func TestToolingHandlerRefreshDiscoveryUpdatesRepoStarsAndNextAutoRefresh(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
-		"skills/alpha/SKILL.md": "# Alpha Skill\nA summary.\n",
-	})
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/openai/codex-skills":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"default_branch":"main","stargazers_count":321}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(archive)
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/archive/refs/heads/") && strings.HasSuffix(r.URL.Path, ".zip"):
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(archive)
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/"):
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"default_branch":"main","stargazers_count":321}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	t.Setenv("AIGATE_GITHUB_API_BASE", server.URL)
-	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
-
-	writeToolingConfig(t, home, map[string]any{
-		"skill_sync_method": "symlink",
-		"skill_repos": []map[string]any{
-			{
-				"platform":   "github",
-				"owner":      "openai",
-				"name":       "codex-skills",
-				"branch":     "main",
-				"enabled":    true,
-				"star_count": 0,
-			},
-		},
-		"mcp_servers": []any{},
-	})
-
-	handler := api.NewToolingHandler()
-	doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/refresh", bytes.NewBufferString(`{}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
-
-	cfg := readToolingConfig(t, home)
-	repos := cfg["skill_repos"].([]any)
-	repo := repos[0].(map[string]any)
-	if repo["star_count"] != float64(321) {
-		t.Fatalf("star_count = %v, want 321", repo["star_count"])
-	}
-
-	cacheRaw := readSkillDiscoveryCacheRaw(t, home)
-	var cache map[string]any
-	if err := json.Unmarshal([]byte(cacheRaw), &cache); err != nil {
-		t.Fatalf("unmarshal cache: %v", err)
-	}
-	fetchedAt, err := time.Parse(time.RFC3339, cache["fetched_at"].(string))
-	if err != nil {
-		t.Fatalf("parse fetched_at: %v", err)
-	}
-	nextAt, err := time.Parse(time.RFC3339, cache["next_auto_refresh_at"].(string))
-	if err != nil {
-		t.Fatalf("parse next_auto_refresh_at: %v", err)
-	}
-	minNext := fetchedAt.Add(24*time.Hour - time.Minute)
-	maxNext := fetchedAt.Add(27*time.Hour + time.Minute)
-	if nextAt.Before(minNext) || nextAt.After(maxNext) {
-		t.Fatalf("next_auto_refresh_at = %s, want between %s and %s", nextAt.Format(time.RFC3339), minNext.Format(time.RFC3339), maxNext.Format(time.RFC3339))
-	}
-}
-
 func TestToolingHandlerSkillRepoCRUDSupportsPlatformAwareRecords(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1409,6 +1034,58 @@ func TestToolingHandlerCanInstallDiscoveredSkillIntoManagedAndCodexDirs(t *testi
 	}
 	if metaPayload["platform"] != "github" || metaPayload["source_path"] != "skills/alpha" {
 		t.Fatalf("metadata = %s, want discovery source metadata", string(metaRaw))
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "codex-skills-alpha", "SKILL.md")); err != nil {
+		t.Fatalf("expected codex synced skill file: %v", err)
+	}
+}
+
+func TestToolingHandlerDiscoveryListEndpointsRemoved(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	handler := api.NewToolingHandler()
+	doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/discover", nil, nil, http.StatusNotFound)
+	doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/refresh", bytes.NewBufferString(`{}`), map[string]string{"Content-Type": "application/json"}, http.StatusNotFound)
+}
+
+func TestToolingHandlerCanInstallDiscoveredSkillUsingCloudPayloadWithoutID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
+		"skills/alpha/SKILL.md":          "# Alpha Skill\nInstallable summary from cloud payload.\n",
+		"skills/alpha/assets/config.txt": "v1\n",
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(archive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
+
+	handler := api.NewToolingHandler()
+	installed := doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/install", bytes.NewBufferString(`{
+		"platform":"github",
+		"repo_owner":"openai",
+		"repo_name":"codex-skills",
+		"branch":"main",
+		"source_path":"skills/alpha",
+		"apps":["codex"]
+	}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
+	if !strings.Contains(string(installed), `"applied":1`) {
+		t.Fatalf("install response = %s, want applied 1", string(installed))
+	}
+
+	managedRoot := filepath.Join(home, ".aigate", "data", "tooling", "skills", "codex-skills-alpha")
+	if _, err := os.Stat(filepath.Join(managedRoot, "SKILL.md")); err != nil {
+		t.Fatalf("expected managed skill file: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "codex-skills-alpha", "SKILL.md")); err != nil {
 		t.Fatalf("expected codex synced skill file: %v", err)
@@ -1593,29 +1270,4 @@ func readToolingConfig(t *testing.T, home string) map[string]any {
 		t.Fatalf("Unmarshal tooling config: %v", err)
 	}
 	return payload
-}
-
-func writeSkillDiscoveryCache(t *testing.T, home string, payload map[string]any) {
-	t.Helper()
-	path := filepath.Join(home, ".aigate", "data", "tooling", "skill-discovery-cache.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("MkdirAll discovery cache dir: %v", err)
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("Marshal discovery cache: %v", err)
-	}
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatalf("WriteFile discovery cache: %v", err)
-	}
-}
-
-func readSkillDiscoveryCacheRaw(t *testing.T, home string) string {
-	t.Helper()
-	path := filepath.Join(home, ".aigate", "data", "tooling", "skill-discovery-cache.json")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile discovery cache: %v", err)
-	}
-	return string(raw)
 }

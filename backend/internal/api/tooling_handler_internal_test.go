@@ -107,7 +107,7 @@ func TestReportDiscoveredSkillInstallFallsBackWhenAnonymousFileCannotPersist(t *
 	}
 }
 
-func TestReportToolingClientActiveIsThrottledWithinHalfDay(t *testing.T) {
+func TestReportToolingClientActiveIsThrottledWithinOneHour(t *testing.T) {
 	home := t.TempDir()
 
 	var (
@@ -138,45 +138,52 @@ func TestReportToolingClientActiveIsThrottledWithinHalfDay(t *testing.T) {
 	}
 }
 
-func TestReportDiscoveredSkillInstallQueuesOnNetworkFailure(t *testing.T) {
+func TestReportToolingClientActiveReportsAgainAfterOneHour(t *testing.T) {
+	home := t.TempDir()
+	now := time.Now().UTC()
+	if err := saveSkillMetricsState(home, skillMetricsReportState{
+		LastActiveAt: now.Add(-2 * time.Hour).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	var (
+		mu   sync.Mutex
+		hits int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/events/install" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"inserted":true}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AIGATE_SKILL_METRICS_URL", server.URL)
+
+	reportToolingClientActive(home)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if hits != 1 {
+		t.Fatalf("events/install hits = %d, want 1 for overdue active report", hits)
+	}
+}
+
+func TestReportDiscoveredSkillInstallDoesNotQueueOnNetworkFailure(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("AIGATE_SKILL_METRICS_URL", "http://127.0.0.1:1")
 
 	id := discoveredSkillKey("github", "openai/skills", "main", "collections/demo-skill")
 	reportDiscoveredSkillInstall(home, id)
 
-	queue := loadPendingSkillMetricsQueue(home)
-	if len(queue.Items) != 1 {
-		t.Fatalf("pending queue items = %d, want 1", len(queue.Items))
-	}
-	if queue.Items[0].Kind != "install" {
-		t.Fatalf("pending queue kind = %q, want install", queue.Items[0].Kind)
-	}
-	if queue.Items[0].RetryCount != 0 {
-		t.Fatalf("pending queue retry_count = %d, want 0", queue.Items[0].RetryCount)
-	}
-}
-
-func TestFlushPendingSkillMetricsDropsItemAfterMaxRetry(t *testing.T) {
-	home := t.TempDir()
-	queue := pendingSkillMetricsQueue{
-		Items: []pendingSkillMetricsEvent{
-			{
-				Kind:       "install",
-				Payload:    map[string]string{"anonymous_id": "aigate-test", "skill_name": "demo", "source_repo": "openai/skills"},
-				RetryCount: skillMetricsMaxRetry - 1,
-			},
-		},
-	}
-	if err := savePendingSkillMetricsQueue(home, queue); err != nil {
-		t.Fatalf("seed pending queue: %v", err)
-	}
-
-	flushPendingSkillMetricsEvents(home, "http://127.0.0.1:1", time.Now().UTC())
-
-	after := loadPendingSkillMetricsQueue(home)
-	if len(after.Items) != 0 {
-		t.Fatalf("pending queue items = %d, want 0 after max retry", len(after.Items))
+	pendingPath := filepath.Join(aigateDataRoot(home), "tooling", "skill-metrics-pending.json")
+	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
+		t.Fatalf("pending queue file should not exist, stat err = %v", err)
 	}
 }
 
