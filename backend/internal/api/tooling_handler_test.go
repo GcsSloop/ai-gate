@@ -1,9 +1,10 @@
 package api_test
 
 import (
-	"archive/zip"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -979,27 +980,15 @@ func TestToolingHandlerCanInstallDiscoveredSkillIntoManagedAndCodexDirs(t *testi
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
+	server := newGitHubTreeBlobServer(t, map[string]string{
 		"skills/alpha/SKILL.md":           "# Alpha Skill\nInstallable summary.\n",
 		"skills/alpha/assets/config.json": "{\"ok\":true}\n",
 		"skills/alpha/assets/readme.txt":  "hello\n",
 		"skills/ignore-other/SKILL.md":    "# Ignore Other\nnot selected\n",
 		"skills/ignore-other/extra.txt":   "ignore\n",
 	})
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(archive)
-		case strings.Contains(r.URL.Path, "/git/trees/"), strings.Contains(r.URL.Path, "/contents/"):
-			http.Error(w, "legacy github api path should not be used", http.StatusForbidden)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
 	defer server.Close()
-	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
+	t.Setenv("AIGATE_GITHUB_API_BASE", server.URL)
 
 	handler := api.NewToolingHandler()
 
@@ -1053,22 +1042,12 @@ func TestToolingHandlerCanInstallDiscoveredSkillUsingCloudPayloadWithoutID(t *te
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
+	server := newGitHubTreeBlobServer(t, map[string]string{
 		"skills/alpha/SKILL.md":          "# Alpha Skill\nInstallable summary from cloud payload.\n",
 		"skills/alpha/assets/config.txt": "v1\n",
 	})
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(archive)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
 	defer server.Close()
-	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
+	t.Setenv("AIGATE_GITHUB_API_BASE", server.URL)
 
 	handler := api.NewToolingHandler()
 	installed := doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/install", bytes.NewBufferString(`{
@@ -1096,22 +1075,12 @@ func TestToolingHandlerInstallDiscoveredSkillUpdatesExistingManagedFiles(t *test
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	archive := makeGitHubArchiveZip(t, "codex-skills-main", map[string]string{
+	server := newGitHubTreeBlobServer(t, map[string]string{
 		"skills/alpha/SKILL.md":          "# Alpha Skill\nUpdated summary.\n",
 		"skills/alpha/assets/config.txt": "v2\n",
 	})
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/openai/codex-skills/archive/refs/heads/main.zip":
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(archive)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
 	defer server.Close()
-	t.Setenv("AIGATE_GITHUB_ARCHIVE_BASE", server.URL)
+	t.Setenv("AIGATE_GITHUB_API_BASE", server.URL)
 
 	managedRoot := filepath.Join(home, ".aigate", "data", "tooling", "skills", "codex-skills-alpha")
 	if err := os.MkdirAll(filepath.Join(managedRoot, "assets"), 0o755); err != nil {
@@ -1156,23 +1125,44 @@ func TestToolingHandlerInstallDiscoveredSkillUpdatesExistingManagedFiles(t *test
 	}
 }
 
-func makeGitHubArchiveZip(t *testing.T, root string, files map[string]string) []byte {
+func newGitHubTreeBlobServer(t *testing.T, files map[string]string) *httptest.Server {
 	t.Helper()
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	for relativePath, raw := range files {
-		entry, err := zw.Create(root + "/" + strings.TrimLeft(relativePath, "/"))
-		if err != nil {
-			t.Fatalf("Create zip entry %s: %v", relativePath, err)
-		}
-		if _, err := entry.Write([]byte(raw)); err != nil {
-			t.Fatalf("Write zip entry %s: %v", relativePath, err)
-		}
+	type blobItem struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+		SHA  string `json:"sha"`
 	}
-	if err := zw.Close(); err != nil {
-		t.Fatalf("Close zip writer: %v", err)
+	blobs := make(map[string]string, len(files))
+	tree := make([]blobItem, 0, len(files))
+	index := 0
+	for path, raw := range files {
+		index++
+		sha := fmt.Sprintf("sha-%d", index)
+		blobs[sha] = raw
+		tree = append(tree, blobItem{Path: strings.Trim(path, "/"), Type: "blob", SHA: sha})
 	}
-	return buf.Bytes()
+	payload, err := json.Marshal(map[string]any{"tree": tree})
+	if err != nil {
+		t.Fatalf("marshal tree payload: %v", err)
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/openai/codex-skills/git/trees/main":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(payload)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/openai/codex-skills/git/blobs/"):
+			sha := strings.TrimPrefix(r.URL.Path, "/repos/openai/codex-skills/git/blobs/")
+			content, ok := blobs[sha]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"encoding":"base64","content":"%s"}`, base64.StdEncoding.EncodeToString([]byte(content)))))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
 }
 
 func doToolingRequest(t *testing.T, handler http.Handler, method, path string, body *bytes.Buffer, headers map[string]string, wantStatus int) []byte {

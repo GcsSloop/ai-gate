@@ -57,6 +57,9 @@ func TestReportToolingClientActiveFallsBackWhenAnonymousFileCannotPersist(t *tes
 	if payload["source_repo"] != skillMetricsHeartbeatSource {
 		t.Fatalf("source_repo = %q, want %q", payload["source_repo"], skillMetricsHeartbeatSource)
 	}
+	if len(payload) != 3 {
+		t.Fatalf("payload fields = %v, want only anonymous_id/skill_name/source_repo", payload)
+	}
 }
 
 func TestReportDiscoveredSkillInstallFallsBackWhenAnonymousFileCannotPersist(t *testing.T) {
@@ -104,6 +107,9 @@ func TestReportDiscoveredSkillInstallFallsBackWhenAnonymousFileCannotPersist(t *
 	}
 	if payload["source_repo"] != "openai/skills" {
 		t.Fatalf("source_repo = %q, want openai/skills", payload["source_repo"])
+	}
+	if len(payload) != 3 {
+		t.Fatalf("payload fields = %v, want only anonymous_id/skill_name/source_repo", payload)
 	}
 }
 
