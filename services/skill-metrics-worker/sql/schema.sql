@@ -50,3 +50,33 @@ CREATE TABLE IF NOT EXISTS tracked_repos (
 
 CREATE INDEX IF NOT EXISTS idx_tracked_repos_order
   ON tracked_repos(sort_order, owner, name);
+
+CREATE TABLE IF NOT EXISTS skills_audit_cache (
+  skill_key TEXT NOT NULL,
+  source_repo TEXT NOT NULL,
+  source_skill_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'info',
+  label TEXT NOT NULL DEFAULT '',
+  source_url TEXT NOT NULL DEFAULT '',
+  fetched_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  PRIMARY KEY (skill_key, provider)
+);
+
+CREATE INDEX IF NOT EXISTS idx_skills_audit_cache_expires
+  ON skills_audit_cache(expires_at);
+
+CREATE TABLE IF NOT EXISTS skills_external_map (
+  skill_key TEXT PRIMARY KEY,
+  source_repo TEXT NOT NULL,
+  source_path TEXT NOT NULL,
+  source_name_normalized TEXT NOT NULL,
+  skills_sh_slug TEXT NOT NULL,
+  skills_sh_url TEXT NOT NULL,
+  match_confidence REAL NOT NULL DEFAULT 0,
+  matched_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_skills_external_map_repo_name
+  ON skills_external_map(source_repo, source_name_normalized);
