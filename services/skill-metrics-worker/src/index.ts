@@ -13,6 +13,10 @@ type InstallEventPayload = {
   anonymous_id?: string;
   skill_name: string;
   source_repo?: string;
+  client_version?: string;
+  client_platform?: string;
+  client_arch?: string;
+  client_app?: string;
 };
 
 type SkillRankItem = {
@@ -63,10 +67,31 @@ type OverviewStats = UserStats & {
 
 type UserInstallSummary = {
   user_hash: string;
+  anonymous_id: string;
+  anonymous_id_prefix: string;
+  client_version: string;
+  client_platform: string;
+  client_arch: string;
+  client_app: string;
   total_events: number;
   installs: number;
   last_seen: string;
   first_seen: string;
+};
+
+type UserProfile = {
+  user_hash: string;
+  anonymous_id: string;
+  anonymous_id_prefix: string;
+  first_seen: string;
+  last_seen: string;
+  total_events: number;
+  installs: number;
+  active_days: number;
+  last_client_version: string;
+  last_client_platform: string;
+  last_client_arch: string;
+  last_client_app: string;
 };
 
 type UserSkillInstall = {
@@ -287,6 +312,18 @@ export default {
         const total = await countUsers(env, query);
         return json({ items, total, limit, offset, query, sort });
       }
+      if (request.method === "GET" && url.pathname.startsWith("/admin/api/users/") && !url.pathname.endsWith("/skills")) {
+        await assertAdmin(request, env);
+        const userHash = decodeURIComponent(url.pathname.slice("/admin/api/users/".length));
+        if (!userHash.trim()) {
+          throw httpError(400, "invalid_user_hash");
+        }
+        const profile = await getUserProfile(env, userHash.trim());
+        if (!profile) {
+          throw httpError(404, "user_not_found");
+        }
+        return json(profile);
+      }
       if (request.method === "GET" && url.pathname.startsWith("/admin/api/users/") && url.pathname.endsWith("/skills")) {
         await assertAdmin(request, env);
         const userHash = decodeURIComponent(url.pathname.slice("/admin/api/users/".length, -"/skills".length));
@@ -411,6 +448,10 @@ async function ingestInstallEvent(
 ): Promise<{ inserted: boolean; event_day: string; event_key: string; user_hash: string; anonymous_id?: string }> {
   const skillName = trim(payload.skill_name ?? "", 120);
   const sourceRepo = trim(payload.source_repo ?? "", 240);
+  const clientVersion = trim(payload.client_version ?? "", 80);
+  const clientPlatform = trim(payload.client_platform ?? "", 40);
+  const clientArch = trim(payload.client_arch ?? "", 40);
+  const clientApp = trim(payload.client_app ?? "", 80);
   if (!skillName) {
     throw httpError(400, "invalid_payload");
   }
@@ -427,10 +468,10 @@ async function ingestInstallEvent(
   const result = await env.DB
     .prepare(
       `INSERT OR IGNORE INTO install_events (
-        event_key, event_day, user_hash, skill_name, source_repo, created_at
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+        event_key, event_day, user_hash, anonymous_id, skill_name, source_repo, client_version, client_platform, client_arch, client_app, created_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
     )
-    .bind(eventKey, eventDay, userHash, skillName, sourceRepo, now)
+    .bind(eventKey, eventDay, userHash, anonymousId, skillName, sourceRepo, clientVersion, clientPlatform, clientArch, clientApp, now)
     .run();
 
   await env.SKILL_METRICS_CACHE.delete(cacheKey(eventDay, DEFAULT_LIMIT));
@@ -589,37 +630,94 @@ async function listUsers(
   env: Env,
   options: { limit: number; offset: number; query: string; sort: "last_seen_desc" | "installs_desc" },
 ): Promise<UserInstallSummary[]> {
-  const where = options.query ? "WHERE user_hash LIKE ?3" : "";
+  const where = options.query ? "WHERE user_hash LIKE ?3 OR anonymous_id LIKE ?3" : "";
   const orderBy = options.sort === "installs_desc" ? "installs DESC, last_seen DESC" : "last_seen DESC, installs DESC";
-  const stmt = env.DB.prepare(
-    `SELECT
-       user_hash,
-       COUNT(1) AS total_events,
-       SUM(CASE WHEN skill_name != '__client_active__' THEN 1 ELSE 0 END) AS installs,
-       MIN(created_at) AS first_seen,
-       MAX(created_at) AS last_seen
-     FROM install_events
-     ${where}
-     GROUP BY user_hash
-     ORDER BY ${orderBy}
-     LIMIT ?1 OFFSET ?2`,
-  );
+  const stmt = env.DB.prepare(`
+    WITH user_base AS (
+      SELECT
+        user_hash,
+        COUNT(1) AS total_events,
+        SUM(CASE WHEN skill_name != '__client_active__' THEN 1 ELSE 0 END) AS installs,
+        MIN(created_at) AS first_seen,
+        MAX(created_at) AS last_seen
+      FROM install_events
+      ${where}
+      GROUP BY user_hash
+    )
+    SELECT
+      b.user_hash,
+      COALESCE((SELECT ie.anonymous_id FROM install_events ie WHERE ie.user_hash = b.user_hash ORDER BY ie.created_at DESC LIMIT 1), '') AS anonymous_id,
+      COALESCE((SELECT ie.client_version FROM install_events ie WHERE ie.user_hash = b.user_hash ORDER BY ie.created_at DESC LIMIT 1), '') AS client_version,
+      COALESCE((SELECT ie.client_platform FROM install_events ie WHERE ie.user_hash = b.user_hash ORDER BY ie.created_at DESC LIMIT 1), '') AS client_platform,
+      COALESCE((SELECT ie.client_arch FROM install_events ie WHERE ie.user_hash = b.user_hash ORDER BY ie.created_at DESC LIMIT 1), '') AS client_arch,
+      COALESCE((SELECT ie.client_app FROM install_events ie WHERE ie.user_hash = b.user_hash ORDER BY ie.created_at DESC LIMIT 1), '') AS client_app,
+      b.total_events,
+      b.installs,
+      b.first_seen,
+      b.last_seen
+    FROM user_base b
+    ORDER BY ${orderBy}
+    LIMIT ?1 OFFSET ?2`);
   const query = options.query
     ? await stmt.bind(options.limit, options.offset, `%${options.query}%`).all<UserInstallSummary>()
     : await stmt.bind(options.limit, options.offset).all<UserInstallSummary>();
-  return query.results ?? [];
+  return (query.results ?? []).map((item) => ({
+    ...item,
+    anonymous_id_prefix: summarizeIdentifier(item.anonymous_id),
+  }));
 }
 
 async function countUsers(env: Env, query: string): Promise<number> {
   if (query) {
     const row = await env.DB
-      .prepare("SELECT COUNT(DISTINCT user_hash) AS total FROM install_events WHERE user_hash LIKE ?1")
+      .prepare("SELECT COUNT(DISTINCT user_hash) AS total FROM install_events WHERE user_hash LIKE ?1 OR anonymous_id LIKE ?1")
       .bind(`%${query}%`)
       .first<{ total: number }>();
     return Number(row?.total ?? 0);
   }
   const row = await env.DB.prepare("SELECT COUNT(DISTINCT user_hash) AS total FROM install_events").first<{ total: number }>();
   return Number(row?.total ?? 0);
+}
+
+async function getUserProfile(env: Env, userHash: string): Promise<UserProfile | null> {
+  const row = await env.DB
+    .prepare(
+      `SELECT
+         user_hash,
+         MIN(created_at) AS first_seen,
+         MAX(created_at) AS last_seen,
+         COUNT(1) AS total_events,
+         SUM(CASE WHEN skill_name != '__client_active__' THEN 1 ELSE 0 END) AS installs,
+         COUNT(DISTINCT event_day) AS active_days,
+         COALESCE((SELECT ie.anonymous_id FROM install_events ie WHERE ie.user_hash = install_events.user_hash ORDER BY ie.created_at DESC LIMIT 1), '') AS anonymous_id,
+         COALESCE((SELECT ie.client_version FROM install_events ie WHERE ie.user_hash = install_events.user_hash ORDER BY ie.created_at DESC LIMIT 1), '') AS last_client_version,
+         COALESCE((SELECT ie.client_platform FROM install_events ie WHERE ie.user_hash = install_events.user_hash ORDER BY ie.created_at DESC LIMIT 1), '') AS last_client_platform,
+         COALESCE((SELECT ie.client_arch FROM install_events ie WHERE ie.user_hash = install_events.user_hash ORDER BY ie.created_at DESC LIMIT 1), '') AS last_client_arch,
+         COALESCE((SELECT ie.client_app FROM install_events ie WHERE ie.user_hash = install_events.user_hash ORDER BY ie.created_at DESC LIMIT 1), '') AS last_client_app
+       FROM install_events
+       WHERE user_hash = ?1
+       GROUP BY user_hash`,
+    )
+    .bind(userHash)
+    .first<UserProfile>();
+  if (!row) {
+    return null;
+  }
+  return {
+    ...row,
+    anonymous_id_prefix: summarizeIdentifier(row.anonymous_id),
+  };
+}
+
+function summarizeIdentifier(value: string): string {
+  const normalized = (value || "").trim();
+  if (!normalized) {
+    return "-";
+  }
+  if (normalized.length <= 12) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 8)}...${normalized.slice(-4)}`;
 }
 
 async function listSkillsForUser(
@@ -762,9 +860,29 @@ async function getSkillCatalog(env: Env, forceRefresh: boolean): Promise<SkillCa
       return JSON.parse(raw) as SkillCatalog;
     }
   }
-  const catalog = await buildCatalogFromSkillsSource(env, await listTrackedRepos(env), undefined, undefined, undefined);
+  const repos = await listTrackedRepos(env);
+  const repoStars = await readCachedRepoStars(env);
+  const catalog = await buildCatalogFromSkillsSource(env, repos, undefined, repoStars, undefined);
   await env.SKILL_METRICS_CACHE.put(SKILL_CATALOG_CACHE_KEY, JSON.stringify(catalog), { expirationTtl: SKILL_CATALOG_TTL_SECONDS });
   return catalog;
+}
+
+async function readCachedRepoStars(env: Env): Promise<Record<string, number>> {
+  const raw = await env.SKILL_METRICS_CACHE.get(SKILL_CATALOG_CACHE_KEY);
+  if (!raw) {
+    return {};
+  }
+  try {
+    const catalog = JSON.parse(raw) as SkillCatalog;
+    const stars: Record<string, number> = {};
+    for (const repo of catalog.repos ?? []) {
+      const key = repoKey(repo.platform, repo.owner, repo.name);
+      stars[key] = Number(repo.star_count ?? 0);
+    }
+    return stars;
+  } catch {
+    return {};
+  }
 }
 
 async function getScanStatus(env: Env): Promise<ScanStatus> {
@@ -904,7 +1022,7 @@ async function stepCatalogScan(env: Env, batchSize: number): Promise<ScanStatus>
     const repoName = `${repo.owner}/${repo.name}`;
     status.current_repo = repoName;
     try {
-      const stars = await fetchRepoStars(repo);
+      const stars = await fetchRepoStars(env, repo);
       working.repo_stars[repoKey(repo.platform, repo.owner, repo.name)] = stars;
       status.success_repos += 1;
     } catch (err) {
@@ -1002,6 +1120,7 @@ async function buildCatalogFromSkillsSource(
   const dedupe = new Set<string>();
   const items: CatalogSkillItem[] = [];
   const repoRootsCache = new Map<string, string[]>();
+  const repoRootSkillCache = new Map<string, boolean>();
   for (const entry of entries) {
     const repoInfo = parseSourceRepo(entry.source);
     if (!repoInfo) continue;
@@ -1013,7 +1132,8 @@ async function buildCatalogFromSkillsSource(
     dedupe.add(itemId);
     const branch = tracked.branch || "main";
     const roots = await getRepoSkillRoots(env, repoInfo.platform, repoInfo.owner, repoInfo.name, branch, repoRootsCache);
-    const sourcePath = resolveCatalogSourcePath(entry.skill_id, roots, repoInfo.owner, repoInfo.name);
+    const hasRootSkill = await getRepoHasRootSkill(env, repoInfo.platform, repoInfo.owner, repoInfo.name, branch, repoRootSkillCache);
+    const sourcePath = resolvePreferredCatalogSourcePath(entry.skill_id, roots, hasRootSkill, repoInfo.owner, repoInfo.name);
     items.push({
       id: discoveredSkillId(repoInfo.platform, repoInfo.owner, repoInfo.name, branch, sourcePath),
       name: entry.name || entry.skill_id,
@@ -1039,6 +1159,28 @@ async function buildCatalogFromSkillsSource(
     repos: reposSummary,
     items,
   };
+}
+
+function resolvePreferredCatalogSourcePath(
+  skillId: string,
+  roots: string[],
+  hasRootSkill: boolean,
+  repoOwner: string,
+  repoName: string,
+): string {
+  if (hasRootSkill || roots.some((root) => root === ".")) {
+    return ".";
+  }
+  const resolved = resolveCatalogSourcePath(skillId, roots, repoOwner, repoName);
+  if (resolved === "." || roots.length > 0) {
+    return resolved;
+  }
+  const normalizedSkill = normalizeCatalogSourcePath(skillId).toLowerCase();
+  const normalizedRepo = repoName.trim().toLowerCase();
+  if (normalizedSkill && normalizedRepo && normalizedSkill === normalizedRepo) {
+    return ".";
+  }
+  return resolved;
 }
 
 function parseSourceRepo(source: string): { platform: "github" | "gitlab"; owner: string; name: string } | null {
@@ -1098,7 +1240,17 @@ async function fetchSkillCountsBySource(): Promise<Record<string, number>> {
   return countSkillsBySource(entries);
 }
 
-async function fetchRepoStars(repo: TrackedRepoItem): Promise<number> {
+async function fetchRepoStars(env: Env, repo: TrackedRepoItem): Promise<number> {
+  const apiStars = repo.platform === "gitlab"
+    ? await fetchGitLabRepoStars(repo, env.GITLAB_TOKEN)
+    : await fetchGitHubRepoStars(repo, env.GITHUB_TOKEN);
+  if (apiStars >= 0) {
+    return apiStars;
+  }
+  return fetchRepoStarsViaBadge(repo);
+}
+
+async function fetchRepoStarsViaBadge(repo: TrackedRepoItem): Promise<number> {
   const badgeType = repo.platform === "gitlab" ? "gitlab" : "github";
   const endpoint = `https://img.shields.io/${badgeType}/stars/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}.json`;
   const resp = await fetch(endpoint, { headers: { "User-Agent": "aigate-skill-metrics" } });
@@ -1108,6 +1260,49 @@ async function fetchRepoStars(repo: TrackedRepoItem): Promise<number> {
   const payload = (await resp.json()) as { value?: string; message?: string };
   const raw = (payload.value ?? payload.message ?? "0").trim().toLowerCase();
   return parseCompactNumber(raw);
+}
+
+async function fetchGitHubRepoStars(repo: TrackedRepoItem, token?: string): Promise<number> {
+  const endpoint = `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
+  const headersWithAuth: Record<string, string> = {
+    "User-Agent": "aigate-skill-metrics",
+    Accept: "application/vnd.github+json",
+  };
+  const auth = (token ?? "").trim();
+  if (auth) {
+    headersWithAuth.Authorization = `Bearer ${auth}`;
+  }
+  let resp = await fetch(endpoint, { headers: headersWithAuth });
+  if (!resp.ok && auth && (resp.status === 401 || resp.status === 403 || resp.status === 404)) {
+    const headersNoAuth = {
+      "User-Agent": "aigate-skill-metrics",
+      Accept: "application/vnd.github+json",
+    };
+    resp = await fetch(endpoint, { headers: headersNoAuth });
+  }
+  if (!resp.ok) {
+    return -1;
+  }
+  const payload = (await resp.json()) as { stargazers_count?: number };
+  const count = Number(payload.stargazers_count ?? -1);
+  return Number.isFinite(count) && count >= 0 ? count : -1;
+}
+
+async function fetchGitLabRepoStars(repo: TrackedRepoItem, token?: string): Promise<number> {
+  const project = encodeURIComponent(`${repo.owner}/${repo.name}`);
+  const endpoint = `https://gitlab.com/api/v4/projects/${project}`;
+  const headers: Record<string, string> = { "User-Agent": "aigate-skill-metrics" };
+  const auth = (token ?? "").trim();
+  if (auth) {
+    headers["PRIVATE-TOKEN"] = auth;
+  }
+  const resp = await fetch(endpoint, { headers });
+  if (!resp.ok) {
+    return -1;
+  }
+  const payload = (await resp.json()) as { star_count?: number };
+  const count = Number(payload.star_count ?? -1);
+  return Number.isFinite(count) && count >= 0 ? count : -1;
 }
 
 function parseCompactNumber(raw: string): number {
@@ -1133,8 +1328,10 @@ function repoHomeURL(platform: "github" | "gitlab", owner: string, name: string)
 function repoTreeURL(platform: "github" | "gitlab", owner: string, name: string, branch: string, sourcePath: string): string {
   const root = repoHomeURL(platform, owner, name);
   const normalizedPath = sourcePath.replace(/^\/+|\/+$/g, "");
-  if (!normalizedPath) {
-    return root;
+  if (!normalizedPath || normalizedPath === ".") {
+    return platform === "gitlab"
+      ? `${root}/-/tree/${encodeURIComponent(branch)}`
+      : `${root}/tree/${encodeURIComponent(branch)}`;
   }
   if (platform === "gitlab") {
     return `${root}/-/tree/${encodeURIComponent(branch)}/${normalizedPath}`;
@@ -1149,6 +1346,9 @@ function normalizeCatalogSourcePath(value: string): string {
 function resolveCatalogSourcePath(skillId: string, roots: string[], repoOwner: string, repoName: string): string {
   const normalized = normalizeCatalogSourcePath(skillId);
   if (!normalized) return normalized;
+  if (roots.some((root) => root === ".")) {
+    return ".";
+  }
   if (normalized.includes("/")) return normalized;
   if (!roots.length) return resolveCatalogSourcePathByRepoHeuristic(normalized, repoOwner, repoName);
 
@@ -1211,28 +1411,64 @@ async function getRepoSkillRoots(
   }
 }
 
+async function getRepoHasRootSkill(
+  env: Env,
+  platform: "github" | "gitlab",
+  owner: string,
+  name: string,
+  branch: string,
+  cache: Map<string, boolean>,
+): Promise<boolean> {
+  const key = `${platform}:${owner.toLowerCase()}/${name.toLowerCase()}@${branch}`;
+  const cached = cache.get(key);
+  if (typeof cached === "boolean") return cached;
+  const exists = platform === "gitlab"
+    ? await fetchGitLabRootSkillExists(owner, name, branch, env.GITLAB_TOKEN)
+    : await fetchGitHubRootSkillExists(owner, name, branch, env.GITHUB_TOKEN);
+  cache.set(key, exists);
+  return exists;
+}
+
 async function fetchGitHubSkillRoots(owner: string, name: string, branch: string, token?: string): Promise<string[]> {
   const endpoint = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
-  const headers: Record<string, string> = {
+  const headersWithAuth: Record<string, string> = {
     "User-Agent": "aigate-skill-metrics",
     Accept: "application/vnd.github+json",
   };
   const auth = (token ?? "").trim();
   if (auth) {
-    headers.Authorization = `Bearer ${auth}`;
+    headersWithAuth.Authorization = `Bearer ${auth}`;
   }
-  const resp = await fetch(endpoint, { headers });
-  if (!resp.ok) return [];
+  let resp = await fetch(endpoint, { headers: headersWithAuth });
+  if (!resp.ok && auth && (resp.status === 401 || resp.status === 403 || resp.status === 404)) {
+    const headersNoAuth = {
+      "User-Agent": "aigate-skill-metrics",
+      Accept: "application/vnd.github+json",
+    };
+    resp = await fetch(endpoint, { headers: headersNoAuth });
+  }
+  if (!resp.ok) {
+    return (await fetchGitHubRootSkillExists(owner, name, branch, token)) ? ["."] : [];
+  }
   const payload = (await resp.json()) as { tree?: Array<{ path?: string; type?: string }> };
   const tree = Array.isArray(payload.tree) ? payload.tree : [];
+  let hasRootSkill = false;
   const roots = new Set<string>();
   for (const item of tree) {
     const path = (item.path ?? "").trim();
-    if (item.type !== "blob" || !path.toLowerCase().endsWith("/skill.md")) continue;
+    if (item.type !== "blob") continue;
+    const lower = path.toLowerCase();
+    if (lower === "skill.md") {
+      hasRootSkill = true;
+      continue;
+    }
+    if (!lower.endsWith("/skill.md")) continue;
     const root = path.slice(0, -"/SKILL.md".length).replace(/\/+$/g, "");
     if (root) roots.add(root);
   }
-  return [...roots];
+  if (hasRootSkill) return ["."];
+  if (roots.size > 0) return [...roots];
+  return (await fetchGitHubRootSkillExists(owner, name, branch, token)) ? ["."] : [];
 }
 
 async function fetchGitLabSkillRoots(owner: string, name: string, branch: string, token?: string): Promise<string[]> {
@@ -1244,16 +1480,63 @@ async function fetchGitLabSkillRoots(owner: string, name: string, branch: string
     headers["PRIVATE-TOKEN"] = auth;
   }
   const resp = await fetch(endpoint, { headers });
-  if (!resp.ok) return [];
+  if (!resp.ok) {
+    return (await fetchGitLabRootSkillExists(owner, name, branch, token)) ? ["."] : [];
+  }
   const payload = (await resp.json()) as Array<{ path?: string; type?: string }>;
+  let hasRootSkill = false;
   const roots = new Set<string>();
   for (const item of payload) {
     const path = (item.path ?? "").trim();
-    if (item.type !== "blob" || !path.toLowerCase().endsWith("/skill.md")) continue;
+    if (item.type !== "blob") continue;
+    const lower = path.toLowerCase();
+    if (lower === "skill.md") {
+      hasRootSkill = true;
+      continue;
+    }
+    if (!lower.endsWith("/skill.md")) continue;
     const root = path.slice(0, -"/SKILL.md".length).replace(/\/+$/g, "");
     if (root) roots.add(root);
   }
-  return [...roots];
+  if (hasRootSkill) return ["."];
+  if (roots.size > 0) return [...roots];
+  return (await fetchGitLabRootSkillExists(owner, name, branch, token)) ? ["."] : [];
+}
+
+async function fetchGitHubRootSkillExists(owner: string, name: string, branch: string, token?: string): Promise<boolean> {
+  const endpoint = `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${encodeURIComponent(branch)}/SKILL.md`;
+  const headers: Record<string, string> = { "User-Agent": "aigate-skill-metrics" };
+  try {
+    const resp = await fetch(endpoint, { method: "HEAD", headers });
+    if (resp.ok) return true;
+    if (resp.status === 405) {
+      const getResp = await fetch(endpoint, { method: "GET", headers });
+      return getResp.ok;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchGitLabRootSkillExists(owner: string, name: string, branch: string, token?: string): Promise<boolean> {
+  const endpoint = `https://gitlab.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/-/raw/${encodeURIComponent(branch)}/SKILL.md`;
+  const headers: Record<string, string> = { "User-Agent": "aigate-skill-metrics" };
+  const auth = (token ?? "").trim();
+  if (auth) {
+    headers["PRIVATE-TOKEN"] = auth;
+  }
+  try {
+    const resp = await fetch(endpoint, { method: "HEAD", headers });
+    if (resp.ok) return true;
+    if (resp.status === 405) {
+      const getResp = await fetch(endpoint, { method: "GET", headers });
+      return getResp.ok;
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function discoveredSkillId(platform: "github" | "gitlab", owner: string, name: string, branch: string, sourcePath: string): string {
@@ -1759,6 +2042,14 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       .tab-panel { display:none; }
       .tab-panel.active { display:block; }
       .table-wrap { max-height: 420px; overflow:auto; border:1px solid var(--line); border-radius:10px; }
+      .list-wrap { max-height: 520px; overflow:auto; border:1px solid var(--line); border-radius:10px; padding:8px; background:#fff; }
+      .user-card { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:8px; background:#fff; }
+      .user-card:last-child { margin-bottom:0; }
+      .user-card .title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; }
+      .user-card .title b { font-size:13px; }
+      .kv { display:grid; grid-template-columns: 130px 1fr; gap:6px 10px; font-size:12px; }
+      .kv .k { color:var(--muted); }
+      .detail-panel { border:1px solid var(--line); border-radius:10px; padding:12px; background:#fff; }
       .progress-wrap { margin-top:10px; }
       .progress-track { width:100%; height:10px; border-radius:999px; background:#e5e7eb; overflow:hidden; }
       .progress-bar { height:100%; width:0%; background:linear-gradient(90deg,#0f766e,#14b8a6); transition:width .25s ease; }
@@ -1910,7 +2201,7 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         <div class="panel tab-panel" id="tab-users">
           <h2>用户安装技能</h2>
           <div class="row" style="margin-bottom:10px">
-            <input id="userQuery" placeholder="按匿名ID搜索（前缀）" style="min-width:260px;max-width:100%" />
+            <input id="userQuery" placeholder="按匿名ID/哈希搜索（前缀）" style="min-width:260px;max-width:100%" />
             <select id="userSort">
               <option value="last_seen_desc">按最近活跃</option>
               <option value="installs_desc">按安装数</option>
@@ -1918,19 +2209,27 @@ function renderAdminPage(initialAuthenticated: boolean): string {
             <input id="userOffset" type="number" value="0" style="width:120px" />
             <input id="userLimit" type="number" value="100" style="width:120px" />
             <button id="refreshUsersBtn">刷新用户列表</button>
-            <span class="muted" id="usersPageInfo">点击用户查看安装明细</span>
+            <span class="muted" id="usersPageInfo">默认列表，点击查看详情</span>
           </div>
           <div class="row" style="align-items:flex-start">
             <div style="flex:1; min-width:360px">
-              <div class="table-wrap">
-                <table>
-                  <thead><tr><th>用户哈希</th><th>安装总数</th><th>最近安装</th></tr></thead>
-                  <tbody id="userRows"></tbody>
-                </table>
-              </div>
+              <div class="list-wrap" id="userList"></div>
             </div>
             <div style="flex:1; min-width:360px">
-              <div class="mono muted" id="userSkillTitle">选择左侧用户</div>
+              <div class="detail-panel">
+                <div class="mono muted" id="userSkillTitle">选择左侧用户</div>
+                <div class="kv" id="userDetailKv" style="margin-top:8px">
+                  <div class="k">匿名ID</div><div>-</div>
+                  <div class="k">用户哈希</div><div>-</div>
+                  <div class="k">最近活跃</div><div>-</div>
+                  <div class="k">首次活跃</div><div>-</div>
+                  <div class="k">安装技能数</div><div>-</div>
+                  <div class="k">总事件数</div><div>-</div>
+                  <div class="k">活跃天数</div><div>-</div>
+                  <div class="k">客户端</div><div>-</div>
+                  <div class="k">系统</div><div>-</div>
+                </div>
+              </div>
               <div class="row" style="margin:8px 0">
                 <input id="userSkillQuery" placeholder="筛选 skill 名称" style="min-width:220px;max-width:100%" />
                 <input id="userSkillOffset" type="number" value="0" style="width:100px" />
@@ -2183,29 +2482,59 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         if (userQuery) query.set("q", userQuery);
         if (userSort) query.set("sort", userSort);
         const data = await request("/admin/api/users?" + query.toString());
-        const tbody = byId("userRows");
-        tbody.innerHTML = "";
+        const list = byId("userList");
+        list.innerHTML = "";
         for (const item of data.items || []) {
           const user = item.user_hash;
-          const tr = document.createElement("tr");
-          tr.innerHTML = "<td class='mono'><a href='#' data-user='" + user + "'>" + user + "</a></td>" +
-            "<td>" + item.installs + "</td>" +
-            "<td class='mono'>" + (item.last_seen || "") + "<div class='muted mono'>首次: " + (item.first_seen || "") + " / 事件: " + (item.total_events || 0) + "</div></td>";
-          tbody.appendChild(tr);
+          const card = document.createElement("div");
+          card.className = "user-card";
+          card.innerHTML =
+            "<div class='title'>" +
+              "<b class='mono'>" + (item.anonymous_id_prefix || "-") + "</b>" +
+              "<button data-user='" + user + "'>查看详情</button>" +
+            "</div>" +
+            "<div class='muted mono'>hash: " + summarizeId(user) + "</div>" +
+            "<div class='muted'>最近活跃: " + (item.last_seen || "-") + "</div>" +
+            "<div class='muted'>安装技能数: " + Number(item.installs || 0) + " | 总事件: " + Number(item.total_events || 0) + "</div>" +
+            "<div class='muted'>客户端: " + (item.client_app || "-") + (item.client_version ? (" " + item.client_version) : "") + "</div>" +
+            "<div class='muted'>系统: " + [item.client_platform || "-", item.client_arch || "-"].join(" / ") + "</div>";
+          list.appendChild(card);
         }
         byId("usersPageInfo").textContent = "共 " + (data.total || 0) + " 用户，当前 offset=" + (data.offset || 0) + "，limit=" + (data.limit || 0);
-        tbody.querySelectorAll("a[data-user]").forEach((a) => {
-          a.addEventListener("click", async (e) => {
-            e.preventDefault();
-            state.selectedUser = a.getAttribute("data-user") || "";
+        list.querySelectorAll("button[data-user]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            state.selectedUser = btn.getAttribute("data-user") || "";
+            await loadUserDetail(state.selectedUser);
             await loadUserSkills(state.selectedUser);
           });
         });
       }
 
+      async function loadUserDetail(user) {
+        if (!user) return;
+        const data = await request("/admin/api/users/" + encodeURIComponent(user));
+        byId("userSkillTitle").textContent = "用户详情";
+        const details = [
+          ["匿名ID", data.anonymous_id || "-"],
+          ["用户哈希", data.user_hash || "-"],
+          ["最近活跃", data.last_seen || "-"],
+          ["首次活跃", data.first_seen || "-"],
+          ["安装技能数", Number(data.installs || 0)],
+          ["总事件数", Number(data.total_events || 0)],
+          ["活跃天数", Number(data.active_days || 0)],
+          ["客户端", (data.last_client_app || "-") + (data.last_client_version ? (" " + data.last_client_version) : "")],
+          ["系统", [data.last_client_platform || "-", data.last_client_arch || "-"].join(" / ")],
+        ];
+        byId("userDetailKv").innerHTML = details.map((item) =>
+          "<div class='k'>" + item[0] + "</div><div class='mono'>" + item[1] + "</div>"
+        ).join("");
+      }
+
       async function loadUserSkills(user) {
         if (!user) return;
-        byId("userSkillTitle").textContent = user;
+        if (!byId("userSkillTitle").textContent || byId("userSkillTitle").textContent === "选择左侧用户") {
+          byId("userSkillTitle").textContent = user;
+        }
         const query = new URLSearchParams();
         query.set("limit", String(Number(byId("userSkillLimit").value || 100)));
         query.set("offset", String(Number(byId("userSkillOffset").value || 0)));
@@ -2222,6 +2551,13 @@ function renderAdminPage(initialAuthenticated: boolean): string {
             "<td class='mono'>" + (item.last_installed_at || "") + "</td>";
           tbody.appendChild(tr);
         }
+      }
+
+      function summarizeId(value) {
+        const text = String(value || "").trim();
+        if (!text) return "-";
+        if (text.length <= 14) return text;
+        return text.slice(0, 10) + "..." + text.slice(-4);
       }
 
       async function loadAll() {
