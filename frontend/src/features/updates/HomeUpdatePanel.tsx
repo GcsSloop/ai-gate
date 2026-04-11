@@ -73,6 +73,22 @@ function shouldPoll(state: DesktopUpdateState) {
   return state.status === "checking" || state.status === "downloading";
 }
 
+function normalizeUpdateError(error: unknown, t: Translator, fallback: string) {
+  if (error instanceof Error && error.message.trim()) {
+    return t(error.message);
+  }
+  if (typeof error === "string" && error.trim()) {
+    return t(error);
+  }
+  if (error && typeof error === "object") {
+    const detail = (error as { message?: unknown; error?: unknown }).message ?? (error as { error?: unknown }).error;
+    if (typeof detail === "string" && detail.trim()) {
+      return t(detail);
+    }
+  }
+  return t(fallback);
+}
+
 export function HomeUpdatePanel({ currentVersion, initialUpdate, language, t, service }: HomeUpdatePanelProps) {
   const updateService = useMemo(() => service ?? createDesktopUpdateService(), [service]);
   const [state, setState] = useState<DesktopUpdateState>(() => buildInitialState(initialUpdate));
@@ -92,8 +108,23 @@ export function HomeUpdatePanel({ currentVersion, initialUpdate, language, t, se
         status: "error",
         update,
         progress: null,
-        error: error instanceof Error ? t(error.message) : t("安装更新失败"),
+        error: normalizeUpdateError(error, t, "安装更新失败"),
       });
+    }
+  }
+
+  async function handleCheck() {
+    setState((current) => ({ ...current, status: "checking", error: null }));
+    try {
+      await updateService.check(currentVersion);
+      await hydrate();
+    } catch (error) {
+      setState((current) => ({
+        status: "error",
+        update: current.update,
+        progress: null,
+        error: normalizeUpdateError(error, t, "检查更新失败"),
+      }));
     }
   }
 
@@ -105,7 +136,7 @@ export function HomeUpdatePanel({ currentVersion, initialUpdate, language, t, se
       setState((current) => ({
         ...current,
         status: "error",
-        error: error instanceof Error ? t(error.message) : t("安装更新失败"),
+        error: normalizeUpdateError(error, t, "安装更新失败"),
       }));
     }
   }
@@ -201,9 +232,24 @@ export function HomeUpdatePanel({ currentVersion, initialUpdate, language, t, se
               {t("下载并安装")}
             </Button>
           ) : null}
+          {(state.status === "error" || state.status === "cancelled") && state.update ? (
+            <Button
+              aria-label={t("重试安装")}
+              type="primary"
+              icon={<CloudDownloadOutlined />}
+              onClick={() => void handleDownloadAndInstall(state.update!)}
+            >
+              {t("重试安装")}
+            </Button>
+          ) : null}
           {state.status === "downloading" ? (
             <Button aria-label={t("终止下载")} icon={<CloseOutlined />} onClick={() => void handleCancel()}>
               {t("终止下载")}
+            </Button>
+          ) : null}
+          {state.status !== "downloading" ? (
+            <Button aria-label={t("检查更新")} onClick={() => void handleCheck()}>
+              {t("检查更新")}
             </Button>
           ) : null}
           {state.status === "ready" ? (
