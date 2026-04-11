@@ -1,5 +1,5 @@
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import worker from "../src";
 
 const noopEnv = {
@@ -68,6 +68,104 @@ describe("skill metrics worker", () => {
 		expect(response.status).toBe(401);
 		const payload = (await response.json()) as { error: string };
 		expect(payload.error).toBe("unauthorized");
+	});
+
+	it("POST /admin/api/tracked-repos accepts full repository URL payload", async () => {
+		let bindArgs: unknown[] = [];
+		const mockDb = {
+			prepare: () => ({
+				bind: (...args: unknown[]) => {
+					bindArgs = args;
+					return {
+						run: async () => ({ meta: { changes: 1 } }),
+					};
+				},
+			}),
+		} as unknown as D1Database;
+		const request = new Request("https://example.com/admin/api/tracked-repos", {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				authorization: "Bearer test",
+			},
+			body: JSON.stringify({
+				repo_url: "https://github.com/openai/skills/tree/main",
+				sort_order: 3,
+				enabled: true,
+			}),
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(
+			request,
+			{ DB: mockDb, SKILL_METRICS_CACHE: {} as KVNamespace, TRACKED_REPOS_ADMIN_TOKEN: "test" },
+			ctx,
+		);
+		await waitOnExecutionContext(ctx);
+		expect(response.status).toBe(201);
+		const payload = (await response.json()) as { platform: string; owner: string; name: string; branch: string; sort_order: number };
+		expect(payload.platform).toBe("github");
+		expect(payload.owner).toBe("openai");
+		expect(payload.name).toBe("skills");
+		expect(payload.branch).toBe("main");
+		expect(payload.sort_order).toBe(3);
+		expect(bindArgs[0]).toBe("github:openai/skills");
+		expect(bindArgs[1]).toBe("github");
+		expect(bindArgs[2]).toBe("openai");
+		expect(bindArgs[3]).toBe("skills");
+	});
+
+	it("POST /admin/api/tracked-repos normalizes .git url and auto-detects default branch", async () => {
+		const originalFetch = globalThis.fetch;
+		const fetchMock = vi.fn(async () =>
+			new Response(JSON.stringify({ default_branch: "master" }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+		let bindArgs: unknown[] = [];
+		try {
+			const mockDb = {
+				prepare: () => ({
+					bind: (...args: unknown[]) => {
+						bindArgs = args;
+						return {
+							run: async () => ({ meta: { changes: 1 } }),
+							first: async () => ({ max_sort: 7 }),
+						};
+					},
+					first: async () => ({ max_sort: 7 }),
+				}),
+			} as unknown as D1Database;
+			const request = new Request("https://example.com/admin/api/tracked-repos", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					authorization: "Bearer test",
+				},
+				body: JSON.stringify({
+					repo_url: "https://github.com/iOfficeAI/OfficeCLI.git",
+					enabled: true,
+				}),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(
+				request,
+				{ DB: mockDb, SKILL_METRICS_CACHE: {} as KVNamespace, TRACKED_REPOS_ADMIN_TOKEN: "test" },
+				ctx,
+			);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(201);
+			const payload = (await response.json()) as { owner: string; name: string; branch: string; sort_order: number };
+			expect(payload.owner).toBe("iOfficeAI");
+			expect(payload.name).toBe("OfficeCLI");
+			expect(payload.branch).toBe("master");
+			expect(payload.sort_order).toBe(8);
+			expect(bindArgs[0]).toBe("github:iofficeai/officecli");
+			expect(bindArgs[3]).toBe("OfficeCLI");
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
 	});
 
 	it("POST /events/install is public even when bearer token is configured", async () => {

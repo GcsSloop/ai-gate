@@ -556,8 +556,12 @@ async function listTrackedRepos(env: Env): Promise<TrackedRepoItem[]> {
   }));
 }
 
-async function upsertTrackedRepo(env: Env, raw: Partial<TrackedRepoItem>): Promise<TrackedRepoItem> {
-  const item = normalizeTrackedRepo(raw, 0);
+async function upsertTrackedRepo(env: Env, raw: Partial<TrackedRepoItem> & Record<string, unknown>): Promise<TrackedRepoItem> {
+  const fallbackOrder = Number.isFinite(raw.sort_order) ? Math.max(0, Math.floor(raw.sort_order as number)) : await nextTrackedRepoSortOrder(env);
+  const item = normalizeTrackedRepo(raw, fallbackOrder);
+  if (!hasExplicitBranch(raw)) {
+    item.branch = await resolveDefaultBranch(env, item);
+  }
   const now = new Date().toISOString();
   await env.DB
     .prepare(
@@ -572,6 +576,36 @@ async function upsertTrackedRepo(env: Env, raw: Partial<TrackedRepoItem>): Promi
     .bind(repoKey(item.platform, item.owner, item.name), item.platform, item.owner, item.name, item.branch, item.enabled ? 1 : 0, item.sort_order, now)
     .run();
   return { ...item, updated_at: now };
+}
+
+async function nextTrackedRepoSortOrder(env: Env): Promise<number> {
+  const row = await env.DB.prepare("SELECT COALESCE(MAX(sort_order), -1) AS max_sort FROM tracked_repos").first<{ max_sort?: number }>();
+  const maxSort = Number(row?.max_sort ?? -1);
+  if (!Number.isFinite(maxSort)) return 0;
+  return Math.max(0, Math.floor(maxSort) + 1);
+}
+
+function hasExplicitBranch(raw: Partial<TrackedRepoItem> & Record<string, unknown>): boolean {
+  if (trim(raw.branch ?? "", 120)) return true;
+  const candidates = [
+    typeof raw.repo === "string" ? raw.repo : "",
+    typeof raw.repo_url === "string" ? raw.repo_url : "",
+    typeof raw.url === "string" ? raw.url : "",
+    typeof raw.full_name === "string" ? raw.full_name : "",
+  ];
+  return candidates.some((candidate) => {
+    const parsed = parseRepoReference(candidate);
+    return !!parsed?.branch;
+  });
+}
+
+async function resolveDefaultBranch(env: Env, item: TrackedRepoItem): Promise<string> {
+  if (item.platform === "gitlab") {
+    const branch = await fetchGitLabDefaultBranch(item.owner, item.name, env.GITLAB_TOKEN);
+    return branch || item.branch || "main";
+  }
+  const branch = await fetchGitHubDefaultBranch(item.owner, item.name, env.GITHUB_TOKEN);
+  return branch || item.branch || "main";
 }
 
 async function replaceTrackedRepos(env: Env, raws: Partial<TrackedRepoItem>[]): Promise<TrackedRepoItem[]> {
@@ -733,7 +767,7 @@ async function buildCatalogFromSkillsSource(
     dedupe.add(itemId);
     const branch = tracked.branch || "main";
     const roots = await getRepoSkillRoots(env, repoInfo.platform, repoInfo.owner, repoInfo.name, branch, repoRootsCache);
-    const sourcePath = resolveCatalogSourcePath(entry.skill_id, roots, repoInfo.name);
+    const sourcePath = resolveCatalogSourcePath(entry.skill_id, roots, repoInfo.owner, repoInfo.name);
     items.push({
       id: discoveredSkillId(repoInfo.platform, repoInfo.owner, repoInfo.name, branch, sourcePath),
       name: entry.name || entry.skill_id,
@@ -866,11 +900,11 @@ function normalizeCatalogSourcePath(value: string): string {
   return value.trim().replace(/^\/+|\/+$/g, "").replace(/\\/g, "/").replace(/\/SKILL\.md$/i, "");
 }
 
-function resolveCatalogSourcePath(skillId: string, roots: string[], repoName: string): string {
+function resolveCatalogSourcePath(skillId: string, roots: string[], repoOwner: string, repoName: string): string {
   const normalized = normalizeCatalogSourcePath(skillId);
   if (!normalized) return normalized;
   if (normalized.includes("/")) return normalized;
-  if (!roots.length) return resolveCatalogSourcePathByRepoHeuristic(normalized, repoName);
+  if (!roots.length) return resolveCatalogSourcePathByRepoHeuristic(normalized, repoOwner, repoName);
 
   const exact = roots.find((root) => root.toLowerCase() === normalized.toLowerCase());
   if (exact) return exact;
@@ -880,7 +914,7 @@ function resolveCatalogSourcePath(skillId: string, roots: string[], repoName: st
     return base.toLowerCase() === normalized.toLowerCase();
   });
   if (!candidates.length) {
-    return resolveCatalogSourcePathByRepoHeuristic(normalized, repoName);
+    return resolveCatalogSourcePathByRepoHeuristic(normalized, repoOwner, repoName);
   }
   if (candidates.length === 1) return candidates[0];
 
@@ -896,10 +930,14 @@ function resolveCatalogSourcePath(skillId: string, roots: string[], repoName: st
   return candidates[0];
 }
 
-function resolveCatalogSourcePathByRepoHeuristic(normalized: string, repoName: string): string {
+function resolveCatalogSourcePathByRepoHeuristic(normalized: string, repoOwner: string, repoName: string): string {
+  const owner = repoOwner.trim().toLowerCase();
   const repo = repoName.trim().toLowerCase();
   if (repo === "claude-code") {
     return `plugins/${normalized}/skills/${normalized}`;
+  }
+  if (owner === "github" && repo === "awesome-copilot") {
+    return `skills/${normalized}`;
   }
   return normalized;
 }
@@ -1033,17 +1071,135 @@ function filterAndSliceCatalog(
   };
 }
 
-function normalizeTrackedRepo(raw: Partial<TrackedRepoItem>, fallbackOrder: number): TrackedRepoItem {
-  const platform = normalizePlatform(raw.platform ?? "github");
-  const owner = trim(raw.owner ?? "", 120);
-  const name = trim(raw.name ?? "", 120);
-  const branch = trim(raw.branch ?? "main", 120) || "main";
+function normalizeTrackedRepo(raw: Partial<TrackedRepoItem> & Record<string, unknown>, fallbackOrder: number): TrackedRepoItem {
+  let platform = normalizePlatform(raw.platform ?? "github");
+  let owner = trim(raw.owner ?? "", 120);
+  let name = trim(raw.name ?? "", 120);
+  let branch = trim(raw.branch ?? "main", 120) || "main";
   const enabled = raw.enabled !== false;
   const sortOrder = Number.isFinite(raw.sort_order) ? Math.max(0, Math.floor(raw.sort_order as number)) : fallbackOrder;
+
+  const candidates = [
+    typeof raw.repo === "string" ? raw.repo : "",
+    typeof raw.repo_url === "string" ? raw.repo_url : "",
+    typeof raw.url === "string" ? raw.url : "",
+    typeof raw.full_name === "string" ? raw.full_name : "",
+    name ? "" : owner,
+  ];
+  for (const candidate of candidates) {
+    const parsed = parseRepoReference(candidate);
+    if (!parsed) continue;
+    if (!owner) owner = trim(parsed.owner, 120);
+    if (!name) name = trim(parsed.name, 120);
+    if ((branch === "main" || !branch) && parsed.branch) {
+      branch = trim(parsed.branch, 120) || branch;
+    }
+    if (!platform && parsed.platform) {
+      platform = parsed.platform;
+    }
+    if (owner && name) {
+      break;
+    }
+  }
+
+  platform = platform ?? "github";
   if (!platform || !owner || !name) {
     throw httpError(400, "invalid_repo_item");
   }
   return { platform, owner, name, branch, enabled, sort_order: sortOrder };
+}
+
+function parseRepoReference(input: string): { platform?: "github" | "gitlab"; owner: string; name: string; branch?: string } | null {
+  const value = input.trim();
+  if (!value) return null;
+
+  if (value.startsWith("http://") || value.startsWith("https://")) {
+    try {
+      const parsed = new URL(value);
+      const host = parsed.host.toLowerCase();
+      const segments = parsed.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+      if (host.includes("github.com")) {
+        if (segments.length < 2) return null;
+        const owner = segments[0] ?? "";
+        const name = normalizeRepoName(segments[1] ?? "");
+        let branch = "";
+        if (segments[2] === "tree" && segments.length >= 4) {
+          branch = normalizeRepoBranch(segments.slice(3).join("/"));
+        }
+        return { platform: "github", owner, name, branch: branch || undefined };
+      }
+      if (host.includes("gitlab.com")) {
+        const marker = segments.indexOf("-");
+        const repoParts = marker >= 0 ? segments.slice(0, marker) : segments;
+        if (repoParts.length < 2) return null;
+        const owner = repoParts.slice(0, -1).join("/");
+        const name = normalizeRepoName(repoParts[repoParts.length - 1] ?? "");
+        let branch = "";
+        if (marker >= 0 && segments[marker + 1] === "tree" && segments.length > marker + 2) {
+          branch = normalizeRepoBranch(segments.slice(marker + 2).join("/"));
+        }
+        return { platform: "gitlab", owner, name, branch: branch || undefined };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  const shorthand = value.replace(/^(github|gitlab):/i, "");
+  const parts = shorthand.split("/").filter(Boolean);
+  if (parts.length < 2) return null;
+  return {
+    platform: /^gitlab:/i.test(value) ? "gitlab" : /^github:/i.test(value) ? "github" : undefined,
+    owner: parts.slice(0, -1).join("/"),
+    name: normalizeRepoName(parts[parts.length - 1] ?? ""),
+  };
+}
+
+function normalizeRepoName(name: string): string {
+  return name.trim().replace(/\.git$/i, "");
+}
+
+function normalizeRepoBranch(branch: string): string {
+  return decodeURIComponent(branch).trim().replace(/^\/+|\/+$/g, "");
+}
+
+async function fetchGitHubDefaultBranch(owner: string, name: string, token?: string): Promise<string> {
+  const endpoint = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  const headers: Record<string, string> = {
+    "User-Agent": "aigate-skill-metrics",
+    Accept: "application/vnd.github+json",
+  };
+  const auth = (token ?? "").trim();
+  if (auth) {
+    headers.Authorization = `Bearer ${auth}`;
+  }
+  try {
+    const resp = await fetch(endpoint, { headers });
+    if (!resp.ok) return "";
+    const payload = (await resp.json()) as { default_branch?: string };
+    return normalizeRepoBranch(payload.default_branch ?? "");
+  } catch {
+    return "";
+  }
+}
+
+async function fetchGitLabDefaultBranch(owner: string, name: string, token?: string): Promise<string> {
+  const project = encodeURIComponent(`${owner}/${name}`);
+  const endpoint = `https://gitlab.com/api/v4/projects/${project}`;
+  const headers: Record<string, string> = { "User-Agent": "aigate-skill-metrics" };
+  const auth = (token ?? "").trim();
+  if (auth) {
+    headers["PRIVATE-TOKEN"] = auth;
+  }
+  try {
+    const resp = await fetch(endpoint, { headers });
+    if (!resp.ok) return "";
+    const payload = (await resp.json()) as { default_branch?: string };
+    return normalizeRepoBranch(payload.default_branch ?? "");
+  } catch {
+    return "";
+  }
 }
 
 function repoKey(platform: "github" | "gitlab", owner: string, name: string): string {
@@ -1430,11 +1586,7 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         <div class="panel tab-panel" id="tab-repos">
           <h2>仓库追踪管理</h2>
           <div class="row" style="margin-bottom:10px">
-            <select id="repoPlatform"><option value="github">github</option><option value="gitlab">gitlab</option></select>
-            <input id="repoOwner" placeholder="owner" />
-            <input id="repoName" placeholder="repo" />
-            <input id="repoBranch" placeholder="branch" value="main" />
-            <input id="repoOrder" placeholder="order" type="number" value="0" style="width:100px" />
+            <input id="repoInput" placeholder="仓库 URL 或 owner/repo（例如 https://github.com/iOfficeAI/OfficeCLI.git）" style="min-width:520px;max-width:100%" />
             <button id="addRepoBtn" class="primary">新增 / 更新</button>
             <button id="refreshReposBtn">刷新仓库</button>
           </div>
@@ -1676,15 +1828,14 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       }
 
       async function saveRepo() {
+        const repoInput = byId("repoInput").value.trim();
+        if (!repoInput) return;
         const payload = {
-          platform: byId("repoPlatform").value,
-          owner: byId("repoOwner").value.trim(),
-          name: byId("repoName").value.trim(),
-          branch: byId("repoBranch").value.trim() || "main",
-          sort_order: Number(byId("repoOrder").value || 0),
+          repo_url: repoInput,
           enabled: true
         };
         await request("/admin/api/tracked-repos", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+        byId("repoInput").value = "";
         await loadCatalog(true);
       }
 
