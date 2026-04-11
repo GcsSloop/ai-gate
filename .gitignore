@@ -14,6 +14,9 @@ desktop/src-tauri/target/
 *.sqlite3
 backend/data/
 .crash/
+.wrangler/
+wrangler-account.json
+**/wrangler-account.json
 
 # Local one-off/generated artifacts
 .tmp-app-server-hooks.prettier.js
