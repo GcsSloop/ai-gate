@@ -4117,6 +4117,7 @@ func installDiscoveredSkillCollection(home string, id string, method string, app
 	if len(files) == 0 {
 		return 0, fmt.Errorf("no files found for discovered skill: %s", id)
 	}
+	displayName, _ := parseDiscoveredSkillBody(files["SKILL.md"], sourcePath)
 	if err := os.RemoveAll(targetDir); err != nil {
 		return 0, err
 	}
@@ -4130,7 +4131,7 @@ func installDiscoveredSkillCollection(home string, id string, method string, app
 		}
 	}
 	if err := writeSkillMetadata(targetDir, skillMetadata{
-		Name:         managedName,
+		Name:         firstNonEmpty(strings.TrimSpace(displayName), managedName),
 		SourceRepo:   repoFullName,
 		SourceKind:   "discovered",
 		Platform:     repo.Platform,

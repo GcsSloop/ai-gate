@@ -1024,6 +1024,9 @@ func TestToolingHandlerCanInstallDiscoveredSkillIntoManagedAndCodexDirs(t *testi
 	if metaPayload["platform"] != "github" || metaPayload["source_path"] != "skills/alpha" {
 		t.Fatalf("metadata = %s, want discovery source metadata", string(metaRaw))
 	}
+	if got := strings.TrimSpace(fmt.Sprintf("%v", metaPayload["name"])); got != "Alpha Skill" {
+		t.Fatalf("metadata name = %q, want %q", got, "Alpha Skill")
+	}
 	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "codex-skills-alpha", "SKILL.md")); err != nil {
 		t.Fatalf("expected codex synced skill file: %v", err)
 	}
