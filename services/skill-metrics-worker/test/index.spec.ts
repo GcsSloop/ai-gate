@@ -70,18 +70,26 @@ describe("skill metrics worker", () => {
 		expect(payload.error).toBe("unauthorized");
 	});
 
-	it("POST /events/install requires bearer token", async () => {
+	it("POST /events/install is public even when bearer token is configured", async () => {
+		const mockDb = {
+			prepare: () => ({
+				bind: () => ({
+					run: async () => ({ meta: { changes: 1 } }),
+				}),
+			}),
+		} as unknown as D1Database;
+		const mockKv = {
+			delete: async () => null,
+		} as unknown as KVNamespace;
 		const request = new Request("https://example.com/events/install", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ skill_name: "demo-skill" }),
 		});
 		const ctx = createExecutionContext();
-		const response = await worker.fetch(request, { ...noopEnv, INGEST_BEARER_TOKEN: "ingest-token" }, ctx);
+		const response = await worker.fetch(request, { DB: mockDb, SKILL_METRICS_CACHE: mockKv, INGEST_BEARER_TOKEN: "ingest-token" }, ctx);
 		await waitOnExecutionContext(ctx);
-		expect(response.status).toBe(401);
-		const payload = (await response.json()) as { error: string };
-		expect(payload.error).toBe("missing_bearer_token");
+		expect(response.status).toBe(201);
 	});
 
 	it("POST /events/install auto generates anonymous_id when missing", async () => {
@@ -189,8 +197,9 @@ describe("skill metrics worker", () => {
 								repo_name: "skills",
 								branch: "main",
 								repo_url: "https://github.com/openai/skills",
-								source_path: "alpha/SKILL.md",
+								source_path: "alpha",
 								source_url: "https://github.com/openai/skills/tree/main/alpha",
+								managed_name: "skills-alpha",
 							},
 							{
 								id: "github:openai/skills:beta",
@@ -200,8 +209,9 @@ describe("skill metrics worker", () => {
 								repo_name: "skills",
 								branch: "main",
 								repo_url: "https://github.com/openai/skills",
-								source_path: "beta/SKILL.md",
+								source_path: "beta",
 								source_url: "https://github.com/openai/skills/tree/main/beta",
+								managed_name: "skills-beta",
 							},
 						],
 					});
