@@ -37,11 +37,13 @@ const (
 	skillMetricsHeartbeatName          = "__client_active__"
 	skillMetricsHeartbeatSource        = "__aigate_client__"
 	skillMetricsActiveReportInterval   = time.Hour
+	defaultSkillMetricsBaseURL         = "https://aigate-skill-metrics.gcssloop.workers.dev"
 )
 
 var toolingSupportedApps = []string{"codex"}
 var skillMetricsReportMu sync.Mutex
 var skillMetricsHeartbeatHomes sync.Map
+var defaultToolingSkillMetricsBaseURL = defaultSkillMetricsBaseURL
 
 type defaultSkillRepoSeed struct {
 	Platform string
@@ -60,9 +62,11 @@ func NewToolingHandler() *ToolingHandler {
 }
 
 type toolingConfig struct {
-	SkillSyncMethod string             `json:"skill_sync_method"`
-	SkillRepos      []skillRepoRecord  `json:"skill_repos"`
-	McpServers      []managedMcpServer `json:"mcp_servers"`
+	SkillSyncMethod      string             `json:"skill_sync_method"`
+	SkillMetricsBaseURL  string             `json:"skill_metrics_base_url"`
+	SkillRepoRegistryURL string             `json:"skill_repo_registry_url"`
+	SkillRepos           []skillRepoRecord  `json:"skill_repos"`
+	McpServers           []managedMcpServer `json:"mcp_servers"`
 }
 
 type skillRepoRecord struct {
@@ -1178,42 +1182,26 @@ func (h *ToolingHandler) loadConfig(home string) toolingConfig {
 	path := toolingConfigPath(home)
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return toolingConfig{
-			SkillSyncMethod: "symlink",
-			SkillRepos:      append([]skillRepoRecord{}, toolingDefaultRepos...),
-			McpServers:      []managedMcpServer{},
-		}
+		cfg := defaultToolingConfig()
+		_ = h.saveConfig(home, cfg)
+		return cfg
 	}
 	var cfg toolingConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return toolingConfig{
-			SkillSyncMethod: "symlink",
-			SkillRepos:      append([]skillRepoRecord{}, toolingDefaultRepos...),
-			McpServers:      []managedMcpServer{},
-		}
+		cfg = defaultToolingConfig()
+		_ = h.saveConfig(home, cfg)
+		return cfg
 	}
-	cfg.SkillSyncMethod = normalizeSkillSyncMethod(cfg.SkillSyncMethod)
-	if len(cfg.SkillRepos) == 0 {
-		cfg.SkillRepos = append([]skillRepoRecord{}, toolingDefaultRepos...)
-	} else {
-		for idx := range cfg.SkillRepos {
-			cfg.SkillRepos[idx] = normalizeSkillRepoRecord(cfg.SkillRepos[idx])
-		}
-		cfg.SkillRepos = mergeDefaultSkillRepos(cfg.SkillRepos)
+	normalized, changed := normalizeToolingConfig(cfg)
+	if changed {
+		_ = h.saveConfig(home, normalized)
 	}
+	cfg = normalized
 	return cfg
 }
 
 func (h *ToolingHandler) saveConfig(home string, cfg toolingConfig) error {
-	cfg.SkillSyncMethod = normalizeSkillSyncMethod(cfg.SkillSyncMethod)
-	if len(cfg.SkillRepos) == 0 {
-		cfg.SkillRepos = append([]skillRepoRecord{}, toolingDefaultRepos...)
-	} else {
-		for idx := range cfg.SkillRepos {
-			cfg.SkillRepos[idx] = normalizeSkillRepoRecord(cfg.SkillRepos[idx])
-		}
-		cfg.SkillRepos = mergeDefaultSkillRepos(cfg.SkillRepos)
-	}
+	cfg, _ = normalizeToolingConfig(cfg)
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
@@ -1223,6 +1211,82 @@ func (h *ToolingHandler) saveConfig(home string, cfg toolingConfig) error {
 		return err
 	}
 	return writeAtomic(path, append(raw, '\n'), 0o600)
+}
+
+func defaultToolingConfig() toolingConfig {
+	return toolingConfig{
+		SkillSyncMethod:      "symlink",
+		SkillMetricsBaseURL:  defaultToolingSkillMetricsBaseURL,
+		SkillRepoRegistryURL: defaultToolingRepoRegistryURL(defaultToolingSkillMetricsBaseURL),
+		SkillRepos:           append([]skillRepoRecord{}, toolingDefaultRepos...),
+		McpServers:           []managedMcpServer{},
+	}
+}
+
+func normalizeToolingConfig(cfg toolingConfig) (toolingConfig, bool) {
+	changed := false
+	cfg.SkillSyncMethod = normalizeSkillSyncMethod(cfg.SkillSyncMethod)
+	baseURL := normalizeBaseURL(cfg.SkillMetricsBaseURL)
+	if baseURL == "" {
+		baseURL = defaultToolingSkillMetricsBaseURL
+	}
+	if baseURL != cfg.SkillMetricsBaseURL {
+		changed = true
+	}
+	cfg.SkillMetricsBaseURL = baseURL
+	registryURL := normalizeBaseURL(cfg.SkillRepoRegistryURL)
+	if registryURL == "" {
+		registryURL = defaultToolingRepoRegistryURL(baseURL)
+	}
+	if registryURL != cfg.SkillRepoRegistryURL {
+		changed = true
+	}
+	cfg.SkillRepoRegistryURL = registryURL
+	if len(cfg.SkillRepos) == 0 {
+		cfg.SkillRepos = append([]skillRepoRecord{}, toolingDefaultRepos...)
+		changed = true
+	} else {
+		for idx := range cfg.SkillRepos {
+			before := cfg.SkillRepos[idx]
+			cfg.SkillRepos[idx] = normalizeSkillRepoRecord(cfg.SkillRepos[idx])
+			if !reflect.DeepEqual(before, cfg.SkillRepos[idx]) {
+				changed = true
+			}
+		}
+		merged := mergeDefaultSkillRepos(cfg.SkillRepos)
+		if !reflect.DeepEqual(cfg.SkillRepos, merged) {
+			changed = true
+		}
+		cfg.SkillRepos = merged
+	}
+	if cfg.McpServers == nil {
+		cfg.McpServers = []managedMcpServer{}
+		changed = true
+	}
+	return cfg, changed
+}
+
+func normalizeBaseURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func defaultToolingRepoRegistryURL(baseURL string) string {
+	normalized := normalizeBaseURL(baseURL)
+	if normalized == "" {
+		normalized = defaultSkillMetricsBaseURL
+	}
+	return strings.TrimRight(normalized, "/") + "/tracked-repos"
 }
 
 func toolingConfigPath(home string) string {
@@ -1908,7 +1972,7 @@ func (h *ToolingHandler) refreshSkillDiscovery(home string) ([]discoveredSkillRe
 
 	cfg := h.loadConfig(home)
 	cfgDirty := false
-	centralRepos, centralErr := fetchCentralTrackedSkillRepos()
+	centralRepos, centralErr := fetchCentralTrackedSkillRepos(cfg.SkillRepoRegistryURL)
 	if centralErr == nil && mergeMissingTrackedRepos(&cfg, centralRepos) {
 		cfgDirty = true
 	}
@@ -1973,8 +2037,8 @@ func mergeMissingTrackedRepos(cfg *toolingConfig, repos []skillRepoRecord) bool 
 	return changed
 }
 
-func fetchCentralTrackedSkillRepos() ([]skillRepoRecord, error) {
-	registryURL := strings.TrimSpace(os.Getenv("AIGATE_SKILL_REPO_REGISTRY_URL"))
+func fetchCentralTrackedSkillRepos(registryURL string) ([]skillRepoRecord, error) {
+	registryURL = normalizeBaseURL(registryURL)
 	if registryURL == "" {
 		return nil, nil
 	}
@@ -3197,7 +3261,7 @@ func filterDiscoveredItems(items []discoveredSkillRecord, rawQuery string) []dis
 }
 
 func discoverSkillsFromCentral(home string, clients []toolingClientState) ([]discoveredSkillRecord, error) {
-	baseURL := skillMetricsBaseURL()
+	baseURL := skillMetricsBaseURL(home)
 	if baseURL == "" {
 		return nil, errors.New("central skill discovery is not configured")
 	}
@@ -3355,22 +3419,13 @@ func fetchDiscoveredSkillContentHash(repo skillRepoRecord, sourcePath string) (s
 	return hashSkillFiles(files), nil
 }
 
-func skillMetricsBaseURL() string {
-	if direct := strings.TrimSpace(os.Getenv("AIGATE_SKILL_METRICS_URL")); direct != "" {
-		return strings.TrimRight(direct, "/")
+func skillMetricsBaseURL(home string) string {
+	cfg := loadToolingConfig(home)
+	base := normalizeBaseURL(cfg.SkillMetricsBaseURL)
+	if base == "" {
+		return defaultToolingSkillMetricsBaseURL
 	}
-	registryURL := strings.TrimSpace(os.Getenv("AIGATE_SKILL_REPO_REGISTRY_URL"))
-	if registryURL == "" {
-		return ""
-	}
-	parsed, err := url.Parse(registryURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return ""
-	}
-	parsed.Path = ""
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return strings.TrimRight(parsed.String(), "/")
+	return base
 }
 
 type skillMetricsReportState struct {
@@ -3478,7 +3533,7 @@ func markActiveMetricScheduled(home string, now time.Time) {
 }
 
 func reportDiscoveredSkillInstall(home string, id string) {
-	baseURL := skillMetricsBaseURL()
+	baseURL := skillMetricsBaseURL(home)
 	if baseURL == "" {
 		return
 	}
@@ -3516,7 +3571,7 @@ func reportDiscoveredSkillInstall(home string, id string) {
 }
 
 func reportToolingClientActive(home string) {
-	baseURL := skillMetricsBaseURL()
+	baseURL := skillMetricsBaseURL(home)
 	if baseURL == "" {
 		return
 	}

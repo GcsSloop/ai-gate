@@ -39,7 +39,7 @@ func TestReportToolingClientActiveFallsBackWhenAnonymousFileCannotPersist(t *tes
 		_, _ = w.Write([]byte(`{"inserted":true}`))
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv("AIGATE_SKILL_METRICS_URL", server.URL)
+	setDefaultToolingSkillMetricsBaseURLForTest(t, server.URL)
 
 	reportToolingClientActive(home)
 
@@ -89,7 +89,7 @@ func TestReportDiscoveredSkillInstallFallsBackWhenAnonymousFileCannotPersist(t *
 		_, _ = w.Write([]byte(`{"inserted":true}`))
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv("AIGATE_SKILL_METRICS_URL", server.URL)
+	setDefaultToolingSkillMetricsBaseURLForTest(t, server.URL)
 
 	id := discoveredSkillKey("github", "openai/skills", "main", "collections/demo-skill")
 	reportDiscoveredSkillInstall(home, id)
@@ -132,7 +132,7 @@ func TestReportToolingClientActiveIsThrottledWithinOneHour(t *testing.T) {
 		_, _ = w.Write([]byte(`{"inserted":true}`))
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv("AIGATE_SKILL_METRICS_URL", server.URL)
+	setToolingSkillMetricsBaseURL(t, home, server.URL)
 
 	reportToolingClientActive(home)
 	reportToolingClientActive(home)
@@ -169,7 +169,7 @@ func TestReportToolingClientActiveReportsAgainAfterOneHour(t *testing.T) {
 		_, _ = w.Write([]byte(`{"inserted":true}`))
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv("AIGATE_SKILL_METRICS_URL", server.URL)
+	setToolingSkillMetricsBaseURL(t, home, server.URL)
 
 	reportToolingClientActive(home)
 
@@ -182,7 +182,7 @@ func TestReportToolingClientActiveReportsAgainAfterOneHour(t *testing.T) {
 
 func TestReportDiscoveredSkillInstallDoesNotQueueOnNetworkFailure(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("AIGATE_SKILL_METRICS_URL", "http://127.0.0.1:1")
+	setToolingSkillMetricsBaseURL(t, home, "http://127.0.0.1:1")
 
 	id := discoveredSkillKey("github", "openai/skills", "main", "collections/demo-skill")
 	reportDiscoveredSkillInstall(home, id)
@@ -204,6 +204,25 @@ func blockToolingDirWithFile(t *testing.T, home string) {
 	}
 }
 
+func setToolingSkillMetricsBaseURL(t *testing.T, home string, baseURL string) {
+	t.Helper()
+	cfg := loadToolingConfig(home)
+	cfg.SkillMetricsBaseURL = baseURL
+	cfg.SkillRepoRegistryURL = defaultToolingRepoRegistryURL(baseURL)
+	if err := saveToolingConfig(home, cfg); err != nil {
+		t.Fatalf("save tooling config: %v", err)
+	}
+}
+
+func setDefaultToolingSkillMetricsBaseURLForTest(t *testing.T, baseURL string) {
+	t.Helper()
+	prev := defaultToolingSkillMetricsBaseURL
+	defaultToolingSkillMetricsBaseURL = baseURL
+	t.Cleanup(func() {
+		defaultToolingSkillMetricsBaseURL = prev
+	})
+}
+
 func TestNormalizeDiscoveredSourcePathRemovesSkillMarkdownSuffix(t *testing.T) {
 	got := normalizeDiscoveredSourcePath("collections/demo/SKILL.md")
 	if got != "collections/demo" {
@@ -215,6 +234,47 @@ func TestDiscoveredSkillKeyNormalizesSourcePath(t *testing.T) {
 	key := discoveredSkillKey("github", "openai/skills", "main", "collections/demo/SKILL.md")
 	if key != "github:openai/skills:main:collections/demo" {
 		t.Fatalf("discoveredSkillKey = %q, want normalized skill dir key", key)
+	}
+}
+
+func TestLoadConfigAutoFillsSkillMetricsURLs(t *testing.T) {
+	home := t.TempDir()
+	path := toolingConfigPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir tooling dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"skill_sync_method":"copy","skill_repos":[]}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	h := NewToolingHandler()
+	cfg := h.loadConfig(home)
+	if cfg.SkillMetricsBaseURL == "" {
+		t.Fatalf("SkillMetricsBaseURL should be auto-filled")
+	}
+	if cfg.SkillRepoRegistryURL == "" {
+		t.Fatalf("SkillRepoRegistryURL should be auto-filled")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(raw), `"skill_metrics_base_url"`) {
+		t.Fatalf("expected persisted skill_metrics_base_url in config: %s", string(raw))
+	}
+}
+
+func TestSkillMetricsBaseURLUsesConfigNotEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AIGATE_SKILL_METRICS_URL", "https://should-not-be-used.example.com")
+	cfg := loadToolingConfig(home)
+	cfg.SkillMetricsBaseURL = "https://configured.example.com"
+	cfg.SkillRepoRegistryURL = defaultToolingRepoRegistryURL(cfg.SkillMetricsBaseURL)
+	if err := saveToolingConfig(home, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	got := skillMetricsBaseURL(home)
+	if got != "https://configured.example.com" {
+		t.Fatalf("skillMetricsBaseURL = %q, want https://configured.example.com", got)
 	}
 }
 
