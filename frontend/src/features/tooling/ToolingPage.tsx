@@ -35,6 +35,7 @@ import {
   importToolingSkills,
   installToolingDiscoveredSkill,
   removeToolingRepo,
+  refreshToolingDiscoveredSkills,
   resolveToolingRepo,
   reorderToolingRepos,
   updateToolingSkill,
@@ -147,7 +148,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     void reload();
   }, []);
 
-  async function loadDiscoveredSkillsPage(params?: { reset?: boolean; query?: string; forceStatus?: string }) {
+  async function loadDiscoveredSkillsPage(params?: { reset?: boolean; query?: string; forceStatus?: string; refresh?: boolean }) {
     const reset = params?.reset ?? false;
     const query = params?.query ?? discoveryQuery;
     const requestId = discoveryRequestRef.current + 1;
@@ -164,7 +165,8 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     }
     try {
       const nextOffset = reset ? 0 : discoveryOffset;
-      const response = await getToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset: nextOffset, query });
+      const request = params?.refresh ? refreshToolingDiscoveredSkills : getToolingDiscoveredSkills;
+      const response = await request({ limit: DISCOVERY_PAGE_SIZE, offset: nextOffset, query });
       if (discoveryRequestRef.current !== requestId) {
         return;
       }
@@ -192,7 +194,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     if (!skillDiscoverOpen || mode !== "skills") {
       return;
     }
-    void loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("最新索引") });
+    void loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("最新索引"), refresh: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [skillDiscoverOpen, mode, discoveryQuery]);
 
@@ -371,7 +373,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
 
   async function handleDiscoveryRefresh() {
     try {
-      await loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("最新索引") });
+      await loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("最新索引"), refresh: true });
       await reload({ background: true });
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
