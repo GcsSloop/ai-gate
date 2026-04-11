@@ -118,6 +118,16 @@ type CatalogSkillItem = {
   source_path: string;
   source_url: string;
   managed_name: string;
+  skills_sh_url?: string;
+  audits_summary?: {
+    match_confidence: number;
+    providers: Array<{
+      provider: "agent_trust_hub" | "socket" | "snyk";
+      label: string;
+      status: "pass" | "warn" | "fail" | "info";
+      url: string;
+    }>;
+  };
 };
 
 type SkillCatalog = {
@@ -172,6 +182,40 @@ type ScanHistory = {
   }>;
 };
 
+type SkillsShSyncTaskState = {
+  name: "repos" | "audits";
+  next_run_at: string;
+  retry_count: number;
+  cursor: number;
+  etag?: string;
+  last_modified?: string;
+  last_error?: string;
+  last_success_at?: string;
+  total_items?: number;
+};
+
+type SkillsShSyncState = {
+  repos: SkillsShSyncTaskState;
+  audits: SkillsShSyncTaskState;
+  robots_allowed?: boolean;
+  robots_checked_at?: string;
+  robots_error?: string;
+  updated_at: string;
+};
+
+type SkillsShAuditEntry = {
+  source: string;
+  skill_id: string;
+  name: string;
+  slug: string;
+  providers: Array<{
+    provider: "agent_trust_hub" | "socket" | "snyk";
+    label: string;
+    status: "pass" | "warn" | "fail" | "info";
+    url: string;
+  }>;
+};
+
 const CORS_HEADERS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
@@ -195,6 +239,15 @@ const SKILLS_SOURCE_PAGES = [
   "https://skills.sh/hot",
   "https://skills.sh/official",
 ];
+const SKILLS_SH_AUDITS_URL = "https://skills.sh/audits";
+const SKILLS_SH_ROBOTS_URL = "https://skills.sh/robots.txt";
+const EXTERNAL_STATE_CACHE_KEY = "external:skills-sh:state:v1";
+const EXTERNAL_SKILL_AUDIT_CACHE_TTL_SECONDS = 14 * 24 * 60 * 60;
+const EXTERNAL_REPO_SYNC_PER_ROUND = 500;
+const EXTERNAL_AUDIT_SYNC_PER_ROUND = 200;
+const EXTERNAL_SYNC_RETRY_BACKOFF_MS = [5 * 60 * 1000, 30 * 60 * 1000, 2 * 60 * 60 * 1000];
+const EXTERNAL_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const EXTERNAL_SYNC_JITTER_MAX_MS = 90 * 60 * 1000;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -435,6 +488,7 @@ export default {
     const day = utcDay();
     await rebuildDailyRanking(env, day, 200);
     try {
+      await runSkillsShEnhancementSync(env);
       await getSkillCatalog(env, true);
     } catch {
       // keep scheduled task resilient; ranking rebuild should not fail on catalog refresh
@@ -1121,6 +1175,7 @@ async function buildCatalogFromSkillsSource(
   const items: CatalogSkillItem[] = [];
   const repoRootsCache = new Map<string, string[]>();
   const repoRootSkillCache = new Map<string, boolean>();
+  const auditOverlay = await loadAuditOverlay(env);
   for (const entry of entries) {
     const repoInfo = parseSourceRepo(entry.source);
     if (!repoInfo) continue;
@@ -1134,6 +1189,9 @@ async function buildCatalogFromSkillsSource(
     const roots = await getRepoSkillRoots(env, repoInfo.platform, repoInfo.owner, repoInfo.name, branch, repoRootsCache);
     const hasRootSkill = await getRepoHasRootSkill(env, repoInfo.platform, repoInfo.owner, repoInfo.name, branch, repoRootSkillCache);
     const sourcePath = resolvePreferredCatalogSourcePath(entry.skill_id, roots, hasRootSkill, repoInfo.owner, repoInfo.name);
+    const skillKey = discoveredSkillId(repoInfo.platform, repoInfo.owner, repoInfo.name, branch, sourcePath);
+    const fallbackKey = `${repoInfo.owner.toLowerCase()}/${repoInfo.name.toLowerCase()}::${normalizeName(entry.name || entry.skill_id)}`;
+    const overlay = auditOverlay.bySkillKey.get(skillKey) ?? auditOverlay.byRepoAndName.get(fallbackKey);
     items.push({
       id: discoveredSkillId(repoInfo.platform, repoInfo.owner, repoInfo.name, branch, sourcePath),
       name: entry.name || entry.skill_id,
@@ -1145,6 +1203,8 @@ async function buildCatalogFromSkillsSource(
       source_path: sourcePath,
       source_url: repoTreeURL(repoInfo.platform, repoInfo.owner, repoInfo.name, branch, sourcePath),
       managed_name: buildDiscoveredManagedName(repoInfo.owner, repoInfo.name, sourcePath),
+      skills_sh_url: overlay?.skills_sh_url,
+      audits_summary: overlay?.audits_summary,
     });
   }
 
@@ -1222,6 +1282,554 @@ async function fetchSkillsSourceEntries(): Promise<SkillsSourceEntry[]> {
     }
   }
   return entries;
+}
+
+async function runSkillsShEnhancementSync(env: Env): Promise<void> {
+  let state = await loadSkillsShSyncState(env);
+  state = await ensureSkillsShRobotsState(env, state);
+  if (state.robots_allowed === false) {
+    await saveSkillsShSyncState(env, state);
+    return;
+  }
+  const now = Date.now();
+  if (Date.parse(state.repos.next_run_at) <= now) {
+    state = await runSkillsShRepoSyncTask(env, state);
+  }
+  if (Date.parse(state.audits.next_run_at) <= now) {
+    state = await runSkillsShAuditSyncTask(env, state);
+  }
+  state.updated_at = new Date().toISOString();
+  await saveSkillsShSyncState(env, state);
+}
+
+function newSkillsShTaskState(name: "repos" | "audits"): SkillsShSyncTaskState {
+  return {
+    name,
+    next_run_at: new Date(Date.now() + randomInt(0, EXTERNAL_SYNC_JITTER_MAX_MS)).toISOString(),
+    retry_count: 0,
+    cursor: 0,
+  };
+}
+
+async function loadSkillsShSyncState(env: Env): Promise<SkillsShSyncState> {
+  const raw = await env.SKILL_METRICS_CACHE.get(EXTERNAL_STATE_CACHE_KEY);
+  if (!raw) {
+    const now = new Date().toISOString();
+    return {
+      repos: newSkillsShTaskState("repos"),
+      audits: newSkillsShTaskState("audits"),
+      updated_at: now,
+    };
+  }
+  try {
+    const parsed = JSON.parse(raw) as SkillsShSyncState;
+    return {
+      repos: parsed.repos ?? newSkillsShTaskState("repos"),
+      audits: parsed.audits ?? newSkillsShTaskState("audits"),
+      robots_allowed: parsed.robots_allowed,
+      robots_checked_at: parsed.robots_checked_at,
+      robots_error: parsed.robots_error,
+      updated_at: parsed.updated_at || new Date().toISOString(),
+    };
+  } catch {
+    const now = new Date().toISOString();
+    return {
+      repos: newSkillsShTaskState("repos"),
+      audits: newSkillsShTaskState("audits"),
+      updated_at: now,
+    };
+  }
+}
+
+async function saveSkillsShSyncState(env: Env, state: SkillsShSyncState): Promise<void> {
+  await env.SKILL_METRICS_CACHE.put(EXTERNAL_STATE_CACHE_KEY, JSON.stringify(state), {
+    expirationTtl: EXTERNAL_SKILL_AUDIT_CACHE_TTL_SECONDS,
+  });
+}
+
+async function ensureSkillsShRobotsState(env: Env, state: SkillsShSyncState): Promise<SkillsShSyncState> {
+  const checkedAt = state.robots_checked_at ? Date.parse(state.robots_checked_at) : 0;
+  if (checkedAt > 0 && Date.now() < checkedAt + EXTERNAL_SYNC_INTERVAL_MS) {
+    return state;
+  }
+  const robots = await fetchSkillsShRobots();
+  state.robots_allowed = robots.allowed;
+  state.robots_checked_at = new Date().toISOString();
+  state.robots_error = robots.error || "";
+  return state;
+}
+
+async function fetchSkillsShRobots(): Promise<{ allowed: boolean; error?: string }> {
+  try {
+    const resp = await fetch(SKILLS_SH_ROBOTS_URL, { headers: { "User-Agent": "aigate-skill-metrics" } });
+    if (!resp.ok) {
+      return { allowed: false, error: `robots_http_${resp.status}` };
+    }
+    const raw = await resp.text();
+    const rules = parseRobotsRules(raw, "aigate-skill-metrics");
+    const allowed = isRobotsPathAllowed(rules, "/") && isRobotsPathAllowed(rules, "/audits");
+    return { allowed, error: allowed ? "" : "robots_disallow" };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "robots_fetch_failed";
+    return { allowed: false, error: message };
+  }
+}
+
+function parseRobotsRules(raw: string, userAgent: string): Map<string, string[]> {
+  const lines = raw.split(/\r?\n/).map((line) => line.replace(/\s+#.*$/, "").trim()).filter(Boolean);
+  const rules = new Map<string, string[]>();
+  let currentAgents: string[] = [];
+  for (const line of lines) {
+    const [keyRaw, ...rest] = line.split(":");
+    const key = keyRaw.trim().toLowerCase();
+    const value = rest.join(":").trim();
+    if (key === "user-agent") {
+      currentAgents = [value.toLowerCase()];
+      if (!rules.has(currentAgents[0])) {
+        rules.set(currentAgents[0], []);
+      }
+      continue;
+    }
+    if (key !== "allow" && key !== "disallow") {
+      continue;
+    }
+    for (const agent of currentAgents) {
+      const current = rules.get(agent) ?? [];
+      current.push(`${key}:${value}`);
+      rules.set(agent, current);
+    }
+  }
+  if (!rules.has(userAgent.toLowerCase()) && !rules.has("*")) {
+    return new Map([["*", []]]);
+  }
+  return rules;
+}
+
+function isRobotsPathAllowed(rules: Map<string, string[]>, path: string): boolean {
+  const selected = rules.get("aigate-skill-metrics") ?? rules.get("*") ?? [];
+  let blocked = false;
+  let allowLen = -1;
+  let blockLen = -1;
+  for (const rule of selected) {
+    const [kind, valueRaw] = rule.split(":", 2);
+    const value = valueRaw ?? "";
+    if (!value) {
+      continue;
+    }
+    if (!path.startsWith(value)) {
+      continue;
+    }
+    if (kind === "allow" && value.length > allowLen) {
+      allowLen = value.length;
+    }
+    if (kind === "disallow" && value.length > blockLen) {
+      blockLen = value.length;
+      blocked = true;
+    }
+  }
+  if (!blocked) return true;
+  return allowLen >= blockLen;
+}
+
+async function runSkillsShRepoSyncTask(env: Env, state: SkillsShSyncState): Promise<SkillsShSyncState> {
+  try {
+    const sourceData = await fetchSkillsSourceEntriesForSync(state.repos);
+    if (sourceData.notModified) {
+      state.repos.cursor = 0;
+      state.repos.retry_count = 0;
+      state.repos.last_error = "";
+      state.repos.last_success_at = new Date().toISOString();
+      state.repos.etag = sourceData.etag || state.repos.etag;
+      state.repos.last_modified = sourceData.lastModified || state.repos.last_modified;
+      state.repos.next_run_at = new Date(Date.now() + EXTERNAL_SYNC_INTERVAL_MS + randomInt(0, EXTERNAL_SYNC_JITTER_MAX_MS)).toISOString();
+      return state;
+    }
+    const entries = sourceData.entries;
+    const repos = dedupeReposFromEntries(entries);
+    await upsertMissingTrackedRepos(env, repos.slice(state.repos.cursor, state.repos.cursor + EXTERNAL_REPO_SYNC_PER_ROUND));
+    const nextCursor = state.repos.cursor + EXTERNAL_REPO_SYNC_PER_ROUND;
+    const done = nextCursor >= repos.length;
+    state.repos.cursor = done ? 0 : nextCursor;
+    state.repos.total_items = repos.length;
+    state.repos.retry_count = 0;
+    state.repos.last_error = "";
+    state.repos.last_success_at = new Date().toISOString();
+    state.repos.etag = sourceData.etag || state.repos.etag;
+    state.repos.last_modified = sourceData.lastModified || state.repos.last_modified;
+    state.repos.next_run_at = new Date(Date.now() + (done ? EXTERNAL_SYNC_INTERVAL_MS + randomInt(0, EXTERNAL_SYNC_JITTER_MAX_MS) : 60 * 60 * 1000)).toISOString();
+  } catch (err) {
+    state.repos = applySyncRetryState(state.repos, err);
+  }
+  return state;
+}
+
+async function fetchSkillsSourceEntriesForSync(
+  task: SkillsShSyncTaskState,
+): Promise<{ entries: SkillsSourceEntry[]; etag?: string; lastModified?: string; notModified: boolean }> {
+  const dedupe = new Set<string>();
+  const entries: SkillsSourceEntry[] = [];
+  let anyChanged = false;
+  let latestEtag = task.etag;
+  let latestLastModified = task.last_modified;
+  const pattern = /source\\":\\"([^"\\]+)\\",\\"skillId\\":\\"([^"\\]+)\\",\\"name\\":\\"([^"\\]*)/g;
+  for (const page of SKILLS_SOURCE_PAGES) {
+    const headers: Record<string, string> = { "User-Agent": "aigate-skill-metrics" };
+    if (task.etag) headers["If-None-Match"] = task.etag;
+    if (task.last_modified) headers["If-Modified-Since"] = task.last_modified;
+    await sleep(randomInt(1500, 5000));
+    const resp = await fetch(page, { headers });
+    if (resp.status === 304) {
+      continue;
+    }
+    if (!resp.ok) {
+      throw new Error(`skills_source_http_${resp.status}`);
+    }
+    anyChanged = true;
+    latestEtag = resp.headers.get("etag") ?? latestEtag;
+    latestLastModified = resp.headers.get("last-modified") ?? latestLastModified;
+    const html = await resp.text();
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null = null;
+    while ((match = pattern.exec(html)) !== null) {
+      const source = match[1]?.trim() ?? "";
+      const skillId = match[2]?.trim() ?? "";
+      const name = (match[3] ?? "").replace(/\\u[\da-fA-F]{4}/g, "").trim() || skillId;
+      const repoInfo = parseSourceRepo(source);
+      if (!repoInfo || !skillId) continue;
+      const key = `${repoKey(repoInfo.platform, repoInfo.owner, repoInfo.name)}:${skillId.toLowerCase()}`;
+      if (dedupe.has(key)) continue;
+      dedupe.add(key);
+      entries.push({
+        source: `${repoInfo.owner}/${repoInfo.name}`,
+        skill_id: skillId,
+        name,
+      });
+    }
+  }
+  return { entries, etag: latestEtag, lastModified: latestLastModified, notModified: !anyChanged };
+}
+
+async function runSkillsShAuditSyncTask(env: Env, state: SkillsShSyncState): Promise<SkillsShSyncState> {
+  try {
+    const response = await fetchSkillsShAuditsPage(state.audits);
+    if (response.notModified) {
+      state.audits.cursor = 0;
+      state.audits.retry_count = 0;
+      state.audits.last_error = "";
+      state.audits.last_success_at = new Date().toISOString();
+      state.audits.next_run_at = new Date(Date.now() + EXTERNAL_SYNC_INTERVAL_MS + randomInt(0, EXTERNAL_SYNC_JITTER_MAX_MS)).toISOString();
+      return state;
+    }
+    const all = extractSkillsShAuditEntries(response.html);
+    const batch = all.slice(state.audits.cursor, state.audits.cursor + EXTERNAL_AUDIT_SYNC_PER_ROUND);
+    await upsertSkillsShAuditEntries(env, batch);
+    await upsertSkillsShExternalMappings(env, batch);
+    const nextCursor = state.audits.cursor + EXTERNAL_AUDIT_SYNC_PER_ROUND;
+    const done = nextCursor >= all.length;
+    state.audits.cursor = done ? 0 : nextCursor;
+    state.audits.total_items = all.length;
+    state.audits.retry_count = 0;
+    state.audits.last_error = "";
+    state.audits.last_success_at = new Date().toISOString();
+    state.audits.etag = response.etag || state.audits.etag;
+    state.audits.last_modified = response.lastModified || state.audits.last_modified;
+    state.audits.next_run_at = new Date(Date.now() + (done ? EXTERNAL_SYNC_INTERVAL_MS + randomInt(0, EXTERNAL_SYNC_JITTER_MAX_MS) : 60 * 60 * 1000)).toISOString();
+  } catch (err) {
+    state.audits = applySyncRetryState(state.audits, err);
+  }
+  return state;
+}
+
+function applySyncRetryState(task: SkillsShSyncTaskState, err: unknown): SkillsShSyncTaskState {
+  const retryCount = Math.min(task.retry_count + 1, EXTERNAL_SYNC_RETRY_BACKOFF_MS.length);
+  const backoff = EXTERNAL_SYNC_RETRY_BACKOFF_MS[Math.max(0, retryCount - 1)] ?? EXTERNAL_SYNC_RETRY_BACKOFF_MS[EXTERNAL_SYNC_RETRY_BACKOFF_MS.length - 1];
+  const message = err instanceof Error ? err.message : "sync_failed";
+  if (retryCount >= EXTERNAL_SYNC_RETRY_BACKOFF_MS.length) {
+    return {
+      ...task,
+      retry_count: 0,
+      last_error: message,
+      next_run_at: new Date(Date.now() + EXTERNAL_SYNC_INTERVAL_MS + randomInt(0, EXTERNAL_SYNC_JITTER_MAX_MS)).toISOString(),
+    };
+  }
+  return {
+    ...task,
+    retry_count: retryCount,
+    last_error: message,
+    next_run_at: new Date(Date.now() + backoff).toISOString(),
+  };
+}
+
+async function fetchSkillsShAuditsPage(task: SkillsShSyncTaskState): Promise<{ html: string; etag?: string; lastModified?: string; notModified: boolean }> {
+  const headers: Record<string, string> = { "User-Agent": "aigate-skill-metrics" };
+  if (task.etag) headers["If-None-Match"] = task.etag;
+  if (task.last_modified) headers["If-Modified-Since"] = task.last_modified;
+  await sleep(randomInt(1500, 5000));
+  const resp = await fetch(SKILLS_SH_AUDITS_URL, { headers });
+  if (resp.status === 304) {
+    return { html: "", etag: task.etag, lastModified: task.last_modified, notModified: true };
+  }
+  if (!resp.ok) {
+    throw new Error(`audits_http_${resp.status}`);
+  }
+  return {
+    html: await resp.text(),
+    etag: resp.headers.get("etag") ?? undefined,
+    lastModified: resp.headers.get("last-modified") ?? undefined,
+    notModified: false,
+  };
+}
+
+function dedupeReposFromEntries(entries: SkillsSourceEntry[]): TrackedRepoItem[] {
+  const map = new Map<string, TrackedRepoItem>();
+  for (const entry of entries) {
+    const repoInfo = parseSourceRepo(entry.source);
+    if (!repoInfo) continue;
+    const key = repoKey(repoInfo.platform, repoInfo.owner, repoInfo.name);
+    if (map.has(key)) continue;
+    map.set(key, {
+      platform: repoInfo.platform,
+      owner: repoInfo.owner,
+      name: repoInfo.name,
+      branch: "main",
+      enabled: true,
+      sort_order: 0,
+    });
+  }
+  return [...map.values()];
+}
+
+async function upsertMissingTrackedRepos(env: Env, repos: TrackedRepoItem[]): Promise<void> {
+  for (let i = 0; i < repos.length; i += 1) {
+    const repo = repos[i];
+    await sleep(randomInt(1500, 5000));
+    const key = repoKey(repo.platform, repo.owner, repo.name);
+    const exists = await env.DB.prepare("SELECT repo_key FROM tracked_repos WHERE repo_key = ?1").bind(key).first<{ repo_key: string }>();
+    if (exists?.repo_key) {
+      continue;
+    }
+    const sortOrder = await nextTrackedRepoSortOrder(env);
+    const now = new Date().toISOString();
+    await env.DB
+      .prepare(
+        `INSERT INTO tracked_repos (repo_key, platform, owner, name, branch, enabled, sort_order, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+      )
+      .bind(key, repo.platform, repo.owner, repo.name, "main", 1, sortOrder, now)
+      .run();
+  }
+}
+
+function extractSkillsShAuditEntries(html: string): SkillsShAuditEntry[] {
+  const rows = new Map<string, SkillsShAuditEntry>();
+  const rowPattern = /source\\":\\"([^"\\]+)\\",\\"skillId\\":\\"([^"\\]+)\\",\\"name\\":\\"([^"\\]*)/g;
+  let match: RegExpExecArray | null = null;
+  while ((match = rowPattern.exec(html)) !== null) {
+    const source = (match[1] ?? "").trim();
+    const skillId = (match[2] ?? "").trim();
+    if (!source || !skillId) continue;
+    const key = `${source.toLowerCase()}::${skillId.toLowerCase()}`;
+    const skillUrlPath = `/${source}/${skillId}`;
+    const sourceEscaped = source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const skillEscaped = skillId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const sliceStart = Math.max(0, match.index - 500);
+    const sliceEnd = Math.min(html.length, match.index + 6000);
+    const block = html.slice(sliceStart, sliceEnd);
+    const providers: SkillsShAuditEntry["providers"] = [];
+    const athPattern = new RegExp(`agentTrustHub\\\\\\":(null|\\{[^]*?\\"source\\\\\\":\\\\"${sourceEscaped}\\\\"[^]*?\\"slug\\\\\\":\\\\"${skillEscaped}\\\\"[^]*?\\})`);
+    const socketPattern = new RegExp(`socket\\\\\\":(null|\\{[^]*?\\"source\\\\\\":\\\\"${sourceEscaped}\\\\"[^]*?\\"slug\\\\\\":\\\\"${skillEscaped}\\\\"[^]*?\\})`);
+    const snykPattern = new RegExp(`snyk\\\\\\":(null|\\{[^]*?\\"source\\\\\\":\\\\"${sourceEscaped}\\\\"[^]*?\\"slug\\\\\\":\\\\"${skillEscaped}\\\\"[^]*?\\})`);
+    const ath = athPattern.exec(block)?.[1] ?? "null";
+    const socket = socketPattern.exec(block)?.[1] ?? "null";
+    const snyk = snykPattern.exec(block)?.[1] ?? "null";
+    if (ath !== "null") {
+      const status = /overall_risk_level\\\\\\":\\\\\\"SAFE/.test(ath) ? "pass" : "warn";
+      providers.push({ provider: "agent_trust_hub", label: "Agent Trust Hub", status, url: `https://skills.sh${skillUrlPath}/security/agent-trust-hub` });
+    }
+    if (socket !== "null") {
+      const status = /alertCount\\\\\\":0/.test(socket) ? "pass" : "warn";
+      providers.push({ provider: "socket", label: "Socket", status, url: `https://skills.sh${skillUrlPath}/security/socket` });
+    }
+    if (snyk !== "null") {
+      const status = /criticalCount\\\\\\":0/.test(snyk) ? "pass" : "warn";
+      providers.push({ provider: "snyk", label: "Snyk", status, url: `https://skills.sh${skillUrlPath}/security/snyk` });
+    }
+    rows.set(key, {
+      source,
+      skill_id: skillId,
+      name: (match[3] ?? skillId).trim() || skillId,
+      slug: skillId,
+      providers,
+    });
+  }
+  return [...rows.values()];
+}
+
+async function upsertSkillsShAuditEntries(env: Env, entries: SkillsShAuditEntry[]): Promise<void> {
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + EXTERNAL_SKILL_AUDIT_CACHE_TTL_SECONDS * 1000).toISOString();
+  for (const entry of entries) {
+    for (const provider of entry.providers) {
+      const skillKey = `${entry.source.toLowerCase()}:${entry.skill_id.toLowerCase()}`;
+      await env.DB
+        .prepare(
+          `INSERT INTO skills_audit_cache (
+            skill_key, source_repo, source_skill_id, provider, status, label, source_url, fetched_at, expires_at
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+          ON CONFLICT(skill_key, provider) DO UPDATE SET
+            source_repo=excluded.source_repo,
+            source_skill_id=excluded.source_skill_id,
+            status=excluded.status,
+            label=excluded.label,
+            source_url=excluded.source_url,
+            fetched_at=excluded.fetched_at,
+            expires_at=excluded.expires_at`,
+        )
+        .bind(
+          skillKey,
+          entry.source.toLowerCase(),
+          entry.skill_id.toLowerCase(),
+          provider.provider,
+          provider.status,
+          provider.label,
+          provider.url,
+          now,
+          expiresAt,
+        )
+        .run();
+    }
+  }
+}
+
+async function upsertSkillsShExternalMappings(env: Env, entries: SkillsShAuditEntry[]): Promise<void> {
+  const now = new Date().toISOString();
+  for (const entry of entries) {
+    const repoInfo = parseSourceRepo(entry.source);
+    if (!repoInfo) continue;
+    const canonicalPath = normalizeCatalogSourcePath(entry.skill_id);
+    const exactSkillKey = discoveredSkillId(repoInfo.platform, repoInfo.owner, repoInfo.name, "main", canonicalPath);
+    await env.DB
+      .prepare(
+        `INSERT INTO skills_external_map (
+          skill_key, source_repo, source_path, source_name_normalized, skills_sh_slug, skills_sh_url, match_confidence, matched_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ON CONFLICT(skill_key) DO UPDATE SET
+          source_repo=excluded.source_repo,
+          source_path=excluded.source_path,
+          source_name_normalized=excluded.source_name_normalized,
+          skills_sh_slug=excluded.skills_sh_slug,
+          skills_sh_url=excluded.skills_sh_url,
+          match_confidence=excluded.match_confidence,
+          matched_at=excluded.matched_at`,
+      )
+      .bind(
+        exactSkillKey,
+        `${repoInfo.owner.toLowerCase()}/${repoInfo.name.toLowerCase()}`,
+        canonicalPath.toLowerCase(),
+        normalizeName(entry.name),
+        entry.slug.toLowerCase(),
+        `https://skills.sh/${repoInfo.owner}/${repoInfo.name}/${entry.slug}`,
+        1.0,
+        now,
+      )
+      .run();
+  }
+}
+
+function normalizeName(input: string): string {
+  return input.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+async function loadAuditOverlay(env: Env): Promise<{
+  bySkillKey: Map<string, { skills_sh_url: string; audits_summary: CatalogSkillItem["audits_summary"] }>;
+  byRepoAndName: Map<string, { skills_sh_url: string; audits_summary: CatalogSkillItem["audits_summary"] }>;
+}> {
+  const now = new Date().toISOString();
+  const rows = await env.DB
+    .prepare(
+      `SELECT
+         m.skill_key AS skill_key,
+         m.source_repo AS source_repo,
+         m.source_name_normalized AS source_name_normalized,
+         m.skills_sh_url AS skills_sh_url,
+         m.match_confidence AS match_confidence,
+         c.provider AS provider,
+         c.status AS status,
+         c.label AS label,
+         c.source_url AS source_url
+       FROM skills_external_map m
+       LEFT JOIN skills_audit_cache c
+         ON c.skill_key = (LOWER(m.source_repo) || ':' || LOWER(m.source_path))
+        AND c.expires_at >= ?1`,
+    )
+    .bind(now)
+    .all<{
+      skill_key: string;
+      source_repo: string;
+      source_name_normalized: string;
+      skills_sh_url: string;
+      match_confidence: number;
+      provider: "agent_trust_hub" | "socket" | "snyk" | null;
+      status: "pass" | "warn" | "fail" | "info" | null;
+      label: string | null;
+      source_url: string | null;
+    }>();
+  const bySkillKey = new Map<string, { skills_sh_url: string; audits_summary: CatalogSkillItem["audits_summary"] }>();
+  const byRepoAndName = new Map<string, { skills_sh_url: string; audits_summary: CatalogSkillItem["audits_summary"] }>();
+  const repoNameCounts = new Map<string, number>();
+  for (const row of rows.results ?? []) {
+    const key = (row.skill_key ?? "").trim();
+    const confidence = Number(row.match_confidence ?? 0);
+    if (!key || confidence < 0.7) {
+      continue;
+    }
+    const repoNameKey = `${(row.source_repo ?? "").trim().toLowerCase()}::${(row.source_name_normalized ?? "").trim().toLowerCase()}`;
+    repoNameCounts.set(repoNameKey, (repoNameCounts.get(repoNameKey) ?? 0) + 1);
+    if (!bySkillKey.has(key)) {
+      bySkillKey.set(key, {
+        skills_sh_url: row.skills_sh_url || "",
+        audits_summary: {
+          match_confidence: confidence,
+          providers: [],
+        },
+      });
+    }
+    if (repoNameKey !== "::" && !byRepoAndName.has(repoNameKey)) {
+      byRepoAndName.set(repoNameKey, {
+        skills_sh_url: row.skills_sh_url || "",
+        audits_summary: {
+          match_confidence: confidence,
+          providers: [],
+        },
+      });
+    }
+    if (row.provider && row.status && row.source_url) {
+      const providerItem = {
+        provider: row.provider,
+        status: row.status,
+        label: row.label || row.provider,
+        url: row.source_url,
+      };
+      bySkillKey.get(key)?.audits_summary?.providers.push(providerItem);
+      byRepoAndName.get(repoNameKey)?.audits_summary?.providers.push(providerItem);
+    }
+  }
+  for (const [key, count] of repoNameCounts.entries()) {
+    if (count > 1) {
+      byRepoAndName.delete(key);
+    }
+  }
+  return { bySkillKey, byRepoAndName };
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomInt(min: number, max: number): number {
+  const low = Math.min(min, max);
+  const high = Math.max(min, max);
+  return Math.floor(Math.random() * (high - low + 1)) + low;
 }
 
 function countSkillsBySource(entries: SkillsSourceEntry[]): Record<string, number> {
