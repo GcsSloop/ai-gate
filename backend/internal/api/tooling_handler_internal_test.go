@@ -190,3 +190,27 @@ func blockToolingDirWithFile(t *testing.T, home string) {
 		t.Fatalf("write blocker file: %v", err)
 	}
 }
+
+func TestNormalizeDiscoveredSourcePathRemovesSkillMarkdownSuffix(t *testing.T) {
+	got := normalizeDiscoveredSourcePath("collections/demo/SKILL.md")
+	if got != "collections/demo" {
+		t.Fatalf("normalizeDiscoveredSourcePath = %q, want collections/demo", got)
+	}
+}
+
+func TestDiscoveredSkillKeyNormalizesSourcePath(t *testing.T) {
+	key := discoveredSkillKey("github", "openai/skills", "main", "collections/demo/SKILL.md")
+	if key != "github:openai/skills:main:collections/demo" {
+		t.Fatalf("discoveredSkillKey = %q, want normalized skill dir key", key)
+	}
+}
+
+func TestParseDiscoveredSkillIDSupportsLegacyCentralFormat(t *testing.T) {
+	platform, repo, branch, sourcePath, err := parseDiscoveredSkillID("github:openai/skills:collections/demo")
+	if err != nil {
+		t.Fatalf("parseDiscoveredSkillID legacy format err = %v", err)
+	}
+	if platform != "github" || repo != "openai/skills" || branch != "main" || sourcePath != "collections/demo" {
+		t.Fatalf("legacy parse result = (%q,%q,%q,%q), want (github,openai/skills,main,collections/demo)", platform, repo, branch, sourcePath)
+	}
+}
