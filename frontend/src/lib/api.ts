@@ -1149,7 +1149,28 @@ export async function getToolingDiscoveredSkills(params?: { limit?: number; offs
 }
 
 export async function refreshToolingDiscoveredSkills(params?: { limit?: number; offset?: number; query?: string }): Promise<ToolingSkillDiscoveryResponse> {
-  return getToolingDiscoveredSkills(params);
+  const search = new URLSearchParams();
+  if (typeof params?.limit === "number" && params.limit > 0) {
+    search.set("limit", String(params.limit));
+  }
+  if (typeof params?.offset === "number" && params.offset >= 0) {
+    search.set("offset", String(params.offset));
+  }
+  const query = params?.query?.trim();
+  if (query) {
+    search.set("q", query);
+  }
+  const queryString = search.toString();
+  const response = await fetch(apiPath(`/tooling/skills/discover/refresh${queryString ? `?${queryString}` : ""}`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to refresh discovered skills");
+  }
+  return response.json();
 }
 
 export async function installToolingDiscoveredSkill(payload: {
