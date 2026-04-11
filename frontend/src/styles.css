@@ -796,6 +796,18 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   font-size: 13px;
 }
 
+.tooling-audit-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(2, 132, 199, 0.1);
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .tooling-discovered-title-button {
   appearance: none;
   padding: 0;
@@ -821,6 +833,42 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.tooling-audit-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tooling-audit-provider {
+  appearance: none;
+  border: 1px solid var(--panel-border);
+  background: #fff;
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.tooling-audit-provider.is-pass {
+  border-color: rgba(22, 163, 74, 0.3);
+  color: #15803d;
+  background: rgba(22, 163, 74, 0.08);
+}
+
+.tooling-audit-provider.is-warn {
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.tooling-audit-provider.is-fail {
+  border-color: rgba(220, 38, 38, 0.35);
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.08);
 }
 
 .tooling-discovered-row-actions {

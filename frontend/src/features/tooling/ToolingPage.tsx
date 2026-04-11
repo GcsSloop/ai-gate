@@ -78,7 +78,7 @@ type RepoEditorForm = {
 };
 
 const DISCOVERY_PAGE_SIZE = 80;
-const DISCOVERY_ROW_HEIGHT = 104;
+const DISCOVERY_ROW_HEIGHT = 132;
 const DISCOVERY_OVERSCAN = 6;
 
 const managedClients: ManagedClientDescriptor[] = [
@@ -740,6 +740,13 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
                     busy={discoveryBusyId === skill.id}
                     t={t}
                     onView={() => handleViewDiscoveredSkill(skill)}
+                    onViewSkillsSh={() => {
+                      if (!skill.skills_sh_url) {
+                        return;
+                      }
+                      void openExternalUrl(skill.skills_sh_url);
+                    }}
+                    onViewAudit={(url) => void openExternalUrl(url)}
                     onInstall={() => void handleDiscoveredSkillInstall(skill)}
                   />
                 ))}
@@ -999,18 +1006,23 @@ function DiscoveredSkillRow({
   busy,
   t,
   onView,
+  onViewSkillsSh,
+  onViewAudit,
   onInstall,
 }: {
   skill: ToolingDiscoveredSkill;
   busy?: boolean;
   t: (text: string) => string;
   onView: () => void;
+  onViewSkillsSh: () => void;
+  onViewAudit: (url: string) => void;
   onInstall: () => void;
 }) {
   const installed = Boolean(skill.installed_apps?.codex);
   const updateAvailable = installed && Boolean(skill.update_available);
   const actionLabel = updateAvailable ? t("更新") : installed ? t("已安装") : t("安装");
   const statusLabel = updateAvailable ? t("可更新") : installed ? t("已安装") : t("未安装");
+  const providerBadges = skill.audits_summary?.providers ?? [];
   return (
     <div className="tooling-discovered-row">
       <div className="tooling-discovered-row-main">
@@ -1018,17 +1030,42 @@ function DiscoveredSkillRow({
           <span className="tooling-discovered-platform">{skill.platform.toUpperCase()}</span>
           <span className="tooling-discovered-repo">{`${skill.repo_owner}/${skill.repo_name}`}</span>
           <span className={`tooling-status-pill ${updateAvailable ? "is-update" : installed ? "is-enabled" : "is-disabled"}`}>{statusLabel}</span>
+          {providerBadges.length > 0 ? (
+            <span className="tooling-audit-pill" title={t("来自 skills.sh 的审计增强标记")}>
+              {t("Audits")}
+            </span>
+          ) : null}
         </div>
         <button type="button" className="tooling-discovered-title-button" data-testid="tooling-discovered-skill-title" aria-label={`打开 ${skill.name} 的源目录`} onClick={onView}>
           {skill.name}
         </button>
         <div className="tooling-discovered-row-description">{`${t("托管名")}: ${skill.managed_name}`}</div>
         {skill.description ? <div className="tooling-discovered-row-description">{skill.description}</div> : null}
+        {providerBadges.length > 0 ? (
+          <div className="tooling-audit-badges">
+            {providerBadges.map((provider) => (
+              <button
+                key={`${skill.id}-${provider.provider}`}
+                type="button"
+                className={`tooling-audit-provider is-${provider.status}`}
+                onClick={() => onViewAudit(provider.url)}
+                title={provider.url}
+              >
+                {provider.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div className="tooling-discovered-row-actions">
         <Button size="small" icon={<LinkOutlined />} aria-label={`查看 ${skill.name} 的仓库页面`} onClick={onView}>
           {t("查看")}
         </Button>
+        {skill.skills_sh_url ? (
+          <Button size="small" icon={<LinkOutlined />} aria-label={`查看 ${skill.name} 的 skills.sh 页面`} onClick={onViewSkillsSh}>
+            skills.sh
+          </Button>
+        ) : null}
         <Button
           size="small"
           type={updateAvailable || !installed ? "primary" : "default"}

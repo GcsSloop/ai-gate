@@ -315,6 +315,16 @@ export type ToolingDiscoveredSkill = {
   source_path: string;
   source_url: string;
   managed_name: string;
+  skills_sh_url?: string;
+  audits_summary?: {
+    match_confidence: number;
+    providers: Array<{
+      provider: "agent_trust_hub" | "socket" | "snyk";
+      label: string;
+      status: "pass" | "warn" | "fail" | "info";
+      url: string;
+    }>;
+  };
   content_hash?: string;
   installed_hash?: string;
   installed_apps: Record<string, boolean>;
