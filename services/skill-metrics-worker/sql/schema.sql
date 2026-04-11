@@ -2,9 +2,13 @@ CREATE TABLE IF NOT EXISTS install_events (
   event_key TEXT PRIMARY KEY,
   event_day TEXT NOT NULL,
   user_hash TEXT NOT NULL,
+  anonymous_id TEXT DEFAULT '',
   skill_name TEXT NOT NULL,
   source_repo TEXT DEFAULT '',
   client_version TEXT DEFAULT '',
+  client_platform TEXT DEFAULT '',
+  client_arch TEXT DEFAULT '',
+  client_app TEXT DEFAULT '',
   created_at TEXT NOT NULL
 );
 
