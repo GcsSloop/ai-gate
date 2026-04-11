@@ -87,6 +87,7 @@ type CatalogSkillItem = {
   repo_url: string;
   source_path: string;
   source_url: string;
+  managed_name: string;
 };
 
 type SkillCatalog = {
@@ -172,7 +173,6 @@ export default {
         return logoutAdmin();
       }
       if (request.method === "POST" && url.pathname === "/events/install") {
-        await assertBearer(request, env.INGEST_BEARER_TOKEN);
         const payload = (await request.json()) as InstallEventPayload;
         const result = await ingestInstallEvent(env, payload);
         return json(result, 201);
@@ -737,16 +737,19 @@ async function buildCatalogFromSkillsSource(
     const itemId = `${key}:${entry.skill_id}`;
     if (dedupe.has(itemId)) continue;
     dedupe.add(itemId);
+    const branch = tracked.branch || "main";
+    const sourcePath = normalizeCatalogSourcePath(entry.skill_id);
     items.push({
-      id: itemId,
+      id: discoveredSkillId(repoInfo.platform, repoInfo.owner, repoInfo.name, branch, sourcePath),
       name: entry.name || entry.skill_id,
       platform: repoInfo.platform,
       repo_owner: repoInfo.owner,
       repo_name: repoInfo.name,
-      branch: tracked.branch || "main",
+      branch,
       repo_url: repoHomeURL(repoInfo.platform, repoInfo.owner, repoInfo.name),
-      source_path: `${entry.skill_id}/SKILL.md`,
-      source_url: repoHomeURL(repoInfo.platform, repoInfo.owner, repoInfo.name),
+      source_path: sourcePath,
+      source_url: repoTreeURL(repoInfo.platform, repoInfo.owner, repoInfo.name, branch, sourcePath),
+      managed_name: buildDiscoveredManagedName(repoInfo.owner, repoInfo.name, sourcePath),
     });
   }
 
@@ -764,13 +767,15 @@ async function buildCatalogFromSkillsSource(
 }
 
 function parseSourceRepo(source: string): { platform: "github" | "gitlab"; owner: string; name: string } | null {
-  const value = source.trim().replace(/^https?:\/\/(www\.)?github\.com\//i, "").replace(/^https?:\/\/(www\.)?gitlab\.com\//i, "");
+  const trimmed = source.trim();
+  const platform = /^https?:\/\/(www\.)?gitlab\.com\//i.test(trimmed) ? "gitlab" : "github";
+  const value = trimmed.replace(/^https?:\/\/(www\.)?github\.com\//i, "").replace(/^https?:\/\/(www\.)?gitlab\.com\//i, "");
   const parts = value.split("/").filter(Boolean);
   if (parts.length < 2) return null;
   const owner = parts[0];
   const name = parts[1];
   if (!owner || !name) return null;
-  return { platform: "github", owner, name };
+  return { platform, owner, name };
 }
 
 async function fetchSkillsSourceEntries(): Promise<SkillsSourceEntry[]> {
@@ -848,6 +853,32 @@ function repoHomeURL(platform: "github" | "gitlab", owner: string, name: string)
     return `https://gitlab.com/${owner}/${name}`;
   }
   return `https://github.com/${owner}/${name}`;
+}
+
+function repoTreeURL(platform: "github" | "gitlab", owner: string, name: string, branch: string, sourcePath: string): string {
+  const root = repoHomeURL(platform, owner, name);
+  const normalizedPath = sourcePath.replace(/^\/+|\/+$/g, "");
+  if (!normalizedPath) {
+    return root;
+  }
+  if (platform === "gitlab") {
+    return `${root}/-/tree/${encodeURIComponent(branch)}/${normalizedPath}`;
+  }
+  return `${root}/tree/${encodeURIComponent(branch)}/${normalizedPath}`;
+}
+
+function normalizeCatalogSourcePath(value: string): string {
+  return value.trim().replace(/^\/+|\/+$/g, "").replace(/\\/g, "/").replace(/\/SKILL\.md$/i, "");
+}
+
+function discoveredSkillId(platform: "github" | "gitlab", owner: string, name: string, branch: string, sourcePath: string): string {
+  return `${platform}:${owner}/${name}:${branch}:${sourcePath}`;
+}
+
+function buildDiscoveredManagedName(owner: string, name: string, sourcePath: string): string {
+  const source = sourcePath.replace(/^\/+|\/+$/g, "").replace(/\\/g, "/");
+  const last = source.split("/").filter(Boolean).at(-1) ?? "skill";
+  return `${name}-${last}`.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
 }
 
 function sliceCatalog(catalog: SkillCatalog, offset: number, limit: number): SkillCatalog & { total_items: number; offset: number; limit: number } {
