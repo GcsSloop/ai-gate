@@ -61,6 +61,22 @@ function shouldPoll(state: DesktopUpdateState) {
   return state.status === "checking" || state.status === "downloading";
 }
 
+function normalizeUpdateError(error: unknown, t: Translator, fallback: string) {
+  if (error instanceof Error && error.message.trim()) {
+    return t(error.message);
+  }
+  if (typeof error === "string" && error.trim()) {
+    return t(error);
+  }
+  if (error && typeof error === "object") {
+    const detail = (error as { message?: unknown; error?: unknown }).message ?? (error as { error?: unknown }).error;
+    if (typeof detail === "string" && detail.trim()) {
+      return t(detail);
+    }
+  }
+  return t(fallback);
+}
+
 export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, t, service }: UpdateCardProps) {
   const updateService = useMemo(() => service ?? createDesktopUpdateService(), [service]);
   const [state, setState] = useState<DesktopUpdateState>(() => emptyUpdateState());
@@ -79,7 +95,7 @@ export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, 
     } catch (error) {
       setState({
         ...emptyUpdateState("error"),
-        error: error instanceof Error ? t(error.message) : t("检查更新失败"),
+        error: normalizeUpdateError(error, t, "检查更新失败"),
       });
     }
   }
@@ -92,7 +108,7 @@ export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, 
       setState({
         ...emptyUpdateState("error"),
         update,
-        error: error instanceof Error ? t(error.message) : t("安装更新失败"),
+        error: normalizeUpdateError(error, t, "安装更新失败"),
       });
     }
   }
@@ -105,7 +121,7 @@ export function UpdateCard({ autoCheckOnMount = true, currentVersion, language, 
       setState((current) => ({
         ...current,
         status: "error",
-        error: error instanceof Error ? t(error.message) : t("安装更新失败"),
+        error: normalizeUpdateError(error, t, "安装更新失败"),
       }));
     }
   }
