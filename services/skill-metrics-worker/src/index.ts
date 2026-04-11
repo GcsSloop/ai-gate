@@ -10,12 +10,9 @@ type Env = {
 };
 
 type InstallEventPayload = {
-  user_hash?: string;
   anonymous_id?: string;
   skill_name: string;
   source_repo?: string;
-  client_version?: string;
-  installed_at?: string;
 };
 
 type SkillRankItem = {
@@ -358,30 +355,26 @@ async function ingestInstallEvent(
 ): Promise<{ inserted: boolean; event_day: string; event_key: string; user_hash: string; anonymous_id?: string }> {
   const skillName = trim(payload.skill_name ?? "", 120);
   const sourceRepo = trim(payload.source_repo ?? "", 240);
-  const clientVersion = trim(payload.client_version ?? "", 60);
   if (!skillName) {
     throw httpError(400, "invalid_payload");
   }
 
   let anonymousId = trim(payload.anonymous_id ?? "", 120);
-  let userHash = trim(payload.user_hash ?? "", 120);
-  if (!userHash) {
-    if (!anonymousId) {
-      anonymousId = `anon_${crypto.randomUUID()}`;
-    }
-    userHash = await sha256Hex(anonymousId);
+  if (!anonymousId) {
+    anonymousId = `anon_${crypto.randomUUID()}`;
   }
+  const userHash = await sha256Hex(anonymousId);
 
-  const eventDay = normalizeDay(payload.installed_at) ?? utcDay();
+  const eventDay = utcDay();
   const eventKey = await sha256Hex(`${eventDay}:${userHash}:${skillName}:${sourceRepo}`);
   const now = new Date().toISOString();
   const result = await env.DB
     .prepare(
       `INSERT OR IGNORE INTO install_events (
-        event_key, event_day, user_hash, skill_name, source_repo, client_version, created_at
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+        event_key, event_day, user_hash, skill_name, source_repo, created_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
     )
-    .bind(eventKey, eventDay, userHash, skillName, sourceRepo, clientVersion, now)
+    .bind(eventKey, eventDay, userHash, skillName, sourceRepo, now)
     .run();
 
   await env.SKILL_METRICS_CACHE.delete(cacheKey(eventDay, DEFAULT_LIMIT));
@@ -702,7 +695,7 @@ async function stepCatalogScan(env: Env, batchSize: number): Promise<ScanStatus>
 }
 
 async function buildCatalogFromSkillsSource(
-  _env: Env,
+  env: Env,
   repos: TrackedRepoItem[],
   sourceCounts?: Record<string, number>,
   repoStars?: Record<string, number>,
@@ -728,6 +721,7 @@ async function buildCatalogFromSkillsSource(
 
   const dedupe = new Set<string>();
   const items: CatalogSkillItem[] = [];
+  const repoRootsCache = new Map<string, string[]>();
   for (const entry of entries) {
     const repoInfo = parseSourceRepo(entry.source);
     if (!repoInfo) continue;
@@ -738,7 +732,8 @@ async function buildCatalogFromSkillsSource(
     if (dedupe.has(itemId)) continue;
     dedupe.add(itemId);
     const branch = tracked.branch || "main";
-    const sourcePath = normalizeCatalogSourcePath(entry.skill_id);
+    const roots = await getRepoSkillRoots(env, repoInfo.platform, repoInfo.owner, repoInfo.name, branch, repoRootsCache);
+    const sourcePath = resolveCatalogSourcePath(entry.skill_id, roots, repoInfo.name);
     items.push({
       id: discoveredSkillId(repoInfo.platform, repoInfo.owner, repoInfo.name, branch, sourcePath),
       name: entry.name || entry.skill_id,
@@ -869,6 +864,112 @@ function repoTreeURL(platform: "github" | "gitlab", owner: string, name: string,
 
 function normalizeCatalogSourcePath(value: string): string {
   return value.trim().replace(/^\/+|\/+$/g, "").replace(/\\/g, "/").replace(/\/SKILL\.md$/i, "");
+}
+
+function resolveCatalogSourcePath(skillId: string, roots: string[], repoName: string): string {
+  const normalized = normalizeCatalogSourcePath(skillId);
+  if (!normalized) return normalized;
+  if (normalized.includes("/")) return normalized;
+  if (!roots.length) return resolveCatalogSourcePathByRepoHeuristic(normalized, repoName);
+
+  const exact = roots.find((root) => root.toLowerCase() === normalized.toLowerCase());
+  if (exact) return exact;
+
+  const candidates = roots.filter((root) => {
+    const base = root.split("/").filter(Boolean).at(-1) ?? "";
+    return base.toLowerCase() === normalized.toLowerCase();
+  });
+  if (!candidates.length) {
+    return resolveCatalogSourcePathByRepoHeuristic(normalized, repoName);
+  }
+  if (candidates.length === 1) return candidates[0];
+
+  candidates.sort((a, b) => {
+    const aPreferred = a.toLowerCase().endsWith(`/skills/${normalized.toLowerCase()}`);
+    const bPreferred = b.toLowerCase().endsWith(`/skills/${normalized.toLowerCase()}`);
+    if (aPreferred !== bPreferred) return aPreferred ? -1 : 1;
+    const aDepth = a.split("/").length;
+    const bDepth = b.split("/").length;
+    if (aDepth !== bDepth) return aDepth - bDepth;
+    return a.localeCompare(b, "en", { sensitivity: "base" });
+  });
+  return candidates[0];
+}
+
+function resolveCatalogSourcePathByRepoHeuristic(normalized: string, repoName: string): string {
+  const repo = repoName.trim().toLowerCase();
+  if (repo === "claude-code") {
+    return `plugins/${normalized}/skills/${normalized}`;
+  }
+  return normalized;
+}
+
+async function getRepoSkillRoots(
+  env: Env,
+  platform: "github" | "gitlab",
+  owner: string,
+  name: string,
+  branch: string,
+  cache: Map<string, string[]>,
+): Promise<string[]> {
+  const key = `${platform}:${owner.toLowerCase()}/${name.toLowerCase()}@${branch}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+  try {
+    const roots = platform === "gitlab"
+      ? await fetchGitLabSkillRoots(owner, name, branch, env.GITLAB_TOKEN)
+      : await fetchGitHubSkillRoots(owner, name, branch, env.GITHUB_TOKEN);
+    cache.set(key, roots);
+    return roots;
+  } catch {
+    cache.set(key, []);
+    return [];
+  }
+}
+
+async function fetchGitHubSkillRoots(owner: string, name: string, branch: string, token?: string): Promise<string[]> {
+  const endpoint = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
+  const headers: Record<string, string> = {
+    "User-Agent": "aigate-skill-metrics",
+    Accept: "application/vnd.github+json",
+  };
+  const auth = (token ?? "").trim();
+  if (auth) {
+    headers.Authorization = `Bearer ${auth}`;
+  }
+  const resp = await fetch(endpoint, { headers });
+  if (!resp.ok) return [];
+  const payload = (await resp.json()) as { tree?: Array<{ path?: string; type?: string }> };
+  const tree = Array.isArray(payload.tree) ? payload.tree : [];
+  const roots = new Set<string>();
+  for (const item of tree) {
+    const path = (item.path ?? "").trim();
+    if (item.type !== "blob" || !path.toLowerCase().endsWith("/skill.md")) continue;
+    const root = path.slice(0, -"/SKILL.md".length).replace(/\/+$/g, "");
+    if (root) roots.add(root);
+  }
+  return [...roots];
+}
+
+async function fetchGitLabSkillRoots(owner: string, name: string, branch: string, token?: string): Promise<string[]> {
+  const project = encodeURIComponent(`${owner}/${name}`);
+  const endpoint = `https://gitlab.com/api/v4/projects/${project}/repository/tree?ref=${encodeURIComponent(branch)}&recursive=true&per_page=100`;
+  const headers: Record<string, string> = { "User-Agent": "aigate-skill-metrics" };
+  const auth = (token ?? "").trim();
+  if (auth) {
+    headers["PRIVATE-TOKEN"] = auth;
+  }
+  const resp = await fetch(endpoint, { headers });
+  if (!resp.ok) return [];
+  const payload = (await resp.json()) as Array<{ path?: string; type?: string }>;
+  const roots = new Set<string>();
+  for (const item of payload) {
+    const path = (item.path ?? "").trim();
+    if (item.type !== "blob" || !path.toLowerCase().endsWith("/skill.md")) continue;
+    const root = path.slice(0, -"/SKILL.md".length).replace(/\/+$/g, "");
+    if (root) roots.add(root);
+  }
+  return [...roots];
 }
 
 function discoveredSkillId(platform: "github" | "gitlab", owner: string, name: string, branch: string, sourcePath: string): string {

@@ -4,8 +4,8 @@ Cloudflare Worker service for lightweight skill install telemetry and ranking.
 
 ## Features
 
-- `POST /events/install`: ingest install events (idempotent by day + user + skill + repo, auth required).
-- auto-generate `anonymous_id` when install payload has neither `user_hash` nor `anonymous_id`.
+- `POST /events/install`: ingest install events (idempotent by day + user + skill + repo, public endpoint).
+- auto-generate `anonymous_id` when install payload omits `anonymous_id`.
 - `GET /rankings/skills`: public daily ranking order only (no install counts / user counts).
 - `GET /skills/final`: public final skill list aggregated from tracked repos.
 - `GET /admin/api/rankings/skills`: full ranking details for admin (auth required).
@@ -34,11 +34,11 @@ cd services/skill-metrics-worker
 npm run dev
 ```
 
-Required bearer token for ingest endpoint:
+Optional ingest bearer token (kept for compatibility, not required by current API behavior):
 
 ```bash
 cp .dev.vars.example .dev.vars
-# edit .dev.vars
+# edit .dev.vars (optional)
 ```
 
 Admin token for repository management:
@@ -100,11 +100,9 @@ Request body:
 
 ```json
 {
-  "user_hash": "sha256-user-id",
+  "anonymous_id": "aigate-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   "skill_name": "skill-name",
-  "source_repo": "owner/repo",
-  "client_version": "1.2.0",
-  "installed_at": "2026-04-10T10:00:00Z"
+  "source_repo": "owner/repo"
 }
 ```
 
