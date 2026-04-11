@@ -43,6 +43,7 @@ const (
 var toolingSupportedApps = []string{"codex"}
 var skillMetricsReportMu sync.Mutex
 var skillMetricsHeartbeatHomes sync.Map
+var toolingAnonymousIDCache sync.Map
 var defaultToolingSkillMetricsBaseURL = defaultSkillMetricsBaseURL
 
 type defaultSkillRepoSeed struct {
@@ -3449,35 +3450,116 @@ func toolingAnonymousClientIDPath(home string) string {
 	return filepath.Join(aigateDataRoot(home), "tooling", "anonymous-client.json")
 }
 
+func toolingAnonymousClientIDLegacyPaths(home string) []string {
+	return []string{
+		filepath.Join(home, ".aigate", "tooling", "anonymous-client.json"),
+	}
+}
+
 func toolingSkillMetricsStatePath(home string) string {
 	return filepath.Join(aigateDataRoot(home), "tooling", "skill-metrics-state.json")
 }
 
+func readToolingAnonymousID(path string) (string, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var payload struct {
+		AnonymousID string `json:"anonymous_id"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return "", false
+	}
+	id := strings.TrimSpace(payload.AnonymousID)
+	if id == "" {
+		return "", false
+	}
+	return id, true
+}
+
+func deterministicToolingAnonymousID(home string) string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown-host"
+	}
+	source := strings.Join([]string{
+		"aigate",
+		"tooling",
+		strings.TrimSpace(home),
+		strings.TrimSpace(hostname),
+	}, "|")
+	sum := sha256.Sum256([]byte(source))
+	return fmt.Sprintf("aigate-%x", sum[:16])
+}
+
 func loadOrCreateToolingAnonymousID(home string) (string, error) {
-	path := toolingAnonymousClientIDPath(home)
-	if raw, err := os.ReadFile(path); err == nil {
-		var payload struct {
-			AnonymousID string `json:"anonymous_id"`
-		}
-		if json.Unmarshal(raw, &payload) == nil && strings.TrimSpace(payload.AnonymousID) != "" {
-			return strings.TrimSpace(payload.AnonymousID), nil
+	cacheKey := strings.TrimSpace(home)
+	if cacheKey != "" {
+		if cached, ok := toolingAnonymousIDCache.Load(cacheKey); ok {
+			if id, ok := cached.(string); ok && strings.TrimSpace(id) != "" {
+				return strings.TrimSpace(id), nil
+			}
 		}
 	}
+
+	path := toolingAnonymousClientIDPath(home)
+	if id, ok := readToolingAnonymousID(path); ok {
+		if cacheKey != "" {
+			toolingAnonymousIDCache.Store(cacheKey, id)
+		}
+		return id, nil
+	}
+	for _, legacyPath := range toolingAnonymousClientIDLegacyPaths(home) {
+		id, ok := readToolingAnonymousID(legacyPath)
+		if !ok {
+			continue
+		}
+		if cacheKey != "" {
+			toolingAnonymousIDCache.Store(cacheKey, id)
+		}
+		// best-effort migration to current path
+		payload := map[string]string{"anonymous_id": id}
+		if raw, err := json.Marshal(payload); err == nil {
+			_ = os.MkdirAll(filepath.Dir(path), 0o755)
+			_ = writeAtomic(path, append(raw, '\n'), 0o600)
+		}
+		return id, nil
+	}
+
 	var nonce [16]byte
 	if _, err := crand.Read(nonce[:]); err != nil {
-		return "", err
+		id := deterministicToolingAnonymousID(home)
+		if cacheKey != "" {
+			toolingAnonymousIDCache.Store(cacheKey, id)
+		}
+		return id, nil
 	}
 	id := fmt.Sprintf("aigate-%x", nonce[:])
 	payload := map[string]string{"anonymous_id": id}
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return "", err
+		if cacheKey != "" {
+			toolingAnonymousIDCache.Store(cacheKey, id)
+		}
+		return id, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
+		deterministicID := deterministicToolingAnonymousID(home)
+		if cacheKey != "" {
+			toolingAnonymousIDCache.Store(cacheKey, deterministicID)
+		}
+		return deterministicID, nil
 	}
 	if err := writeAtomic(path, append(raw, '\n'), 0o600); err != nil {
-		return "", err
+		deterministicID := deterministicToolingAnonymousID(home)
+		if cacheKey != "" {
+			toolingAnonymousIDCache.Store(cacheKey, deterministicID)
+		}
+		return deterministicID, nil
+	}
+	if cacheKey != "" {
+		toolingAnonymousIDCache.Store(cacheKey, id)
 	}
 	return id, nil
 }
@@ -3561,6 +3643,9 @@ func reportDiscoveredSkillInstall(home string, id string) {
 		"skill_name":   skillName,
 		"source_repo":  repoFullName,
 	}
+	for key, value := range toolingClientTelemetryMeta() {
+		payload[key] = value
+	}
 	if platform == "" {
 		return
 	}
@@ -3595,12 +3680,31 @@ func reportToolingClientActive(home string) {
 		"skill_name":   skillMetricsHeartbeatName,
 		"source_repo":  skillMetricsHeartbeatSource,
 	}
+	for key, value := range toolingClientTelemetryMeta() {
+		payload[key] = value
+	}
 	markActiveMetricScheduled(home, now)
 	_, err = sendSkillMetricsInstallEvent(baseURL, payload)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "report tooling active failed: %v\n", err)
 		return
 	}
+}
+
+func toolingClientTelemetryMeta() map[string]string {
+	meta := map[string]string{
+		"client_app":      "aigate-desktop",
+		"client_platform": runtime.GOOS,
+		"client_arch":     runtime.GOARCH,
+	}
+	if version := strings.TrimSpace(firstNonEmpty(
+		os.Getenv("AIGATE_APP_VERSION"),
+		os.Getenv("AIGATE_VERSION"),
+		os.Getenv("APP_VERSION"),
+	)); version != "" {
+		meta["client_version"] = version
+	}
+	return meta
 }
 
 func sendSkillMetricsInstallEvent(baseURL string, payload map[string]string) (int, error) {
@@ -3888,12 +3992,25 @@ func collectDiscoveredSkillRootsFromTree(payload []struct {
 	Type string `json:"type"`
 }) []string {
 	roots := make([]string, 0)
+	rootSkill := false
 	for _, entry := range payload {
-		if entry.Type != "blob" || !strings.HasSuffix(entry.Path, "/SKILL.md") {
+		if entry.Type != "blob" {
 			continue
 		}
-		root := strings.Trim(strings.TrimSuffix(entry.Path, "/SKILL.md"), "/")
+		path := strings.Trim(strings.TrimSpace(entry.Path), "/")
+		lower := strings.ToLower(path)
+		if lower == "skill.md" {
+			rootSkill = true
+			continue
+		}
+		if !strings.HasSuffix(path, "/SKILL.md") {
+			continue
+		}
+		root := strings.Trim(strings.TrimSuffix(path, "/SKILL.md"), "/")
 		roots = append(roots, root)
+	}
+	if rootSkill {
+		return []string{"."}
 	}
 	sort.Slice(roots, func(i, j int) bool {
 		if len(roots[i]) == len(roots[j]) {
@@ -3906,12 +4023,22 @@ func collectDiscoveredSkillRootsFromTree(payload []struct {
 
 func groupDiscoveredSkillFiles(files map[string]string) map[string]map[string]string {
 	roots := make([]string, 0)
+	rootSkill := false
 	for filePath := range files {
-		if !strings.HasSuffix(filePath, "/SKILL.md") {
+		path := strings.Trim(strings.TrimSpace(filePath), "/")
+		lower := strings.ToLower(path)
+		if lower == "skill.md" {
+			rootSkill = true
 			continue
 		}
-		root := strings.Trim(strings.TrimSuffix(filePath, "/SKILL.md"), "/")
+		if !strings.HasSuffix(path, "/SKILL.md") {
+			continue
+		}
+		root := strings.Trim(strings.TrimSuffix(path, "/SKILL.md"), "/")
 		roots = append(roots, root)
+	}
+	if rootSkill {
+		roots = []string{"."}
 	}
 	sort.Slice(roots, func(i, j int) bool {
 		if len(roots[i]) == len(roots[j]) {
@@ -4039,7 +4166,10 @@ func buildRepoURL(platform string, owner string, name string) string {
 
 func buildRepoTreeURL(platform string, owner string, name string, branch string, sourcePath string) string {
 	base := buildRepoURL(platform, owner, name)
-	sourcePath = strings.Trim(sourcePath, "/")
+	sourcePath = normalizeDiscoveredSourcePath(sourcePath)
+	if sourcePath == "." {
+		sourcePath = ""
+	}
 	switch normalizeSkillRepoPlatform(platform) {
 	case "gitlab":
 		if sourcePath == "" {
@@ -4133,10 +4263,17 @@ func normalizeDiscoveredSourcePath(raw string) string {
 	path := strings.Trim(strings.TrimSpace(raw), "/")
 	path = strings.ReplaceAll(path, "\\", "/")
 	lower := strings.ToLower(path)
+	if lower == "skill.md" || lower == "./skill.md" || lower == "." {
+		return "."
+	}
 	if strings.HasSuffix(lower, "/skill.md") {
 		path = path[:len(path)-len("/skill.md")]
 	}
-	return strings.Trim(path, "/")
+	path = strings.Trim(path, "/")
+	if path == "." {
+		return "."
+	}
+	return path
 }
 
 func encodeRepoPath(path string) string {
@@ -4168,6 +4305,18 @@ func installDiscoveredSkillCollection(home string, id string, method string, app
 	files, err := fetchDiscoveredSkillFiles(repo, sourcePath)
 	if err != nil {
 		return 0, err
+	}
+	if len(files) == 0 {
+		// Backward-compat fallback: legacy indexes may point to child path even when repo root is the real skill.
+		if sourcePath != "." {
+			rootFiles, rootErr := fetchDiscoveredSkillFiles(repo, ".")
+			if rootErr == nil && len(rootFiles) > 0 {
+				if _, ok := rootFiles["SKILL.md"]; ok {
+					sourcePath = "."
+					files = rootFiles
+				}
+			}
+		}
 	}
 	if len(files) == 0 {
 		return 0, fmt.Errorf("no files found for discovered skill: %s", id)
@@ -4230,7 +4379,7 @@ func fetchDiscoveredSkillFiles(repo skillRepoRecord, sourcePath string) (map[str
 }
 
 func fetchGitHubSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]string, error) {
-	prefix := strings.Trim(sourcePath, "/")
+	prefix := normalizeDiscoveredSkillPrefix(sourcePath)
 	files, err := fetchGitHubSkillFilesViaTree(repo, prefix)
 	if err != nil {
 		return nil, err
@@ -4360,7 +4509,7 @@ func fetchGitLabSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]
 		return nil, err
 	}
 	files := map[string]string{}
-	prefix := strings.Trim(sourcePath, "/")
+	prefix := normalizeDiscoveredSkillPrefix(sourcePath)
 	for _, entry := range payload {
 		if entry.Type != "blob" || !pathWithinDiscoveredSkill(prefix, entry.Path) {
 			continue
@@ -4377,8 +4526,16 @@ func fetchGitLabSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]
 func pathWithinDiscoveredSkill(prefix string, fullPath string) bool {
 	prefix = strings.Trim(prefix, "/")
 	fullPath = strings.Trim(fullPath, "/")
-	if prefix == "" {
+	if prefix == "" || prefix == "." {
 		return true
 	}
 	return fullPath == prefix || strings.HasPrefix(fullPath, prefix+"/")
+}
+
+func normalizeDiscoveredSkillPrefix(sourcePath string) string {
+	prefix := normalizeDiscoveredSourcePath(sourcePath)
+	if prefix == "." {
+		return ""
+	}
+	return strings.Trim(prefix, "/")
 }
