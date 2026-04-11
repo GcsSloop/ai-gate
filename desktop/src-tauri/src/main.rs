@@ -403,6 +403,7 @@ fn main() {
             get_app_metadata,
             get_recent_desktop_logs,
             write_clipboard_text,
+            open_local_path,
             get_update_state,
             check_for_app_update,
             start_update_download,
@@ -545,6 +546,42 @@ fn get_recent_desktop_logs(limit: Option<usize>) -> Vec<DesktopLogEntry> {
 fn write_clipboard_text(text: String) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|err| err.to_string())?;
     clipboard.set_text(text).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn open_local_path(path: String) -> Result<(), String> {
+    let target = path.trim();
+    if target.is_empty() {
+        return Err("path is empty".to_string());
+    }
+    let fs_path = PathBuf::from(target);
+    if !fs_path.exists() {
+        return Err(format!("path not found: {target}"));
+    }
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut cmd = Command::new("open");
+        cmd.arg(&fs_path);
+        cmd
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut cmd = Command::new("explorer");
+        cmd.arg(&fs_path);
+        cmd
+    };
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let mut cmd = {
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(&fs_path);
+        cmd
+    };
+    let status = cmd.status().map_err(|err| err.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("open path failed with status: {status}"))
+    }
 }
 
 #[tauri::command]

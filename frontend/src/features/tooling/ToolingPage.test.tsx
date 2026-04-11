@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { ToolingPage } from "./ToolingPage";
 import * as api from "../../lib/api";
+import * as desktopShell from "../../lib/desktop-shell";
 
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
@@ -26,6 +27,15 @@ vi.mock("../../lib/api", async () => {
     applyToolingMcpServer: vi.fn(),
     installToolingMcpServer: vi.fn(),
     deleteToolingMcpServer: vi.fn(),
+  };
+});
+
+vi.mock("../../lib/desktop-shell", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/desktop-shell")>("../../lib/desktop-shell");
+  return {
+    ...actual,
+    openExternalUrl: vi.fn(),
+    openLocalPath: vi.fn(),
   };
 });
 
@@ -270,6 +280,8 @@ describe("ToolingPage", () => {
     vi.mocked(api.applyToolingMcpServer).mockResolvedValue();
     vi.mocked(api.installToolingMcpServer).mockResolvedValue(buildToolingState().mcp_servers[0]);
     vi.mocked(api.deleteToolingMcpServer).mockResolvedValue();
+    vi.mocked(desktopShell.openExternalUrl).mockResolvedValue();
+    vi.mocked(desktopShell.openLocalPath).mockResolvedValue();
   });
 
   it("renders the minimal skills management layout", async () => {
@@ -281,6 +293,8 @@ describe("ToolingPage", () => {
     expect(screen.getByRole("button", { name: /发现技能/ })).toBeInTheDocument();
     expect(screen.getByText("superpowers")).toBeInTheDocument();
     expect(screen.getByText("包含 2 个技能")).toBeInTheDocument();
+    expect(screen.getByText("托管名: superpowers")).toBeInTheDocument();
+    expect(screen.getByLabelText("打开 superpowers 安装目录")).toBeInTheDocument();
     expect(screen.getByLabelText("Codex 已激活")).toBeInTheDocument();
     expect(screen.getByLabelText("Codex 未激活")).toBeInTheDocument();
     expect(screen.queryByText("Skills 管理")).not.toBeInTheDocument();
@@ -387,7 +401,6 @@ describe("ToolingPage", () => {
   });
 
   it("supports manual refresh, viewing source repo, and installing a discovered skill", async () => {
-    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
     vi.mocked((api as typeof api & { getToolingState: typeof vi.fn }).getToolingState)
       .mockResolvedValueOnce(buildToolingState())
       .mockImplementation(() => new Promise(() => {}));
@@ -423,10 +436,10 @@ describe("ToolingPage", () => {
     await waitFor(() => expect(vi.mocked(api.refreshToolingDiscoveredSkills)).toHaveBeenCalledWith({ limit: 80, offset: 0, query: "" }));
 
     fireEvent.click(within(dialog).getByRole("button", { name: "查看 Alpha Skill 的仓库页面" }));
-    expect(openSpy).toHaveBeenCalledWith("https://github.com/openai/codex-skills/tree/main/skills/alpha", "_blank", "noopener,noreferrer");
+    expect(vi.mocked(desktopShell.openExternalUrl)).toHaveBeenCalledWith("https://github.com/openai/codex-skills/tree/main/skills/alpha");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "打开 Alpha Skill 的源目录" }));
-    expect(openSpy).toHaveBeenCalledWith("https://github.com/openai/codex-skills/tree/main/skills/alpha", "_blank", "noopener,noreferrer");
+    expect(vi.mocked(desktopShell.openExternalUrl)).toHaveBeenCalledWith("https://github.com/openai/codex-skills/tree/main/skills/alpha");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "安装 Zulu Skill" }));
     await waitFor(() =>
