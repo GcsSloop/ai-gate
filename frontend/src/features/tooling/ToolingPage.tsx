@@ -170,7 +170,8 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       if (discoveryRequestRef.current !== requestId) {
         return;
       }
-      const nextItems = reset ? response.items : [...discoveryItems, ...response.items];
+      const mapped = mapDiscoveredInstallState(response.items, state?.installed_skills ?? []);
+      const nextItems = reset ? mapped : [...discoveryItems, ...mapped];
       setDiscoveryItems(nextItems);
       setDiscoveryTotal(response.total);
       setDiscoveryIndexedTotal(typeof response.indexed_total === "number" ? response.indexed_total : response.total);
@@ -383,7 +384,15 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   async function handleDiscoveredSkillInstall(skill: ToolingDiscoveredSkill) {
     setDiscoveryBusyId(skill.id);
     try {
-      await installToolingDiscoveredSkill({ id: skill.id, apps: ["codex"] });
+      await installToolingDiscoveredSkill({
+        id: skill.id,
+        platform: skill.platform,
+        repo_owner: skill.repo_owner,
+        repo_name: skill.repo_name,
+        branch: skill.branch,
+        source_path: skill.source_path,
+        apps: ["codex"],
+      });
       const nextAction = skill.update_available ? t("已更新") : t("安装成功");
       setDiscoveryItems((current) => markDiscoveredSkillInstalled(current, skill.id));
       setDiscoveryStatus(skill.update_available ? t("已更新") : t("已安装"));
@@ -859,6 +868,31 @@ function markDiscoveredSkillInstalled(items: ToolingDiscoveredSkill[], id: strin
       },
       installed_hash: item.content_hash,
       update_available: false,
+    };
+  });
+}
+
+function mapDiscoveredInstallState(items: ToolingDiscoveredSkill[], installedSkills: ToolingSkillRecord[]): ToolingDiscoveredSkill[] {
+  if (items.length === 0) {
+    return items;
+  }
+  const installedByName = new Map<string, ToolingSkillRecord>();
+  for (const skill of installedSkills) {
+    const collectionName = skill.managed_path.split(/[\\/]/).filter(Boolean).at(-1)?.toLowerCase();
+    if (!collectionName) {
+      continue;
+    }
+    installedByName.set(collectionName, skill);
+  }
+  return items.map((item) => {
+    const installed = installedByName.get(item.managed_name.toLowerCase());
+    if (!installed) {
+      return item;
+    }
+    return {
+      ...item,
+      installed_apps: { ...(item.installed_apps ?? {}), codex: Boolean(installed.installed_apps?.codex) },
+      update_available: Boolean(installed.update_available),
     };
   });
 }

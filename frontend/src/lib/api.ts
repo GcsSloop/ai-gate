@@ -1128,6 +1128,19 @@ export async function resolveToolingRepo(input: string): Promise<ToolingResolved
 }
 
 export async function getToolingDiscoveredSkills(params?: { limit?: number; offset?: number; query?: string }): Promise<ToolingSkillDiscoveryResponse> {
+  return requestCloudDiscoveredSkills(params);
+}
+
+export async function refreshToolingDiscoveredSkills(params?: { limit?: number; offset?: number; query?: string }): Promise<ToolingSkillDiscoveryResponse> {
+  return requestCloudDiscoveredSkills(params);
+}
+
+function skillMetricsBaseURL(): string {
+  const value = (import.meta.env.VITE_SKILL_METRICS_BASE_URL as string | undefined)?.trim();
+  return value ? value.replace(/\/$/, "") : "https://aigate-skill-metrics.gcssloop.workers.dev";
+}
+
+function buildDiscoverySearch(params?: { limit?: number; offset?: number; query?: string }): URLSearchParams {
   const search = new URLSearchParams();
   if (typeof params?.limit === "number" && params.limit > 0) {
     search.set("limit", String(params.limit));
@@ -1139,42 +1152,47 @@ export async function getToolingDiscoveredSkills(params?: { limit?: number; offs
   if (query) {
     search.set("q", query);
   }
-  const queryString = search.toString();
-  const response = await fetch(apiPath(`/tooling/skills/discover${queryString ? `?${queryString}` : ""}`));
+  return search;
+}
+
+async function requestCloudDiscoveredSkills(params?: { limit?: number; offset?: number; query?: string }): Promise<ToolingSkillDiscoveryResponse> {
+  const search = buildDiscoverySearch(params);
+  const hasQuery = Boolean(params?.query?.trim());
+  const endpoint = hasQuery ? "/skills/search" : "/skills/final";
+  const response = await fetch(`${skillMetricsBaseURL()}${endpoint}?${search.toString()}`);
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to load discovered skills");
   }
-  return response.json();
-}
-
-export async function refreshToolingDiscoveredSkills(params?: { limit?: number; offset?: number; query?: string }): Promise<ToolingSkillDiscoveryResponse> {
-  const search = new URLSearchParams();
-  if (typeof params?.limit === "number" && params.limit > 0) {
-    search.set("limit", String(params.limit));
-  }
-  if (typeof params?.offset === "number" && params.offset >= 0) {
-    search.set("offset", String(params.offset));
-  }
-  const query = params?.query?.trim();
-  if (query) {
-    search.set("q", query);
-  }
-  const queryString = search.toString();
-  const response = await fetch(apiPath(`/tooling/skills/discover/refresh${queryString ? `?${queryString}` : ""}`), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-  });
-  if (!response.ok) {
-    const details = await response.text();
-    throw new Error(details || "failed to refresh discovered skills");
-  }
-  return response.json();
+  const payload = (await response.json()) as Record<string, unknown>;
+  const items = Array.isArray(payload.items) ? (payload.items as ToolingDiscoveredSkill[]) : [];
+  return {
+    cached: typeof payload.cached === "boolean" ? payload.cached : true,
+    fetched_at: typeof payload.fetched_at === "string" ? payload.fetched_at : "",
+    indexed_total: typeof payload.indexed_total === "number"
+      ? payload.indexed_total
+      : typeof payload.total_items === "number"
+      ? payload.total_items
+      : items.length,
+    total: typeof payload.total === "number"
+      ? payload.total
+      : typeof payload.total_items === "number"
+      ? payload.total_items
+      : items.length,
+    offset: typeof payload.offset === "number" ? payload.offset : 0,
+    limit: typeof payload.limit === "number" ? payload.limit : items.length,
+    query: typeof payload.query === "string" ? payload.query : params?.query?.trim() ?? "",
+    items,
+  };
 }
 
 export async function installToolingDiscoveredSkill(payload: {
   id: string;
+  platform?: "github" | "gitlab";
+  repo_owner?: string;
+  repo_name?: string;
+  branch?: string;
+  source_path?: string;
   apps?: string[];
 }): Promise<{ applied: number; enabled: boolean; skill_sync_method?: "symlink" | "copy" }> {
   const response = await fetch(apiPath("/tooling/skills/discover/install"), {
