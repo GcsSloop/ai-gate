@@ -3,6 +3,7 @@ import {
   CloudDownloadOutlined,
   DeleteOutlined,
   EditOutlined,
+  FolderOpenOutlined,
   HolderOutlined,
   LinkOutlined,
   PlusOutlined,
@@ -48,7 +49,7 @@ import {
   type ToolingState,
 } from "../../lib/api";
 import sourceOpenAIIcon from "../../assets/providers/openai.png";
-import { openExternalUrl } from "../../lib/desktop-shell";
+import { openExternalUrl, openLocalPath } from "../../lib/desktop-shell";
 
 type ToolingMode = "skills" | "mcp";
 
@@ -410,6 +411,14 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     void openExternalUrl(skill.source_url);
   }
 
+  async function handleOpenManagedSkillDirectory(skill: ToolingSkillRecord) {
+    try {
+      await openLocalPath(skill.managed_path);
+    } catch (error) {
+      void messageApi.error(error instanceof Error ? error.message : t("打开目录失败"));
+    }
+  }
+
   async function resolveRepoInput(input: string, options?: { initialBranch?: string }) {
     const trimmed = input.trim();
     setRepoResolveError("");
@@ -621,14 +630,18 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
               skills.map((skill) => (
                 <ManagedCard
                   key={skill.managed_path}
+                  t={t}
                   title={skill.name}
                   description={skill.description || skill.directory}
+                  managedName={skillCollectionName(skill)}
                   updateAvailable={Boolean(skill.update_available)}
                   statuses={buildManagedStatuses(skill.installed_apps)}
                   busy={skillBusyName === skill.name}
                   toggleLabel={skill.installed_apps?.codex ? t(`停用 ${skill.name} 于 Codex`) : t(`启用 ${skill.name} 到 Codex`)}
+                  openDirLabel={t(`打开 ${skill.name} 安装目录`)}
                   deleteLabel={t(`删除 ${skill.name}`)}
                   onToggle={() => void handleSkillToggle(skill)}
+                  onOpenDir={() => void handleOpenManagedSkillDirectory(skill)}
                   onDelete={() => confirmDeleteSkill(skill)}
                 />
               ))
@@ -641,6 +654,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
               return (
                 <ManagedCard
                   key={server.id}
+                  t={t}
                   title={display.title}
                   description={display.subtitle}
                   titleVariant="account"
@@ -1008,6 +1022,7 @@ function DiscoveredSkillRow({
         <button type="button" className="tooling-discovered-title-button" data-testid="tooling-discovered-skill-title" aria-label={`打开 ${skill.name} 的源目录`} onClick={onView}>
           {skill.name}
         </button>
+        <div className="tooling-discovered-row-description">{`${t("托管名")}: ${skill.managed_name}`}</div>
         {skill.description ? <div className="tooling-discovered-row-description">{skill.description}</div> : null}
       </div>
       <div className="tooling-discovered-row-actions">
@@ -1203,28 +1218,36 @@ function looksLikeLocalPath(value?: string): boolean {
 }
 
 function ManagedCard({
+  t,
   title,
   description,
   titleVariant = "default",
   descriptionVariant = "default",
+  managedName,
   updateAvailable = false,
   statuses,
   busy,
   toggleLabel,
+  openDirLabel,
   deleteLabel,
   onToggle,
+  onOpenDir,
   onDelete,
 }: {
+  t: (text: string) => string;
   title: string;
   description?: string;
   titleVariant?: "default" | "account";
   descriptionVariant?: "default" | "account";
+  managedName?: string;
   updateAvailable?: boolean;
   statuses: ManagedClientStatus[];
   busy?: boolean;
   toggleLabel: string;
+  openDirLabel?: string;
   deleteLabel: string;
   onToggle: () => void;
+  onOpenDir?: () => void;
   onDelete: () => void;
 }) {
   const primaryStatus = statuses[0];
@@ -1241,6 +1264,7 @@ function ManagedCard({
             {description}
           </div>
         ) : null}
+        {managedName ? <div className="tooling-item-description is-default">{`${t("托管名")}: ${managedName}`}</div> : null}
       </div>
       <div className="tooling-item-aside">
         <div className="tooling-item-statuses" aria-label="安装目标状态">
@@ -1257,6 +1281,11 @@ function ManagedCard({
           ))}
         </div>
         <div className="tooling-item-hover-actions">
+          {onOpenDir ? (
+            <button type="button" className="tooling-item-icon-action" aria-label={openDirLabel || t("打开目录")} onClick={onOpenDir} disabled={busy}>
+              <FolderOpenOutlined />
+            </button>
+          ) : null}
           <button
             type="button"
             className={`tooling-item-primary-action ${isPrimaryEnabled ? "is-danger" : "is-primary"}`}

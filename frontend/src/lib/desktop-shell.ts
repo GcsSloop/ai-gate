@@ -102,6 +102,18 @@ export async function openExternalUrl(url: string): Promise<void> {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+export async function openLocalPath(path: string): Promise<void> {
+  const target = path.trim();
+  if (!target) {
+    throw new Error("local path is empty");
+  }
+  if (isDesktopShell()) {
+    await invoke("open_local_path", { path: target });
+    return;
+  }
+  window.open(`file://${target}`, "_blank", "noopener,noreferrer");
+}
+
 export async function subscribeDesktopBackendStateChanged(handler: () => void): Promise<() => void> {
   if (!isDesktopShell()) {
     return () => {};
