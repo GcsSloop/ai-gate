@@ -1,4 +1,4 @@
-import { sortTrendPointsByBucket } from "./StatsCharts";
+import { sortTrendPointsByBucket, trendBucketsNeedHour } from "./StatsCharts";
 
 describe("StatsCharts", () => {
   it("sorts trend points by bucket time ascending", () => {
@@ -28,5 +28,21 @@ describe("StatsCharts", () => {
     void sortTrendPointsByBucket(points);
 
     expect(points.map((item) => item.bucket)).toEqual(origin);
+  });
+
+  it("hides hour labels for day-level buckets", () => {
+    const points = [
+      { bucket: "2026-04-10T00:00:00Z", request_count: 1, input_tokens: 10, output_tokens: 1, total_tokens: 11, estimated_cost: 0.01, balance_delta: 0, quota_delta: 0 },
+      { bucket: "2026-04-11T00:00:00Z", request_count: 1, input_tokens: 20, output_tokens: 2, total_tokens: 22, estimated_cost: 0.02, balance_delta: 0, quota_delta: 0 },
+    ];
+    expect(trendBucketsNeedHour(points)).toBe(false);
+  });
+
+  it("shows hour labels for hour-level buckets", () => {
+    const points = [
+      { bucket: "2026-04-11T08:00:00Z", request_count: 1, input_tokens: 20, output_tokens: 2, total_tokens: 22, estimated_cost: 0.02, balance_delta: 0, quota_delta: 0 },
+      { bucket: "2026-04-11T09:00:00Z", request_count: 1, input_tokens: 30, output_tokens: 3, total_tokens: 33, estimated_cost: 0.03, balance_delta: 0, quota_delta: 0 },
+    ];
+    expect(trendBucketsNeedHour(points)).toBe(true);
   });
 });
