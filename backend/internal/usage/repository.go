@@ -358,7 +358,16 @@ func initializeTrendBuckets(filter EventFilter, bucketSize time.Duration) ([]Tre
 	}
 	points := make([]TrendPoint, 0)
 	indexByBucket := make(map[time.Time]int)
-	for bucket := filter.From.UTC(); bucket.Before(filter.To.UTC()); bucket = bucket.Add(bucketSize) {
+	for cursor := filter.From.UTC(); cursor.Before(filter.To.UTC()); cursor = cursor.Add(bucketSize) {
+		bucket := cursor
+		if bucketSize == time.Hour {
+			bucket = bucket.Truncate(time.Hour)
+		} else {
+			bucket = time.Date(bucket.Year(), bucket.Month(), bucket.Day(), 0, 0, 0, 0, time.UTC)
+		}
+		if _, exists := indexByBucket[bucket]; exists {
+			continue
+		}
 		points = append(points, TrendPoint{Bucket: bucket})
 		indexByBucket[bucket] = len(points) - 1
 	}

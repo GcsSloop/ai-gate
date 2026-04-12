@@ -356,6 +356,40 @@ func TestSQLiteRepositoryTrendEventsByHour(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryTrendEventsByDayIncludesSingleBucketPerDay(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+
+	from := time.Date(2026, 3, 14, 16, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 17, 16, 0, 0, 0, time.UTC)
+	points, err := repo.TrendEventsByHour(usage.EventFilter{
+		From:          &from,
+		To:            &to,
+		BucketSize:    24 * time.Hour,
+		IncludeZeroes: true,
+	})
+	if err != nil {
+		t.Fatalf("TrendEventsByHour returned error: %v", err)
+	}
+	if len(points) != 3 {
+		t.Fatalf("len(points) = %d, want 3 daily buckets", len(points))
+	}
+	for idx, point := range points {
+		if point.Bucket.Hour() != 0 || point.Bucket.Minute() != 0 {
+			t.Fatalf("points[%d].Bucket = %v, want UTC day bucket at 00:00", idx, point.Bucket)
+		}
+	}
+}
+
 func TestSQLiteRepositoryModelDistribution(t *testing.T) {
 	t.Parallel()
 

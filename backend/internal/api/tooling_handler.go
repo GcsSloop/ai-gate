@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -557,6 +558,9 @@ func (h *ToolingHandler) listInstalledSkillsEnriched(w http.ResponseWriter) {
 }
 
 func ensureToolingClientActiveHeartbeat(home string) {
+	if shouldDisableSkillMetricsReporting() {
+		return
+	}
 	if strings.TrimSpace(home) == "" {
 		return
 	}
@@ -3877,6 +3881,9 @@ func markActiveMetricScheduled(home string, now time.Time) {
 }
 
 func reportDiscoveredSkillInstall(home string, id string) {
+	if shouldDisableSkillMetricsReporting() {
+		return
+	}
 	baseURL := skillMetricsBaseURL(home)
 	if baseURL == "" {
 		return
@@ -3918,6 +3925,9 @@ func reportDiscoveredSkillInstall(home string, id string) {
 }
 
 func reportToolingClientActive(home string) {
+	if shouldDisableSkillMetricsReporting() {
+		return
+	}
 	baseURL := skillMetricsBaseURL(home)
 	if baseURL == "" {
 		return
@@ -3967,6 +3977,25 @@ func toolingClientTelemetryMeta() map[string]string {
 		meta["client_version"] = version
 	}
 	return meta
+}
+
+func shouldDisableSkillMetricsReporting() bool {
+	if isTruthyEnv(os.Getenv("AIGATE_DISABLE_SKILL_METRICS_REPORTING")) {
+		return true
+	}
+	if flag.Lookup("test.v") != nil && !isTruthyEnv(os.Getenv("AIGATE_ENABLE_TEST_SKILL_METRICS_REPORTING")) {
+		return true
+	}
+	return false
+}
+
+func isTruthyEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func sendSkillMetricsInstallEvent(baseURL string, payload map[string]string) (int, error) {
