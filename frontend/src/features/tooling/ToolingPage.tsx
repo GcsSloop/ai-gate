@@ -1023,6 +1023,7 @@ function DiscoveredSkillRow({
   const actionLabel = updateAvailable ? t("更新") : installed ? t("已安装") : t("安装");
   const statusLabel = updateAvailable ? t("可更新") : installed ? t("已安装") : t("未安装");
   const providerBadges = skill.audits_summary?.providers ?? [];
+  const hasAuditData = providerBadges.length > 0;
   return (
     <div className="tooling-discovered-row">
       <div className="tooling-discovered-row-main">
@@ -1030,11 +1031,12 @@ function DiscoveredSkillRow({
           <span className="tooling-discovered-platform">{skill.platform.toUpperCase()}</span>
           <span className="tooling-discovered-repo">{`${skill.repo_owner}/${skill.repo_name}`}</span>
           <span className={`tooling-status-pill ${updateAvailable ? "is-update" : installed ? "is-enabled" : "is-disabled"}`}>{statusLabel}</span>
-          {providerBadges.length > 0 ? (
-            <span className="tooling-audit-pill" title={t("来自 skills.sh 的审计增强标记")}>
-              {t("Audits")}
-            </span>
-          ) : null}
+          <span
+            className={`tooling-audit-pill ${hasAuditData ? "" : "is-unknown"}`.trim()}
+            title={hasAuditData ? t("来自 skills.sh 的审计增强标记") : t("skills.sh 无匹配审计数据")}
+          >
+            {hasAuditData ? t("Audits") : t("Audits 未知")}
+          </span>
         </div>
         <button type="button" className="tooling-discovered-title-button" data-testid="tooling-discovered-skill-title" aria-label={`打开 ${skill.name} 的源目录`} onClick={onView}>
           {skill.name}

@@ -808,6 +808,11 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   font-weight: 700;
 }
 
+.tooling-audit-pill.is-unknown {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
 .tooling-discovered-title-button {
   appearance: none;
   padding: 0;
