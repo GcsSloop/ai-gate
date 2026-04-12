@@ -31,9 +31,11 @@ import {
   deleteToolingMcpServer,
   deleteToolingSkill,
   getToolingDiscoveredSkills,
+  getToolingInstalledSkillsEnriched,
   getToolingState,
   importToolingMcpServers,
   importToolingSkills,
+  invalidateToolingInstalledSkillsEnrichedCache,
   installToolingDiscoveredSkill,
   removeToolingRepo,
   refreshToolingDiscoveredSkills,
@@ -42,6 +44,7 @@ import {
   updateToolingSkill,
   updateToolingRepo,
   type ToolingDiscoveredSkill,
+  type ToolingInstalledSkillEnriched,
   type ToolingMcpServer,
   type ToolingResolvedRepo,
   type ToolingSkillRecord,
@@ -93,6 +96,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   const [messageApi, contextHolder] = message.useMessage();
   const [loading, setLoading] = useState(true);
   const [state, setState] = useState<ToolingState | null>(null);
+  const [installedSkillEnrichedByManagedName, setInstalledSkillEnrichedByManagedName] = useState<Record<string, ToolingInstalledSkillEnriched>>({});
   const [skillDiscoverOpen, setSkillDiscoverOpen] = useState(false);
   const [repoManagerOpen, setRepoManagerOpen] = useState(false);
   const [discoveryQueryInput, setDiscoveryQueryInput] = useState("");
@@ -136,6 +140,18 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     try {
       const next = await getToolingState();
       setState(next);
+      try {
+        const enriched = await getToolingInstalledSkillsEnriched(next.installed_skills ?? []);
+        setInstalledSkillEnrichedByManagedName(
+          Object.fromEntries(
+            (enriched.items ?? [])
+              .filter((item) => typeof item.managed_name === "string" && item.managed_name.trim() !== "")
+              .map((item) => [item.managed_name.trim().toLowerCase(), item]),
+          ),
+        );
+      } catch {
+        setInstalledSkillEnrichedByManagedName({});
+      }
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("加载技能与 MCP 管理失败"));
     } finally {
@@ -258,6 +274,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     setImportBusy(true);
     try {
       await importToolingSkills("codex");
+      invalidateToolingInstalledSkillsEnrichedCache();
       void messageApi.success(t("导入完成"));
       await reload({ background: true });
     } catch (error) {
@@ -294,6 +311,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
         setSkillBusyName(skill.name);
         try {
           await deleteToolingSkill(collectionName);
+          invalidateToolingInstalledSkillsEnrichedCache();
           void messageApi.success(t("删除成功"));
           await reload({ background: true });
         } catch (error) {
@@ -395,6 +413,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
         apps: ["codex"],
       });
       const nextAction = skill.update_available ? t("已更新") : t("安装成功");
+      invalidateToolingInstalledSkillsEnrichedCache();
       setDiscoveryItems((current) => markDiscoveredSkillInstalled(current, skill.id));
       setDiscoveryStatus(skill.update_available ? t("已更新") : t("已安装"));
       void messageApi.success(nextAction);
@@ -627,24 +646,44 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
         <div className="tooling-managed-list">
           {mode === "skills" ? (
             skills.length > 0 ? (
-              skills.map((skill) => (
-                <ManagedCard
-                  key={skill.managed_path}
-                  t={t}
-                  title={skill.name}
-                  description={skill.description || skill.directory}
-                  managedName={skillCollectionName(skill)}
-                  updateAvailable={Boolean(skill.update_available)}
-                  statuses={buildManagedStatuses(skill.installed_apps)}
-                  busy={skillBusyName === skill.name}
-                  toggleLabel={skill.installed_apps?.codex ? t(`停用 ${skill.name} 于 Codex`) : t(`启用 ${skill.name} 到 Codex`)}
-                  openDirLabel={t(`打开 ${skill.name} 安装目录`)}
-                  deleteLabel={t(`删除 ${skill.name}`)}
-                  onToggle={() => void handleSkillToggle(skill)}
-                  onOpenDir={() => void handleOpenManagedSkillDirectory(skill)}
-                  onDelete={() => confirmDeleteSkill(skill)}
-                />
-              ))
+              skills.map((skill) => {
+                const managedName = skillCollectionName(skill);
+                const enriched = installedSkillEnrichedByManagedName[managedName.toLowerCase()];
+                return (
+                  <ManagedCard
+                    key={skill.managed_path}
+                    t={t}
+                    title={skill.name}
+                    description={skill.description || skill.directory}
+                    managedName={managedName}
+                    updateAvailable={Boolean(skill.update_available)}
+                    statuses={buildManagedStatuses(skill.installed_apps)}
+                    busy={skillBusyName === skill.name}
+                    toggleLabel={skill.installed_apps?.codex ? t(`停用 ${skill.name} 于 Codex`) : t(`启用 ${skill.name} 到 Codex`)}
+                    openDirLabel={t(`打开 ${skill.name} 安装目录`)}
+                    deleteLabel={t(`删除 ${skill.name}`)}
+                    sourceURL={enriched?.source_url}
+                    skillsShURL={enriched?.skills_sh_url}
+                    auditProviders={enriched?.audits_summary?.providers ?? []}
+                    onToggle={() => void handleSkillToggle(skill)}
+                    onOpenDir={() => void handleOpenManagedSkillDirectory(skill)}
+                    onViewSource={() => {
+                      if (!enriched?.source_url) {
+                        return;
+                      }
+                      void openExternalUrl(enriched.source_url);
+                    }}
+                    onViewSkillsSh={() => {
+                      if (!enriched?.skills_sh_url) {
+                        return;
+                      }
+                      void openExternalUrl(enriched.skills_sh_url);
+                    }}
+                    onViewAudit={(url) => void openExternalUrl(url)}
+                    onDelete={() => confirmDeleteSkill(skill)}
+                  />
+                );
+              })
             ) : (
               <Empty description={t("暂无技能")} />
             )
@@ -1269,8 +1308,14 @@ function ManagedCard({
   toggleLabel,
   openDirLabel,
   deleteLabel,
+  sourceURL,
+  skillsShURL,
+  auditProviders,
   onToggle,
   onOpenDir,
+  onViewSource,
+  onViewSkillsSh,
+  onViewAudit,
   onDelete,
 }: {
   t: (text: string) => string;
@@ -1285,12 +1330,19 @@ function ManagedCard({
   toggleLabel: string;
   openDirLabel?: string;
   deleteLabel: string;
+  sourceURL?: string;
+  skillsShURL?: string;
+  auditProviders?: Array<{ provider: string; label: string; status: string; url: string }>;
   onToggle: () => void;
   onOpenDir?: () => void;
+  onViewSource?: () => void;
+  onViewSkillsSh?: () => void;
+  onViewAudit?: (url: string) => void;
   onDelete: () => void;
 }) {
   const primaryStatus = statuses[0];
   const isPrimaryEnabled = primaryStatus?.enabled ?? false;
+  const providers = auditProviders ?? [];
   return (
     <div className="tooling-item-card">
       <div className="tooling-item-main">
@@ -1304,6 +1356,22 @@ function ManagedCard({
           </div>
         ) : null}
         {managedName ? <div className="tooling-item-description is-default">{`${t("托管名")}: ${managedName}`}</div> : null}
+        {providers.length > 0 ? (
+          <div className="tooling-audit-badges">
+            {providers.map((provider) => (
+              <button
+                key={`${provider.provider}-${provider.url}`}
+                type="button"
+                className={`tooling-audit-provider is-${provider.status}`}
+                title={`${provider.label} · ${provider.status}`}
+                onClick={() => onViewAudit?.(provider.url)}
+                disabled={!provider.url}
+              >
+                {provider.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div className="tooling-item-aside">
         <div className="tooling-item-statuses" aria-label="安装目标状态">
@@ -1320,6 +1388,16 @@ function ManagedCard({
           ))}
         </div>
         <div className="tooling-item-hover-actions">
+          {sourceURL ? (
+            <button type="button" className="tooling-item-icon-action" aria-label={t("查看原始来源")} onClick={onViewSource} disabled={busy}>
+              <LinkOutlined />
+            </button>
+          ) : null}
+          {skillsShURL ? (
+            <button type="button" className="tooling-item-icon-action" aria-label={t("查看 skills.sh 页面")} onClick={onViewSkillsSh} disabled={busy}>
+              skills.sh
+            </button>
+          ) : null}
           {onOpenDir ? (
             <button type="button" className="tooling-item-icon-action" aria-label={openDirLabel || t("打开目录")} onClick={onOpenDir} disabled={busy}>
               <FolderOpenOutlined />

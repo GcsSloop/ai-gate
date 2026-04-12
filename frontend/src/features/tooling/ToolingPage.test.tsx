@@ -14,6 +14,8 @@ vi.mock("../../lib/api", async () => {
     importToolingSkills: vi.fn(),
     updateToolingSkill: vi.fn(),
     deleteToolingSkill: vi.fn(),
+    getToolingInstalledSkillsEnriched: vi.fn(),
+    invalidateToolingInstalledSkillsEnrichedCache: vi.fn(),
     getToolingDiscoveredSkills: vi.fn(),
     refreshToolingDiscoveredSkills: vi.fn(),
     installToolingDiscoveredSkill: vi.fn(),
@@ -206,6 +208,11 @@ describe("ToolingPage", () => {
     vi.mocked(api.importToolingSkills).mockResolvedValue({ imported: 1 });
     vi.mocked(api.updateToolingSkill).mockResolvedValue({ applied: 1, enabled: true, skill_sync_method: "symlink" });
     vi.mocked(api.deleteToolingSkill).mockResolvedValue();
+    vi.mocked((api as typeof api & { getToolingInstalledSkillsEnriched: typeof vi.fn }).getToolingInstalledSkillsEnriched).mockResolvedValue({
+      cached: true,
+      fetched_at: "2026-04-12T09:00:00Z",
+      items: [],
+    });
     vi.mocked((api as typeof api & { getToolingDiscoveredSkills: typeof vi.fn }).getToolingDiscoveredSkills).mockResolvedValue(buildDiscoveredSkillResponse());
     vi.mocked((api as typeof api & { refreshToolingDiscoveredSkills: typeof vi.fn }).refreshToolingDiscoveredSkills).mockResolvedValue(
       buildDiscoveredSkillResponse({
@@ -303,6 +310,38 @@ describe("ToolingPage", () => {
     expect(screen.queryByText("当前安装技能列表")).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("搜索技能")).not.toBeInTheDocument();
     expect(screen.queryByText("仓库管理")).not.toBeInTheDocument();
+  });
+
+  it("shows source links and audits for installed skills from enriched endpoint", async () => {
+    vi.mocked((api as typeof api & { getToolingInstalledSkillsEnriched: typeof vi.fn }).getToolingInstalledSkillsEnriched).mockResolvedValue({
+      cached: true,
+      fetched_at: "2026-04-12T09:00:00Z",
+      items: [
+        {
+          managed_name: "superpowers",
+          name: "superpowers",
+          source_kind: "discovered",
+          source_url: "https://github.com/openai/skills/tree/main/superpowers",
+          skills_sh_url: "https://skills.sh/s/superpowers",
+          audits_summary: {
+            match_confidence: 1,
+            providers: [{ provider: "snyk", label: "Snyk", status: "pass", url: "https://skills.sh/audits/superpowers/snyk" }],
+          },
+        },
+      ],
+    });
+
+    render(<ToolingPage mode="skills" t={(text) => text} />);
+
+    expect(await screen.findByText("superpowers")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("查看原始来源"));
+    expect(desktopShell.openExternalUrl).toHaveBeenCalledWith("https://github.com/openai/skills/tree/main/superpowers");
+
+    fireEvent.click(screen.getByLabelText("查看 skills.sh 页面"));
+    expect(desktopShell.openExternalUrl).toHaveBeenCalledWith("https://skills.sh/s/superpowers");
+
+    fireEvent.click(screen.getByRole("button", { name: "Snyk" }));
+    expect(desktopShell.openExternalUrl).toHaveBeenCalledWith("https://skills.sh/audits/superpowers/snyk");
   });
 
   it("imports, toggles, and deletes skill collections", async () => {

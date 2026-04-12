@@ -349,9 +349,40 @@ export type ToolingSkillRecord = {
   source_client?: string;
   source_repo?: string;
   source_kind: string;
+  platform?: "github" | "gitlab" | string;
+  branch?: string;
+  source_path?: string;
+  source_url?: string;
   managed_path: string;
   installed_apps: Record<string, boolean>;
   update_available?: boolean;
+};
+
+export type ToolingInstalledSkillEnriched = {
+  managed_name: string;
+  name: string;
+  source_kind: string;
+  platform?: "github" | "gitlab" | string;
+  source_repo?: string;
+  branch?: string;
+  source_path?: string;
+  source_url?: string;
+  skills_sh_url?: string;
+  audits_summary?: {
+    match_confidence: number;
+    providers: Array<{
+      provider: string;
+      label: string;
+      status: "pass" | "warn" | "fail" | "info" | string;
+      url: string;
+    }>;
+  };
+};
+
+export type ToolingInstalledSkillEnrichedResponse = {
+  cached: boolean;
+  fetched_at?: string;
+  items: ToolingInstalledSkillEnriched[];
 };
 
 export type ToolingMcpTemplate = {
@@ -973,6 +1004,135 @@ export async function getToolingState(): Promise<ToolingState> {
     throw new Error("failed to load tooling state");
   }
   return response.json();
+}
+
+const TOOLING_INSTALLED_ENRICHED_CACHE_TTL_MS = 5 * 60 * 1000;
+const TOOLING_INSTALLED_ENRICHED_CACHE_KEY = "aigate:tooling:installed-enriched:v1";
+let toolingInstalledEnrichedCache:
+  | {
+      expiresAt: number;
+      signature: string;
+      payload: ToolingInstalledSkillEnrichedResponse;
+    }
+  | null = null;
+
+function buildInstalledSkillsSignature(items: ToolingSkillRecord[]): string {
+  return items
+    .map((item) =>
+      [
+        item.managed_path || "",
+        item.name || "",
+        item.source_kind || "",
+        item.source_repo || "",
+        item.source_path || "",
+        item.source_url || "",
+      ].join("|"),
+    )
+    .sort()
+    .join(";");
+}
+
+function readInstalledEnrichedCacheFromStorage():
+  | {
+      expiresAt: number;
+      signature: string;
+      payload: ToolingInstalledSkillEnrichedResponse;
+    }
+  | null {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(TOOLING_INSTALLED_ENRICHED_CACHE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as {
+      expiresAt?: number;
+      signature?: string;
+      payload?: ToolingInstalledSkillEnrichedResponse;
+    };
+    if (
+      !parsed ||
+      typeof parsed.expiresAt !== "number" ||
+      typeof parsed.signature !== "string" ||
+      !parsed.payload ||
+      !Array.isArray(parsed.payload.items)
+    ) {
+      return null;
+    }
+    return {
+      expiresAt: parsed.expiresAt,
+      signature: parsed.signature,
+      payload: parsed.payload,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeInstalledEnrichedCacheToStorage(value: {
+  expiresAt: number;
+  signature: string;
+  payload: ToolingInstalledSkillEnrichedResponse;
+}) {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(TOOLING_INSTALLED_ENRICHED_CACHE_KEY, JSON.stringify(value));
+  } catch {
+    // ignore cache persistence failures
+  }
+}
+
+export function invalidateToolingInstalledSkillsEnrichedCache(): void {
+  toolingInstalledEnrichedCache = null;
+  if (typeof window === "undefined" || !window.localStorage) {
+    return;
+  }
+  try {
+    window.localStorage.removeItem(TOOLING_INSTALLED_ENRICHED_CACHE_KEY);
+  } catch {
+    // ignore cache persistence failures
+  }
+}
+
+export async function getToolingInstalledSkillsEnriched(
+  installedSkills: ToolingSkillRecord[],
+  options?: { force?: boolean },
+): Promise<ToolingInstalledSkillEnrichedResponse> {
+  const signature = buildInstalledSkillsSignature(installedSkills);
+  const now = Date.now();
+  if (!options?.force && toolingInstalledEnrichedCache && toolingInstalledEnrichedCache.signature === signature && toolingInstalledEnrichedCache.expiresAt > now) {
+    return toolingInstalledEnrichedCache.payload;
+  }
+  if (!options?.force && !toolingInstalledEnrichedCache) {
+    const persisted = readInstalledEnrichedCacheFromStorage();
+    if (persisted && persisted.signature === signature && persisted.expiresAt > now) {
+      toolingInstalledEnrichedCache = persisted;
+      return persisted.payload;
+    }
+  }
+  const response = await fetch(apiPath("/tooling/skills/installed/enriched"));
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to load installed skills enriched data");
+  }
+  const payload = (await response.json()) as ToolingInstalledSkillEnrichedResponse;
+  const normalized: ToolingInstalledSkillEnrichedResponse = {
+    cached: typeof payload.cached === "boolean" ? payload.cached : true,
+    fetched_at: typeof payload.fetched_at === "string" ? payload.fetched_at : "",
+    items: Array.isArray(payload.items) ? payload.items : [],
+  };
+  const cacheEntry = {
+    expiresAt: now + TOOLING_INSTALLED_ENRICHED_CACHE_TTL_MS,
+    signature,
+    payload: normalized,
+  };
+  toolingInstalledEnrichedCache = cacheEntry;
+  writeInstalledEnrichedCacheToStorage(cacheEntry);
+  return normalized;
 }
 
 export async function saveToolingSkillSyncMethod(skill_sync_method: "symlink" | "copy"): Promise<void> {
