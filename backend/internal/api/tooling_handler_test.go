@@ -977,7 +977,10 @@ func TestToolingHandlerReorderSkillReposPersistsOrder(t *testing.T) {
 }
 
 func TestToolingHandlerCanInstallDiscoveredSkillIntoManagedAndCodexDirs(t *testing.T) {
-	home := t.TempDir()
+	home, err := os.MkdirTemp("", "tooling-skill-install-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp home: %v", err)
+	}
 	t.Setenv("HOME", home)
 
 	server := newGitHubTreeBlobServer(t, map[string]string{
@@ -1071,6 +1074,123 @@ func TestToolingHandlerCanInstallDiscoveredSkillUsingCloudPayloadWithoutID(t *te
 	}
 	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "codex-skills-alpha", "SKILL.md")); err != nil {
 		t.Fatalf("expected codex synced skill file: %v", err)
+	}
+}
+
+func TestToolingHandlerCanInstallDiscoveredSkillWithSkillsPrefixFallback(t *testing.T) {
+	home, err := os.MkdirTemp("", "tooling-skill-fallback-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp home: %v", err)
+	}
+	t.Setenv("HOME", home)
+
+	server := newGitHubTreeBlobServer(t, map[string]string{
+		"skills/ai-seo/SKILL.md":         "# AI SEO\nInstalls via fallback path.\n",
+		"skills/ai-seo/assets/config.md": "ok\n",
+	})
+	defer server.Close()
+	t.Setenv("AIGATE_GITHUB_API_BASE", server.URL)
+
+	handler := api.NewToolingHandler()
+	installed := doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/install", bytes.NewBufferString(`{
+		"id":"github:openai/codex-skills:main:ai-seo",
+		"apps":["codex"]
+	}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
+	if !strings.Contains(string(installed), `"applied":1`) {
+		t.Fatalf("install response = %s, want applied 1", string(installed))
+	}
+
+	managedRoot := filepath.Join(home, ".aigate", "data", "tooling", "skills", "codex-skills-ai-seo")
+	if _, err := os.Stat(filepath.Join(managedRoot, "SKILL.md")); err != nil {
+		t.Fatalf("expected managed skill file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(managedRoot, "assets", "config.md")); err != nil {
+		t.Fatalf("expected managed fallback asset: %v", err)
+	}
+	metaRaw, err := os.ReadFile(filepath.Join(managedRoot, ".aigate-skill.json"))
+	if err != nil {
+		t.Fatalf("ReadFile metadata: %v", err)
+	}
+	var metaPayload map[string]any
+	if err := json.Unmarshal(metaRaw, &metaPayload); err != nil {
+		t.Fatalf("Unmarshal metadata: %v", err)
+	}
+	if got := fmt.Sprintf("%v", metaPayload["source_path"]); got != "skills/ai-seo" {
+		t.Fatalf("metadata source_path = %q, want %q", got, "skills/ai-seo")
+	}
+}
+
+func TestToolingHandlerCanInstallDiscoveredSkillWithCaseInsensitivePathMatch(t *testing.T) {
+	home, err := os.MkdirTemp("", "tooling-skill-case-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp home: %v", err)
+	}
+	t.Setenv("HOME", home)
+
+	server := newGitHubTreeBlobServer(t, map[string]string{
+		"skills/AI-SEO/SKILL.md":         "# AI SEO\nCase variant path.\n",
+		"skills/AI-SEO/assets/config.md": "ok\n",
+	})
+	defer server.Close()
+	t.Setenv("AIGATE_GITHUB_API_BASE", server.URL)
+
+	handler := api.NewToolingHandler()
+	installed := doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/install", bytes.NewBufferString(`{
+		"id":"github:openai/codex-skills:main:ai-seo",
+		"apps":["codex"]
+	}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
+	if !strings.Contains(string(installed), `"applied":1`) {
+		t.Fatalf("install response = %s, want applied 1", string(installed))
+	}
+
+	managedRoot := filepath.Join(home, ".aigate", "data", "tooling", "skills", "codex-skills-ai-seo")
+	metaRaw, err := os.ReadFile(filepath.Join(managedRoot, ".aigate-skill.json"))
+	if err != nil {
+		t.Fatalf("ReadFile metadata: %v", err)
+	}
+	var metaPayload map[string]any
+	if err := json.Unmarshal(metaRaw, &metaPayload); err != nil {
+		t.Fatalf("Unmarshal metadata: %v", err)
+	}
+	if got := fmt.Sprintf("%v", metaPayload["source_path"]); got != "skills/AI-SEO" {
+		t.Fatalf("metadata source_path = %q, want %q", got, "skills/AI-SEO")
+	}
+}
+
+func TestToolingHandlerCanInstallDiscoveredSkillWithBasenameFallback(t *testing.T) {
+	home, err := os.MkdirTemp("", "tooling-skill-basename-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp home: %v", err)
+	}
+	t.Setenv("HOME", home)
+
+	server := newGitHubTreeBlobServer(t, map[string]string{
+		"catalog/marketing/ai-seo/SKILL.md": "# AI SEO\nBasename fallback path.\n",
+		"catalog/marketing/ai-seo/info.txt": "ok\n",
+	})
+	defer server.Close()
+	t.Setenv("AIGATE_GITHUB_API_BASE", server.URL)
+
+	handler := api.NewToolingHandler()
+	installed := doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/install", bytes.NewBufferString(`{
+		"id":"github:openai/codex-skills:main:ai-seo",
+		"apps":["codex"]
+	}`), map[string]string{"Content-Type": "application/json"}, http.StatusOK)
+	if !strings.Contains(string(installed), `"applied":1`) {
+		t.Fatalf("install response = %s, want applied 1", string(installed))
+	}
+
+	managedRoot := filepath.Join(home, ".aigate", "data", "tooling", "skills", "codex-skills-ai-seo")
+	metaRaw, err := os.ReadFile(filepath.Join(managedRoot, ".aigate-skill.json"))
+	if err != nil {
+		t.Fatalf("ReadFile metadata: %v", err)
+	}
+	var metaPayload map[string]any
+	if err := json.Unmarshal(metaRaw, &metaPayload); err != nil {
+		t.Fatalf("Unmarshal metadata: %v", err)
+	}
+	if got := fmt.Sprintf("%v", metaPayload["source_path"]); got != "catalog/marketing/ai-seo" {
+		t.Fatalf("metadata source_path = %q, want %q", got, "catalog/marketing/ai-seo")
 	}
 }
 
