@@ -32,6 +32,16 @@ export function sortTrendPointsByBucket(data: UsageTrendPoint[]): UsageTrendPoin
   });
 }
 
+export function trendBucketsNeedHour(data: UsageTrendPoint[]): boolean {
+  return data.some((point) => {
+    const date = new Date(point.bucket);
+    if (Number.isNaN(date.getTime())) {
+      return false;
+    }
+    return date.getUTCHours() !== 0 || date.getUTCMinutes() !== 0 || date.getUTCSeconds() !== 0;
+  });
+}
+
 function formatCompactNumber(language: AppLanguage, value: number): string {
   const absolute = Math.abs(value);
   if (absolute >= 1_000_000) {
@@ -114,7 +124,7 @@ export function TokenTrendChart({ data, language }: TokenTrendChartProps) {
     const theme = readChartTheme();
     const inputLabel = language === "zh-CN" ? "输入" : "Input";
     const outputLabel = language === "zh-CN" ? "输出" : "Output";
-    const withHour = sortedData.length > 0 && sortedData[0]?.bucket.includes("T");
+    const withHour = trendBucketsNeedHour(sortedData);
     return {
       animationDuration: 420,
       animationDurationUpdate: 420,
