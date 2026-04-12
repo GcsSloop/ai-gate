@@ -194,7 +194,8 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       setDiscoveryIndexedTotal(typeof response.indexed_total === "number" ? response.indexed_total : response.total);
       setDiscoveryOffset(nextItems.length);
       setDiscoveryHasMore(nextItems.length < response.total);
-      setDiscoveryStatus(params?.forceStatus ?? t("最新索引"));
+      const defaultStatus = response.updating ? t("后台更新中") : t("最新索引");
+      setDiscoveryStatus(params?.forceStatus ?? defaultStatus);
     } catch (error) {
       if (discoveryRequestRef.current !== requestId) {
         return;
@@ -393,7 +394,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
 
   async function handleDiscoveryRefresh() {
     try {
-      await loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("最新索引"), refresh: true });
+      await loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("后台更新中"), refresh: true });
       await reload({ background: true });
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
