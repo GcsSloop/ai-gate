@@ -14,6 +14,7 @@ import (
 )
 
 func TestReportToolingClientActiveFallsBackWhenAnonymousFileCannotPersist(t *testing.T) {
+	enableSkillMetricsReportingForTest(t)
 	home := t.TempDir()
 	blockToolingDirWithFile(t, home)
 
@@ -70,6 +71,7 @@ func TestReportToolingClientActiveFallsBackWhenAnonymousFileCannotPersist(t *tes
 }
 
 func TestReportDiscoveredSkillInstallFallsBackWhenAnonymousFileCannotPersist(t *testing.T) {
+	enableSkillMetricsReportingForTest(t)
 	home := t.TempDir()
 	blockToolingDirWithFile(t, home)
 
@@ -127,6 +129,7 @@ func TestReportDiscoveredSkillInstallFallsBackWhenAnonymousFileCannotPersist(t *
 }
 
 func TestReportToolingClientActiveIsThrottledWithinOneHour(t *testing.T) {
+	enableSkillMetricsReportingForTest(t)
 	home := t.TempDir()
 
 	var (
@@ -158,6 +161,7 @@ func TestReportToolingClientActiveIsThrottledWithinOneHour(t *testing.T) {
 }
 
 func TestReportToolingClientActiveReportsAgainAfterOneHour(t *testing.T) {
+	enableSkillMetricsReportingForTest(t)
 	home := t.TempDir()
 	now := time.Now().UTC()
 	if err := saveSkillMetricsState(home, skillMetricsReportState{
@@ -194,6 +198,7 @@ func TestReportToolingClientActiveReportsAgainAfterOneHour(t *testing.T) {
 }
 
 func TestReportDiscoveredSkillInstallDoesNotQueueOnNetworkFailure(t *testing.T) {
+	enableSkillMetricsReportingForTest(t)
 	home := t.TempDir()
 	setToolingSkillMetricsBaseURL(t, home, "http://127.0.0.1:1")
 
@@ -207,6 +212,7 @@ func TestReportDiscoveredSkillInstallDoesNotQueueOnNetworkFailure(t *testing.T) 
 }
 
 func TestLoadOrCreateToolingAnonymousIDMigratesLegacyPath(t *testing.T) {
+	enableSkillMetricsReportingForTest(t)
 	home := t.TempDir()
 	legacyPath := filepath.Join(home, ".aigate", "tooling", "anonymous-client.json")
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
@@ -234,6 +240,7 @@ func TestLoadOrCreateToolingAnonymousIDMigratesLegacyPath(t *testing.T) {
 }
 
 func TestLoadOrCreateToolingAnonymousIDStableWhenPersistFails(t *testing.T) {
+	enableSkillMetricsReportingForTest(t)
 	home := t.TempDir()
 	blockToolingDirWithFile(t, home)
 
@@ -250,6 +257,37 @@ func TestLoadOrCreateToolingAnonymousIDStableWhenPersistFails(t *testing.T) {
 	}
 	if first != second {
 		t.Fatalf("anonymous ids should be stable when persist fails: first=%q second=%q", first, second)
+	}
+}
+
+func TestReportToolingClientActiveDisabledByDefaultInGoTestProcess(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AIGATE_ENABLE_TEST_SKILL_METRICS_REPORTING", "")
+
+	var (
+		mu   sync.Mutex
+		hits int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/events/install" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"inserted":true}`))
+	}))
+	t.Cleanup(server.Close)
+	setToolingSkillMetricsBaseURL(t, home, server.URL)
+
+	reportToolingClientActive(home)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if hits != 0 {
+		t.Fatalf("events/install hits = %d, want 0 when reporting is disabled in test process", hits)
 	}
 }
 
@@ -272,6 +310,11 @@ func setToolingSkillMetricsBaseURL(t *testing.T, home string, baseURL string) {
 	if err := saveToolingConfig(home, cfg); err != nil {
 		t.Fatalf("save tooling config: %v", err)
 	}
+}
+
+func enableSkillMetricsReportingForTest(t *testing.T) {
+	t.Helper()
+	t.Setenv("AIGATE_ENABLE_TEST_SKILL_METRICS_REPORTING", "1")
 }
 
 func setDefaultToolingSkillMetricsBaseURLForTest(t *testing.T, baseURL string) {
