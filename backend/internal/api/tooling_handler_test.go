@@ -77,6 +77,90 @@ func TestToolingHandlerListsManagedSkillsEvenWhenSyncedBySymlink(t *testing.T) {
 	}
 }
 
+func TestToolingHandlerListsInstalledSkillsEnrichedWithCatalogLinks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	managedRoot := filepath.Join(home, ".aigate", "data", "tooling", "skills", "codex-skills-ai-seo")
+	seedSkill(t, managedRoot, "AI SEO skill")
+	if err := writeSkillMetadataForTest(managedRoot, map[string]any{
+		"name":        "AI SEO",
+		"source_repo": "openai/codex-skills",
+		"source_kind": "discovered",
+		"platform":    "github",
+		"branch":      "main",
+		"source_path": "ai-seo",
+	}); err != nil {
+		t.Fatalf("writeSkillMetadata: %v", err)
+	}
+
+	metricsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/skills/final" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"fetched_at":"2026-04-12T09:00:00Z",
+			"total_items":1,
+			"items":[
+				{
+					"id":"github:openai/codex-skills:main:skills/ai-seo",
+					"name":"AI SEO",
+					"platform":"github",
+					"repo_owner":"openai",
+					"repo_name":"codex-skills",
+					"branch":"main",
+					"repo_url":"https://github.com/openai/codex-skills",
+					"source_path":"skills/ai-seo",
+					"source_url":"https://github.com/openai/codex-skills/tree/main/skills/ai-seo",
+					"skills_sh_url":"https://skills.sh/s/ai-seo",
+					"audits_summary":{
+						"match_confidence":1,
+						"providers":[
+							{"provider":"snyk","label":"Snyk","status":"pass","url":"https://skills.sh/audits/ai-seo/snyk"}
+						]
+					}
+				}
+			]
+		}`))
+	}))
+	defer metricsServer.Close()
+
+	writeToolingConfig(t, home, map[string]any{
+		"skill_sync_method":       "symlink",
+		"skill_metrics_base_url":  metricsServer.URL,
+		"skill_repo_registry_url": metricsServer.URL,
+	})
+
+	handler := api.NewToolingHandler()
+	body := doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/installed/enriched", nil, nil, http.StatusOK)
+	var payload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(payload.Items))
+	}
+	item := payload.Items[0]
+	if item["source_url"] != "https://github.com/openai/codex-skills/tree/main/skills/ai-seo" {
+		t.Fatalf("source_url = %v, want normalized catalog source URL", item["source_url"])
+	}
+	if item["skills_sh_url"] != "https://skills.sh/s/ai-seo" {
+		t.Fatalf("skills_sh_url = %v, want skills.sh URL", item["skills_sh_url"])
+	}
+	audits, ok := item["audits_summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("audits_summary missing: %v", item["audits_summary"])
+	}
+	providers, ok := audits["providers"].([]any)
+	if !ok || len(providers) != 1 {
+		t.Fatalf("providers = %v, want 1 provider", audits["providers"])
+	}
+}
+
 func TestToolingHandlerImportsNamespacedCodexSkills(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
