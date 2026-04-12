@@ -1,0 +1,42 @@
+{
+  "name": "@gcssloop/ai-gate",
+  "version": "0.0.1",
+  "description": "AI Gate CLI placeholder package",
+  "license": "MIT",
+  "private": false,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "ai-gate": "bin/ai-gate.js",
+    "aigate": "bin/ai-gate.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "scripts",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "ai-gate",
+    "cli",
+    "skill"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GcsSloop/ai-gate.git",
+    "directory": "packages/npm/ai-gate-cli"
+  },
+  "homepage": "https://github.com/GcsSloop/ai-gate",
+  "bugs": {
+    "url": "https://github.com/GcsSloop/ai-gate/issues"
+  },
+  "scripts": {
+    "smoke": "node ./scripts/smoke.js",
+    "pack:check": "npm pack --dry-run"
+  }
+}
