@@ -21,6 +21,17 @@ type ModelDistributionChartProps = {
   language: AppLanguage;
 };
 
+export function sortTrendPointsByBucket(data: UsageTrendPoint[]): UsageTrendPoint[] {
+  return [...data].sort((left, right) => {
+    const leftTime = Date.parse(left.bucket);
+    const rightTime = Date.parse(right.bucket);
+    if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
+      return left.bucket.localeCompare(right.bucket);
+    }
+    return leftTime - rightTime;
+  });
+}
+
 function formatCompactNumber(language: AppLanguage, value: number): string {
   const absolute = Math.abs(value);
   if (absolute >= 1_000_000) {
@@ -99,10 +110,11 @@ export function TokenTrendChart({ data, language }: TokenTrendChartProps) {
     if (data.length === 0) {
       return null;
     }
+    const sortedData = sortTrendPointsByBucket(data);
     const theme = readChartTheme();
     const inputLabel = language === "zh-CN" ? "输入" : "Input";
     const outputLabel = language === "zh-CN" ? "输出" : "Output";
-    const withHour = data.length > 0 && data[0]?.bucket.includes("T");
+    const withHour = sortedData.length > 0 && sortedData[0]?.bucket.includes("T");
     return {
       animationDuration: 420,
       animationDurationUpdate: 420,
@@ -149,7 +161,7 @@ export function TokenTrendChart({ data, language }: TokenTrendChartProps) {
       xAxis: {
         type: "category",
         boundaryGap: false,
-        data: data.map((point) => formatBucket(language, point.bucket, withHour)),
+        data: sortedData.map((point) => formatBucket(language, point.bucket, withHour)),
         axisLabel: {
           color: theme.textSecondary,
           fontSize: 11,
@@ -188,7 +200,7 @@ export function TokenTrendChart({ data, language }: TokenTrendChartProps) {
           areaStyle: {
             color: "rgba(59, 130, 246, 0.10)",
           },
-          data: data.map((point) => point.input_tokens),
+          data: sortedData.map((point) => point.input_tokens),
         },
         {
           name: outputLabel,
@@ -199,7 +211,7 @@ export function TokenTrendChart({ data, language }: TokenTrendChartProps) {
           areaStyle: {
             color: "rgba(20, 184, 166, 0.10)",
           },
-          data: data.map((point) => point.output_tokens),
+          data: sortedData.map((point) => point.output_tokens),
         },
       ],
     };
