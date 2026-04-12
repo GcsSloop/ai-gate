@@ -4302,17 +4302,34 @@ func installDiscoveredSkillCollection(home string, id string, method string, app
 	})
 	managedName := buildDiscoveredManagedName(repo, sourcePath)
 	targetDir := filepath.Join(managedSkillsRoot(home), managedName)
-	files, err := fetchDiscoveredSkillFiles(repo, sourcePath)
+	resolvedSourcePath := sourcePath
+	if guessed, resolveErr := resolveDiscoveredInstallSourcePath(repo, sourcePath); resolveErr == nil && strings.TrimSpace(guessed) != "" {
+		resolvedSourcePath = guessed
+	}
+	files, err := fetchDiscoveredSkillFiles(repo, resolvedSourcePath)
 	if err != nil {
 		return 0, err
 	}
 	if len(files) == 0 {
+		// Compatibility fallback: some indexes store leaf slug ("ai-seo") while repo keeps skills under "skills/<slug>".
+		if resolvedSourcePath != "." && !strings.HasPrefix(strings.ToLower(strings.Trim(resolvedSourcePath, "/")), "skills/") {
+			nestedSourcePath := normalizeDiscoveredSourcePath("skills/" + strings.Trim(resolvedSourcePath, "/"))
+			nestedFiles, nestedErr := fetchDiscoveredSkillFiles(repo, nestedSourcePath)
+			if nestedErr == nil && len(nestedFiles) > 0 {
+				if _, ok := nestedFiles["SKILL.md"]; ok {
+					resolvedSourcePath = nestedSourcePath
+					files = nestedFiles
+				}
+			}
+		}
+	}
+	if len(files) == 0 {
 		// Backward-compat fallback: legacy indexes may point to child path even when repo root is the real skill.
-		if sourcePath != "." {
+		if resolvedSourcePath != "." {
 			rootFiles, rootErr := fetchDiscoveredSkillFiles(repo, ".")
 			if rootErr == nil && len(rootFiles) > 0 {
 				if _, ok := rootFiles["SKILL.md"]; ok {
-					sourcePath = "."
+					resolvedSourcePath = "."
 					files = rootFiles
 				}
 			}
@@ -4321,7 +4338,7 @@ func installDiscoveredSkillCollection(home string, id string, method string, app
 	if len(files) == 0 {
 		return 0, fmt.Errorf("no files found for discovered skill: %s", id)
 	}
-	displayName, _ := parseDiscoveredSkillBody(files["SKILL.md"], sourcePath)
+	displayName, _ := parseDiscoveredSkillBody(files["SKILL.md"], resolvedSourcePath)
 	if err := os.RemoveAll(targetDir); err != nil {
 		return 0, err
 	}
@@ -4340,13 +4357,210 @@ func installDiscoveredSkillCollection(home string, id string, method string, app
 		SourceKind:   "discovered",
 		Platform:     repo.Platform,
 		Branch:       repo.Branch,
-		SourcePath:   sourcePath,
-		SourceURL:    buildRepoTreeURL(repo.Platform, repo.Owner, repo.Name, repo.Branch, sourcePath),
+		SourcePath:   resolvedSourcePath,
+		SourceURL:    buildRepoTreeURL(repo.Platform, repo.Owner, repo.Name, repo.Branch, resolvedSourcePath),
 		UpstreamHash: hashSkillFiles(files),
 	}); err != nil {
 		return 0, err
 	}
 	return applyManagedSkillCollection(home, managedName, method, apps)
+}
+
+func resolveDiscoveredInstallSourcePath(repo skillRepoRecord, requestedSourcePath string) (string, error) {
+	requestedSourcePath = normalizeDiscoveredSourcePath(requestedSourcePath)
+	if requestedSourcePath == "" {
+		return "", nil
+	}
+	roots, err := listDiscoveredSkillRoots(repo)
+	if err != nil {
+		return "", err
+	}
+	if len(roots) == 0 {
+		return requestedSourcePath, nil
+	}
+	return matchDiscoveredRequestedSourcePath(requestedSourcePath, roots), nil
+}
+
+func listDiscoveredSkillRoots(repo skillRepoRecord) ([]string, error) {
+	switch repo.Platform {
+	case "gitlab":
+		entries, err := fetchGitLabSkillTree(repo)
+		if err != nil {
+			return nil, err
+		}
+		return collectDiscoveredSkillRootsFromTree(entries), nil
+	default:
+		entries, err := fetchGitHubSkillTree(repo)
+		if err != nil {
+			return nil, err
+		}
+		return collectDiscoveredSkillRootsFromTree(entries), nil
+	}
+}
+
+func fetchGitHubSkillTree(repo skillRepoRecord) ([]struct {
+	Path string `json:"path"`
+	Type string `json:"type"`
+}, error) {
+	req, err := newGitHubAPIRequest(
+		http.MethodGet,
+		fmt.Sprintf(
+			"%s/repos/%s/%s/git/trees/%s",
+			githubAPIBase(),
+			url.PathEscape(repo.Owner),
+			url.PathEscape(repo.Name),
+			url.PathEscape(repo.Branch),
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+	params := req.URL.Query()
+	params.Set("recursive", "1")
+	req.URL.RawQuery = params.Encode()
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, describeGitHubHTTPError("tree", resp)
+	}
+	var payload struct {
+		Tree []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"tree"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Tree, nil
+}
+
+func fetchGitLabSkillTree(repo skillRepoRecord) ([]struct {
+	Path string `json:"path"`
+	Type string `json:"type"`
+}, error) {
+	projectID := url.PathEscape(repo.Owner + "/" + repo.Name)
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/projects/%s/repository/tree", gitlabAPIBase(), projectID), nil)
+	if err != nil {
+		return nil, err
+	}
+	params := req.URL.Query()
+	params.Set("ref", repo.Branch)
+	params.Set("recursive", "true")
+	params.Set("per_page", "100")
+	req.URL.RawQuery = params.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("gitlab tree failed: %s", resp.Status)
+	}
+	var payload []struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func matchDiscoveredRequestedSourcePath(requestedSourcePath string, roots []string) string {
+	requested := normalizeDiscoveredSourcePath(requestedSourcePath)
+	if requested == "" {
+		return requestedSourcePath
+	}
+	normalizedRoots := make([]string, 0, len(roots))
+	seen := map[string]bool{}
+	for _, root := range roots {
+		clean := normalizeDiscoveredSourcePath(root)
+		if clean == "" || seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		normalizedRoots = append(normalizedRoots, clean)
+	}
+	if len(normalizedRoots) == 0 {
+		return requested
+	}
+
+	exact := map[string]string{}
+	insensitive := map[string]string{}
+	for _, root := range normalizedRoots {
+		exact[root] = root
+		lower := strings.ToLower(root)
+		if _, ok := insensitive[lower]; !ok {
+			insensitive[lower] = root
+		}
+	}
+
+	candidates := make([]string, 0, 6)
+	addCandidate := func(value string) {
+		value = normalizeDiscoveredSourcePath(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == value {
+				return
+			}
+		}
+		candidates = append(candidates, value)
+	}
+	addCandidate(requested)
+	trimmedSkills := strings.TrimPrefix(strings.TrimPrefix(requested, "skills/"), "Skills/")
+	addCandidate(trimmedSkills)
+	if trimmedSkills != "." {
+		addCandidate("skills/" + strings.Trim(trimmedSkills, "/"))
+	}
+	base := filepath.Base(strings.Trim(requested, "/"))
+	addCandidate(base)
+	if base != "." {
+		addCandidate("skills/" + strings.Trim(base, "/"))
+	}
+
+	for _, candidate := range candidates {
+		if match, ok := exact[candidate]; ok {
+			return match
+		}
+		if match, ok := insensitive[strings.ToLower(candidate)]; ok {
+			return match
+		}
+	}
+
+	baseLower := strings.ToLower(filepath.Base(strings.Trim(requested, "/")))
+	if baseLower != "" && baseLower != "." {
+		byBase := make([]string, 0)
+		for _, root := range normalizedRoots {
+			if strings.ToLower(filepath.Base(strings.Trim(root, "/"))) == baseLower {
+				byBase = append(byBase, root)
+			}
+		}
+		if len(byBase) == 1 {
+			return byBase[0]
+		}
+		for _, root := range byBase {
+			if strings.HasPrefix(strings.ToLower(root), "skills/") {
+				return root
+			}
+		}
+	}
+
+	if requested == "." {
+		if _, ok := exact["."]; ok {
+			return "."
+		}
+	}
+	if len(normalizedRoots) == 1 {
+		return normalizedRoots[0]
+	}
+	return requested
 }
 
 func parseDiscoveredSkillID(id string) (platform string, repoFullName string, branch string, sourcePath string, err error) {
