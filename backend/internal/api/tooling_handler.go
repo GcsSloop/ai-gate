@@ -122,6 +122,10 @@ type managedSkillRecord struct {
 	SourceClient    string          `json:"source_client,omitempty"`
 	SourceRepo      string          `json:"source_repo,omitempty"`
 	SourceKind      string          `json:"source_kind"`
+	Platform        string          `json:"platform,omitempty"`
+	Branch          string          `json:"branch,omitempty"`
+	SourcePath      string          `json:"source_path,omitempty"`
+	SourceURL       string          `json:"source_url,omitempty"`
 	ManagedPath     string          `json:"managed_path"`
 	InstalledApps   map[string]bool `json:"installed_apps"`
 	UpdateAvailable bool            `json:"update_available"`
@@ -177,19 +181,61 @@ type toolingSkillDiscoverResponse struct {
 	Items        []discoveredSkillRecord `json:"items"`
 }
 
+type toolingInstalledSkillsEnrichedResponse struct {
+	Cached    bool                               `json:"cached"`
+	FetchedAt string                             `json:"fetched_at,omitempty"`
+	Items     []toolingInstalledSkillEnrichedRow `json:"items"`
+}
+
+type toolingInstalledSkillEnrichedRow struct {
+	ManagedName   string               `json:"managed_name"`
+	Name          string               `json:"name"`
+	SourceKind    string               `json:"source_kind"`
+	Platform      string               `json:"platform,omitempty"`
+	SourceRepo    string               `json:"source_repo,omitempty"`
+	Branch        string               `json:"branch,omitempty"`
+	SourcePath    string               `json:"source_path,omitempty"`
+	SourceURL     string               `json:"source_url,omitempty"`
+	SkillsShURL   string               `json:"skills_sh_url,omitempty"`
+	AuditsSummary *toolingAuditSummary `json:"audits_summary,omitempty"`
+}
+
+type toolingAuditSummary struct {
+	MatchConfidence float64                       `json:"match_confidence"`
+	Providers       []toolingAuditProviderSummary `json:"providers"`
+}
+
+type toolingAuditProviderSummary struct {
+	Provider string `json:"provider"`
+	Label    string `json:"label"`
+	Status   string `json:"status"`
+	URL      string `json:"url"`
+}
+
 type centralDiscoveredSkillResponse struct {
 	FetchedAt string `json:"fetched_at"`
 	Total     int    `json:"total_items"`
 	Items     []struct {
-		ID         string `json:"id"`
-		Name       string `json:"name"`
-		Platform   string `json:"platform"`
-		RepoOwner  string `json:"repo_owner"`
-		RepoName   string `json:"repo_name"`
-		Branch     string `json:"branch"`
-		RepoURL    string `json:"repo_url"`
-		SourcePath string `json:"source_path"`
-		SourceURL  string `json:"source_url"`
+		ID            string `json:"id"`
+		Name          string `json:"name"`
+		Platform      string `json:"platform"`
+		RepoOwner     string `json:"repo_owner"`
+		RepoName      string `json:"repo_name"`
+		Branch        string `json:"branch"`
+		RepoURL       string `json:"repo_url"`
+		SourcePath    string `json:"source_path"`
+		SourceURL     string `json:"source_url"`
+		ManagedName   string `json:"managed_name"`
+		SkillsShURL   string `json:"skills_sh_url"`
+		AuditsSummary struct {
+			MatchConfidence float64 `json:"match_confidence"`
+			Providers       []struct {
+				Provider string `json:"provider"`
+				Label    string `json:"label"`
+				Status   string `json:"status"`
+				URL      string `json:"url"`
+			} `json:"providers"`
+		} `json:"audits_summary"`
 	} `json:"items"`
 }
 
@@ -382,6 +428,8 @@ func (h *ToolingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.importSkills(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/apply":
 		h.applySkills(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/tooling/skills/installed/enriched":
+		h.listInstalledSkillsEnriched(w)
 	case r.Method == http.MethodGet && r.URL.Path == "/tooling/skills/repos":
 		h.listSkillRepos(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/repos":
@@ -446,6 +494,65 @@ func (h *ToolingHandler) getState(w http.ResponseWriter) {
 		DiscoveredMcpServers: discoveredServers,
 		McpTemplates:         toolingTemplates,
 		McpServers:           servers,
+	})
+}
+
+func (h *ToolingHandler) listInstalledSkillsEnriched(w http.ResponseWriter) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	clients := toolingClientStates(home)
+	skills := scanManagedSkills(home, clients)
+	rows := make([]toolingInstalledSkillEnrichedRow, 0, len(skills))
+	for _, skill := range skills {
+		rows = append(rows, toolingInstalledSkillEnrichedRow{
+			ManagedName: skillCollectionNameFromManagedPath(skill.ManagedPath),
+			Name:        strings.TrimSpace(skill.Name),
+			SourceKind:  strings.TrimSpace(skill.SourceKind),
+			Platform:    normalizeSkillRepoPlatform(skill.Platform),
+			SourceRepo:  strings.TrimSpace(skill.SourceRepo),
+			Branch:      strings.TrimSpace(skill.Branch),
+			SourcePath:  normalizeDiscoveredSourcePath(skill.SourcePath),
+			SourceURL:   strings.TrimSpace(skill.SourceURL),
+		})
+	}
+	if len(rows) == 0 {
+		writeJSON(w, http.StatusOK, toolingInstalledSkillsEnrichedResponse{
+			Cached:    true,
+			FetchedAt: timeNowUTC().Format(time.RFC3339),
+			Items:     rows,
+		})
+		return
+	}
+
+	baseURL := skillMetricsBaseURL(home)
+	if strings.TrimSpace(baseURL) == "" {
+		writeJSON(w, http.StatusOK, toolingInstalledSkillsEnrichedResponse{
+			Cached:    true,
+			FetchedAt: timeNowUTC().Format(time.RFC3339),
+			Items:     rows,
+		})
+		return
+	}
+	catalog, err := fetchCentralSkillsCatalog(baseURL)
+	if err != nil {
+		writeJSON(w, http.StatusOK, toolingInstalledSkillsEnrichedResponse{
+			Cached:    true,
+			FetchedAt: timeNowUTC().Format(time.RFC3339),
+			Items:     rows,
+		})
+		return
+	}
+	overlay := buildInstalledSkillCatalogOverlay(catalog)
+	for idx := range rows {
+		applyInstalledSkillOverlay(&rows[idx], overlay)
+	}
+	writeJSON(w, http.StatusOK, toolingInstalledSkillsEnrichedResponse{
+		Cached:    true,
+		FetchedAt: firstNonEmpty(strings.TrimSpace(catalog.FetchedAt), timeNowUTC().Format(time.RFC3339)),
+		Items:     rows,
 	})
 }
 
@@ -1679,6 +1786,10 @@ func scanManagedSkills(home string, clients []toolingClientState) []managedSkill
 			SourceClient:    meta.SourceClient,
 			SourceRepo:      meta.SourceRepo,
 			SourceKind:      firstNonEmpty(meta.SourceKind, "manual"),
+			Platform:        normalizeSkillRepoPlatform(meta.Platform),
+			Branch:          strings.TrimSpace(meta.Branch),
+			SourcePath:      normalizeDiscoveredSourcePath(meta.SourcePath),
+			SourceURL:       strings.TrimSpace(meta.SourceURL),
 			ManagedPath:     entry.FullPath,
 			InstalledApps:   map[string]bool{},
 			UpdateAvailable: false,
@@ -1751,6 +1862,20 @@ func writeSkillMetadata(dir string, meta skillMetadata) error {
 
 func skillKey(dir string) string {
 	return strings.ToLower(filepath.Clean(dir))
+}
+
+func skillCollectionNameFromManagedPath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	parts := strings.Split(filepath.ToSlash(trimmed), "/")
+	for idx := len(parts) - 1; idx >= 0; idx-- {
+		if strings.TrimSpace(parts[idx]) != "" {
+			return parts[idx]
+		}
+	}
+	return ""
 }
 
 func managedSkillsRoot(home string) string {
@@ -3357,6 +3482,143 @@ func reorderDiscoveredWithRecommendations(items []discoveredSkillRecord, recomme
 		result = append(result, byID[id])
 	}
 	return result
+}
+
+type installedSkillCatalogOverlay struct {
+	byID       map[string]toolingInstalledSkillEnrichedRow
+	byRepoPath map[string]toolingInstalledSkillEnrichedRow
+	byRepoName map[string]toolingInstalledSkillEnrichedRow
+}
+
+func buildInstalledSkillCatalogOverlay(catalog centralDiscoveredSkillResponse) installedSkillCatalogOverlay {
+	overlay := installedSkillCatalogOverlay{
+		byID:       map[string]toolingInstalledSkillEnrichedRow{},
+		byRepoPath: map[string]toolingInstalledSkillEnrichedRow{},
+		byRepoName: map[string]toolingInstalledSkillEnrichedRow{},
+	}
+	for _, item := range catalog.Items {
+		row := toolingInstalledSkillEnrichedRow{
+			Name:        strings.TrimSpace(item.Name),
+			Platform:    normalizeSkillRepoPlatform(item.Platform),
+			SourceRepo:  strings.TrimSpace(item.RepoOwner) + "/" + strings.TrimSpace(item.RepoName),
+			Branch:      strings.TrimSpace(item.Branch),
+			SourcePath:  normalizeDiscoveredSourcePath(item.SourcePath),
+			SourceURL:   strings.TrimSpace(item.SourceURL),
+			SkillsShURL: strings.TrimSpace(item.SkillsShURL),
+		}
+		if len(item.AuditsSummary.Providers) > 0 {
+			summary := toolingAuditSummary{
+				MatchConfidence: item.AuditsSummary.MatchConfidence,
+				Providers:       make([]toolingAuditProviderSummary, 0, len(item.AuditsSummary.Providers)),
+			}
+			for _, provider := range item.AuditsSummary.Providers {
+				summary.Providers = append(summary.Providers, toolingAuditProviderSummary{
+					Provider: strings.TrimSpace(provider.Provider),
+					Label:    strings.TrimSpace(provider.Label),
+					Status:   strings.TrimSpace(provider.Status),
+					URL:      strings.TrimSpace(provider.URL),
+				})
+			}
+			row.AuditsSummary = &summary
+		}
+		overlayRow := row
+		id := discoveredSkillKey(row.Platform, row.SourceRepo, row.Branch, row.SourcePath)
+		if id != "" {
+			overlay.byID[id] = overlayRow
+		}
+		repoKey := installedSkillOverlayRepoKey(row.SourceRepo)
+		if repoKey != "" {
+			if pathKey := installedSkillOverlayRepoPathKey(repoKey, row.SourcePath); pathKey != "" {
+				overlay.byRepoPath[pathKey] = overlayRow
+			}
+			nameKey := installedSkillOverlayRepoNameKey(repoKey, firstNonEmpty(row.Name, item.ManagedName, filepath.Base(strings.Trim(row.SourcePath, "/"))))
+			if nameKey != "" {
+				overlay.byRepoName[nameKey] = overlayRow
+			}
+		}
+	}
+	return overlay
+}
+
+func applyInstalledSkillOverlay(row *toolingInstalledSkillEnrichedRow, overlay installedSkillCatalogOverlay) {
+	if row == nil {
+		return
+	}
+	match := toolingInstalledSkillEnrichedRow{}
+	found := false
+	repoKey := installedSkillOverlayRepoKey(row.SourceRepo)
+	id := discoveredSkillKey(row.Platform, row.SourceRepo, firstNonEmpty(row.Branch, "main"), row.SourcePath)
+	if id != "" {
+		if item, ok := overlay.byID[id]; ok {
+			match = item
+			found = true
+		}
+	}
+	if !found && repoKey != "" && row.SourcePath != "" {
+		if item, ok := overlay.byRepoPath[installedSkillOverlayRepoPathKey(repoKey, row.SourcePath)]; ok {
+			match = item
+			found = true
+		}
+	}
+	if !found && repoKey != "" {
+		name := firstNonEmpty(row.Name, row.ManagedName, filepath.Base(strings.Trim(row.SourcePath, "/")))
+		if item, ok := overlay.byRepoName[installedSkillOverlayRepoNameKey(repoKey, name)]; ok {
+			match = item
+			found = true
+		}
+	}
+	if !found {
+		return
+	}
+	if strings.TrimSpace(row.SourceURL) == "" {
+		row.SourceURL = match.SourceURL
+	}
+	if strings.TrimSpace(row.Platform) == "" {
+		row.Platform = match.Platform
+	}
+	if strings.TrimSpace(row.Branch) == "" {
+		row.Branch = match.Branch
+	}
+	if strings.TrimSpace(row.SourcePath) == "" {
+		row.SourcePath = match.SourcePath
+	}
+	if strings.TrimSpace(row.SkillsShURL) == "" {
+		row.SkillsShURL = match.SkillsShURL
+	}
+	if row.AuditsSummary == nil && match.AuditsSummary != nil {
+		row.AuditsSummary = match.AuditsSummary
+	}
+}
+
+func installedSkillOverlayRepoKey(sourceRepo string) string {
+	trimmed := strings.ToLower(strings.Trim(strings.TrimSpace(sourceRepo), "/"))
+	return strings.TrimPrefix(trimmed, "github:")
+}
+
+func installedSkillOverlayRepoPathKey(repoKey string, sourcePath string) string {
+	repoKey = strings.TrimSpace(repoKey)
+	sourcePath = normalizeDiscoveredSourcePath(sourcePath)
+	if repoKey == "" || sourcePath == "" {
+		return ""
+	}
+	return repoKey + "|" + strings.ToLower(sourcePath)
+}
+
+func installedSkillOverlayRepoNameKey(repoKey string, name string) string {
+	repoKey = strings.TrimSpace(repoKey)
+	name = normalizeInstalledSkillName(name)
+	if repoKey == "" || name == "" {
+		return ""
+	}
+	return repoKey + "|" + name
+}
+
+func normalizeInstalledSkillName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.ReplaceAll(name, "_", "-")
+	name = strings.ReplaceAll(name, " ", "-")
+	name = strings.Trim(name, "-")
+	return name
 }
 
 func fetchCentralSkillsCatalog(baseURL string) (centralDiscoveredSkillResponse, error) {
