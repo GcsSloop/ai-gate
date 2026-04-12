@@ -333,6 +333,7 @@ export type ToolingDiscoveredSkill = {
 
 export type ToolingSkillDiscoveryResponse = {
   cached: boolean;
+  updating?: boolean;
   fetched_at?: string;
   indexed_total?: number;
   total: number;
@@ -1298,16 +1299,11 @@ export async function resolveToolingRepo(input: string): Promise<ToolingResolved
 }
 
 export async function getToolingDiscoveredSkills(params?: { limit?: number; offset?: number; query?: string }): Promise<ToolingSkillDiscoveryResponse> {
-  return requestCloudDiscoveredSkills(params);
+  return requestToolingDiscoveredSkills(params, false);
 }
 
 export async function refreshToolingDiscoveredSkills(params?: { limit?: number; offset?: number; query?: string }): Promise<ToolingSkillDiscoveryResponse> {
-  return requestCloudDiscoveredSkills(params);
-}
-
-function skillMetricsBaseURL(): string {
-  const value = (import.meta.env.VITE_SKILL_METRICS_BASE_URL as string | undefined)?.trim();
-  return value ? value.replace(/\/$/, "") : "https://aigate-skill-metrics.gcssloop.workers.dev";
+  return requestToolingDiscoveredSkills(params, true);
 }
 
 function buildDiscoverySearch(params?: { limit?: number; offset?: number; query?: string }): URLSearchParams {
@@ -1325,11 +1321,15 @@ function buildDiscoverySearch(params?: { limit?: number; offset?: number; query?
   return search;
 }
 
-async function requestCloudDiscoveredSkills(params?: { limit?: number; offset?: number; query?: string }): Promise<ToolingSkillDiscoveryResponse> {
+async function requestToolingDiscoveredSkills(
+  params?: { limit?: number; offset?: number; query?: string },
+  refresh?: boolean,
+): Promise<ToolingSkillDiscoveryResponse> {
   const search = buildDiscoverySearch(params);
-  const hasQuery = Boolean(params?.query?.trim());
-  const endpoint = hasQuery ? "/skills/search" : "/skills/final";
-  const response = await fetch(`${skillMetricsBaseURL()}${endpoint}?${search.toString()}`);
+  if (refresh) {
+    search.set("refresh", "1");
+  }
+  const response = await fetch(apiPath(`/tooling/skills/discover?${search.toString()}`));
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to load discovered skills");
@@ -1338,6 +1338,7 @@ async function requestCloudDiscoveredSkills(params?: { limit?: number; offset?: 
   const items = Array.isArray(payload.items) ? (payload.items as ToolingDiscoveredSkill[]) : [];
   return {
     cached: typeof payload.cached === "boolean" ? payload.cached : true,
+    updating: typeof payload.updating === "boolean" ? payload.updating : false,
     fetched_at: typeof payload.fetched_at === "string" ? payload.fetched_at : "",
     indexed_total: typeof payload.indexed_total === "number"
       ? payload.indexed_total
