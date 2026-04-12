@@ -1119,12 +1119,15 @@ func TestToolingHandlerCanInstallDiscoveredSkillIntoManagedAndCodexDirs(t *testi
 	}
 }
 
-func TestToolingHandlerDiscoveryListEndpointsRemoved(t *testing.T) {
+func TestToolingHandlerDiscoveryListEndpoint(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
 	handler := api.NewToolingHandler()
-	doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/discover", nil, nil, http.StatusNotFound)
+	body := doToolingRequest(t, handler, http.MethodGet, "/tooling/skills/discover", nil, nil, http.StatusOK)
+	if !strings.Contains(string(body), `"cached":false`) {
+		t.Fatalf("discover response = %s, want cached=false when no local cache exists", string(body))
+	}
 	doToolingRequest(t, handler, http.MethodPost, "/tooling/skills/discover/refresh", bytes.NewBufferString(`{}`), map[string]string{"Content-Type": "application/json"}, http.StatusNotFound)
 }
 
