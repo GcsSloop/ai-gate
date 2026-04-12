@@ -430,8 +430,22 @@ function formatCheckedAt(value: string | undefined, language: AppLanguage) {
 }
 
 function getUsageHealthState(
-  record: Pick<AccountRecord, "checked_at" | "stale">,
+  record: Pick<
+    AccountRecord,
+    "checked_at" | "stale" | "usage_driver" | "usage_config_json"
+  >,
 ): "ok" | "warning" | "danger" | "unknown" {
+  const usageDriver = (record.usage_driver || "").trim().toLowerCase();
+  const usageConfig = parseUsageConfig(record.usage_config_json);
+  const luaScript =
+    typeof usageConfig.script === "string" ? String(usageConfig.script) : "";
+  const hasBuiltinUsageDriver = usageDriver.startsWith("builtin_");
+  const hasLuaUsageDriver =
+    usageDriver === "lua" && luaScript.trim() !== "";
+
+  if (!hasBuiltinUsageDriver && !hasLuaUsageDriver) {
+    return "unknown";
+  }
   if (!record.checked_at) {
     return "unknown";
   }
