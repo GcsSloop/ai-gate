@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -56,7 +57,8 @@ type defaultSkillRepoSeed struct {
 }
 
 type ToolingHandler struct {
-	mu sync.Mutex
+	mu                            sync.Mutex
+	skillDiscoveryRefreshInFlight atomic.Bool
 }
 
 func NewToolingHandler() *ToolingHandler {
@@ -173,6 +175,7 @@ type skillDiscoveryCache struct {
 
 type toolingSkillDiscoverResponse struct {
 	Cached       bool                    `json:"cached"`
+	Updating     bool                    `json:"updating,omitempty"`
 	FetchedAt    string                  `json:"fetched_at,omitempty"`
 	IndexedTotal int                     `json:"indexed_total"`
 	Total        int                     `json:"total"`
@@ -425,6 +428,8 @@ func (h *ToolingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.updateSettings(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/discover/install":
 		h.installDiscoveredSkill(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/tooling/skills/discover":
+		h.listDiscoveredSkills(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/import":
 		h.importSkills(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/apply":
@@ -596,6 +601,44 @@ func (h *ToolingHandler) updateSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"skill_sync_method": cfg.SkillSyncMethod})
+}
+
+func (h *ToolingHandler) listDiscoveredSkills(w http.ResponseWriter, r *http.Request) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	queryValues := r.URL.Query()
+	limit, offset := parseDiscoveredPaging(queryValues)
+	queryText := strings.TrimSpace(queryValues.Get("q"))
+	forceRefresh := isTruthyEnv(queryValues.Get("refresh"))
+
+	cache, cacheOK := loadSkillDiscoveryCache(home)
+	if !cacheOK {
+		cache = skillDiscoveryCache{Items: []discoveredSkillRecord{}}
+	}
+
+	shouldRefresh := forceRefresh || skillDiscoveryCacheRefreshDue(cache)
+	if shouldRefresh && !shouldDisableSkillDiscoveryBackgroundRefresh() {
+		h.triggerSkillDiscoveryRefresh(home)
+	}
+
+	filtered := filterDiscoveredItems(cache.Items, queryText)
+	paged, total := sliceDiscoveredItems(filtered, limit, offset)
+
+	writeJSON(w, http.StatusOK, toolingSkillDiscoverResponse{
+		Cached:       cacheOK,
+		Updating:     h.skillDiscoveryRefreshInFlight.Load(),
+		FetchedAt:    strings.TrimSpace(cache.FetchedAt),
+		IndexedTotal: len(cache.Items),
+		Total:        total,
+		Offset:       offset,
+		Limit:        limit,
+		Query:        queryText,
+		Items:        paged,
+	})
 }
 
 func (h *ToolingHandler) installDiscoveredSkill(w http.ResponseWriter, r *http.Request) {
@@ -2094,6 +2137,40 @@ func pathWithinRoot(root string, path string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
+
+func (h *ToolingHandler) triggerSkillDiscoveryRefresh(home string) {
+	if strings.TrimSpace(home) == "" {
+		return
+	}
+	if !h.skillDiscoveryRefreshInFlight.CompareAndSwap(false, true) {
+		return
+	}
+	go func(homeDir string) {
+		defer h.skillDiscoveryRefreshInFlight.Store(false)
+		if _, _, err := h.refreshSkillDiscovery(homeDir); err != nil {
+			fmt.Fprintf(os.Stderr, "background skill discovery refresh failed: %v\n", err)
+		}
+	}(home)
+}
+
+func skillDiscoveryCacheRefreshDue(cache skillDiscoveryCache) bool {
+	now := timeNowUTC()
+	nextAutoRefreshAt := strings.TrimSpace(cache.NextAutoRefreshAt)
+	if nextAutoRefreshAt != "" {
+		if parsed, err := time.Parse(time.RFC3339, nextAutoRefreshAt); err == nil {
+			return !parsed.After(now)
+		}
+	}
+	fetchedAt := strings.TrimSpace(cache.FetchedAt)
+	if fetchedAt == "" {
+		return true
+	}
+	parsedFetchedAt, err := time.Parse(time.RFC3339, fetchedAt)
+	if err != nil {
+		return true
+	}
+	return now.Sub(parsedFetchedAt) >= 24*time.Hour
 }
 
 func (h *ToolingHandler) refreshSkillDiscovery(home string) ([]discoveredSkillRecord, string, error) {
@@ -3984,6 +4061,16 @@ func shouldDisableSkillMetricsReporting() bool {
 		return true
 	}
 	if flag.Lookup("test.v") != nil && !isTruthyEnv(os.Getenv("AIGATE_ENABLE_TEST_SKILL_METRICS_REPORTING")) {
+		return true
+	}
+	return false
+}
+
+func shouldDisableSkillDiscoveryBackgroundRefresh() bool {
+	if isTruthyEnv(os.Getenv("AIGATE_DISABLE_SKILL_DISCOVERY_BACKGROUND_REFRESH")) {
+		return true
+	}
+	if flag.Lookup("test.v") != nil && !isTruthyEnv(os.Getenv("AIGATE_ENABLE_TEST_SKILL_DISCOVERY_BACKGROUND_REFRESH")) {
 		return true
 	}
 	return false
