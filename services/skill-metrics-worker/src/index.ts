@@ -63,6 +63,14 @@ type OverviewStats = UserStats & {
   catalog_version: string;
   scan_success_rate: number;
   scan_avg_duration_ms: number;
+  curve_days: number;
+  user_curve: UserCurvePoint[];
+};
+
+type UserCurvePoint = {
+  day: string;
+  total_users: number;
+  daily_active_users: number;
 };
 
 type UserInstallSummary = {
@@ -395,7 +403,8 @@ export default {
         await assertAdmin(request, env);
         const windowDays = normalizeActiveWindowDays(url.searchParams.get("window"));
         const rankingDay = normalizeDay(url.searchParams.get("day")) ?? utcDay();
-        const stats = await getOverviewStats(env, windowDays, rankingDay);
+        const curveDays = normalizeCurveDays(url.searchParams.get("curve_days"));
+        const stats = await getOverviewStats(env, windowDays, rankingDay, curveDays);
         return json(stats);
       }
       if (request.method === "GET" && url.pathname === "/admin/api/users") {
@@ -670,10 +679,11 @@ async function getUserStats(env: Env, windowDays: number): Promise<UserStats> {
   };
 }
 
-async function getOverviewStats(env: Env, windowDays: number, rankingDay: string): Promise<OverviewStats> {
+async function getOverviewStats(env: Env, windowDays: number, rankingDay: string, curveDays: number): Promise<OverviewStats> {
   const userStats = await getUserStats(env, windowDays);
   const active7d = await getUserStats(env, 7);
   const active30d = await getUserStats(env, 30);
+  const userCurve = await getUserCurve(env, curveDays);
   const repos = await listTrackedRepos(env);
   const catalog = await getSkillCatalog(env, false);
   const history = await getScanHistory(env);
@@ -725,7 +735,87 @@ async function getOverviewStats(env: Env, windowDays: number, rankingDay: string
     catalog_version: catalogVersion.slice(0, 12),
     scan_success_rate: totalRuns > 0 ? Number(((successRuns / totalRuns) * 100).toFixed(2)) : 0,
     scan_avg_duration_ms: avgDuration,
+    curve_days: curveDays,
+    user_curve: userCurve,
   };
+}
+
+async function getUserCurve(env: Env, curveDays: number): Promise<UserCurvePoint[]> {
+  const days = normalizeCurveDays(String(curveDays));
+  const today = utcDay();
+  const startDay = utcDayOffset(-(days - 1));
+  const startAt = `${startDay}T00:00:00.000Z`;
+
+  const dailyActiveRows = await env.DB
+    .prepare(
+      `SELECT
+         substr(created_at, 1, 10) AS day,
+         COUNT(DISTINCT user_hash) AS daily_active_users
+       FROM install_events
+       WHERE created_at >= ?1
+       GROUP BY day
+       ORDER BY day ASC`,
+    )
+    .bind(startAt)
+    .all<{ day: string; daily_active_users: number }>();
+  const dailyActiveMap = new Map<string, number>();
+  for (const row of dailyActiveRows.results ?? []) {
+    const day = normalizeDay(row.day);
+    if (!day) continue;
+    dailyActiveMap.set(day, Number(row.daily_active_users ?? 0));
+  }
+
+  const baselineRow = await env.DB
+    .prepare(
+      `SELECT COUNT(1) AS baseline_total
+       FROM (
+         SELECT user_hash, MIN(created_at) AS first_seen
+         FROM install_events
+         GROUP BY user_hash
+       ) u
+       WHERE first_seen < ?1`,
+    )
+    .bind(startAt)
+    .first<{ baseline_total: number }>();
+  let runningTotal = Number(baselineRow?.baseline_total ?? 0);
+
+  const newUserRows = await env.DB
+    .prepare(
+      `SELECT
+         substr(first_seen, 1, 10) AS day,
+         COUNT(1) AS new_users
+       FROM (
+         SELECT user_hash, MIN(created_at) AS first_seen
+         FROM install_events
+         GROUP BY user_hash
+       ) u
+       WHERE first_seen >= ?1
+       GROUP BY day
+       ORDER BY day ASC`,
+    )
+    .bind(startAt)
+    .all<{ day: string; new_users: number }>();
+  const newUsersMap = new Map<string, number>();
+  for (const row of newUserRows.results ?? []) {
+    const day = normalizeDay(row.day);
+    if (!day) continue;
+    newUsersMap.set(day, Number(row.new_users ?? 0));
+  }
+
+  const points: UserCurvePoint[] = [];
+  for (let i = 0; i < days; i += 1) {
+    const day = utcDayOffset(-(days - 1 - i));
+    runningTotal += Number(newUsersMap.get(day) ?? 0);
+    points.push({
+      day,
+      total_users: runningTotal,
+      daily_active_users: Number(dailyActiveMap.get(day) ?? 0),
+    });
+  }
+  if (points.length === 0) {
+    points.push({ day: today, total_users: 0, daily_active_users: 0 });
+  }
+  return points;
 }
 
 async function listUsers(
@@ -2827,6 +2917,21 @@ function normalizeActiveWindowDays(input?: string | null): number {
   return 30;
 }
 
+function normalizeCurveDays(input?: string | null): number {
+  const value = (input ?? "").trim().toLowerCase();
+  if (value === "14d" || value === "14") return 14;
+  if (value === "30d" || value === "30" || value === "") return 30;
+  if (value === "60d" || value === "60") return 60;
+  if (value === "90d" || value === "90") return 90;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 30;
+  const days = Math.floor(parsed);
+  if (days <= 14) return 14;
+  if (days <= 30) return 30;
+  if (days <= 60) return 60;
+  return 90;
+}
+
 function activeWindowLabel(days: number): string {
   if (days <= 1) return "1天";
   if (days <= 7) return "1周";
@@ -2877,6 +2982,12 @@ function normalizeScanBatchSize(input?: string | null): number {
 
 function utcDay(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function utcDayOffset(offsetDays: number): string {
+  const now = new Date();
+  const utc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + offsetDays);
+  return new Date(utc).toISOString().slice(0, 10);
 }
 
 function trim(value: string, max: number): string {
@@ -3117,6 +3228,14 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       .audit-pill.is-fail { color:#b91c1c; border-color:#fca5a5; background:#fef2f2; }
       .audit-pill.is-info { color:#0369a1; border-color:#bae6fd; background:#f0f9ff; }
       .audit-pill.is-unknown { color:#6b7280; border-color:#d1d5db; background:#f3f4f6; }
+      .curve-wrap { margin-top:12px; border:1px solid var(--line); border-radius:10px; padding:12px; background:#fff; }
+      .curve-head { display:flex; gap:12px; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; }
+      .curve-legend { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+      .curve-legend .item { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
+      .curve-legend .dot { width:10px; height:10px; border-radius:999px; display:inline-block; }
+      .curve-legend .dot.total { background:#0f766e; }
+      .curve-legend .dot.daily { background:#2563eb; }
+      .curve-chart { width:100%; height:220px; display:block; background:linear-gradient(to top, #fafafa, #fff); border:1px solid var(--line); border-radius:8px; }
     </style>
   </head>
   <body>
@@ -3176,6 +3295,25 @@ function renderAdminPage(initialAuthenticated: boolean): string {
             <div class="stat"><span class="muted">扫描成功率</span><b id="scanSuccessRate">-</b></div>
             <div class="stat"><span class="muted">扫描平均耗时</span><b id="scanAvgDuration">-</b></div>
             <div class="stat"><span class="muted">目录版本</span><b class="mono" id="catalogVersion">-</b></div>
+          </div>
+          <div class="curve-wrap">
+            <div class="curve-head">
+              <div class="curve-legend">
+                <span class="item"><span class="dot total"></span>累计用户数</span>
+                <span class="item"><span class="dot daily"></span>日活用户数</span>
+              </div>
+              <div class="row">
+                <span class="muted">曲线周期</span>
+                <select id="userCurveDays">
+                  <option value="14">14天</option>
+                  <option value="30" selected>30天</option>
+                  <option value="60">60天</option>
+                  <option value="90">90天</option>
+                </select>
+                <span class="muted" id="userCurveHint">-</span>
+              </div>
+            </div>
+            <div id="userCurveChart" class="curve-chart" role="img" aria-label="用户趋势曲线"></div>
           </div>
           <div class="row" style="margin-top:12px">
             <button id="startScanBtn" class="primary">手动触发扫描</button>
@@ -3311,9 +3449,11 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         </div>
       </div>
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
     <script>
       const state = { authenticated: ${initialAuthenticated ? "true" : "false"}, selectedUser: "" };
       const byId = (id) => document.getElementById(id);
+      let userCurveChart = null;
 
       async function request(path, options) {
         const res = await fetch(path, { credentials: "include", ...options });
@@ -3369,7 +3509,8 @@ function renderAdminPage(initialAuthenticated: boolean): string {
 
       async function loadStats() {
         const window = byId("activeWindow").value || "1d";
-        const query = new URLSearchParams({ window });
+        const curveDays = byId("userCurveDays").value || "30";
+        const query = new URLSearchParams({ window, curve_days: curveDays });
         const s = await request("/admin/api/stats/overview?" + query.toString());
         byId("totalUsers").textContent = s.total_users || 0;
         byId("activeUsers").textContent = s.active_users || 0;
@@ -3387,6 +3528,8 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         byId("scanAvgDuration").textContent = formatDuration(s.scan_avg_duration_ms || 0);
         byId("catalogVersion").textContent = s.catalog_version || "-";
         byId("overviewHint").textContent = "目录缓存: " + (s.catalog_fetched_at || "-") + " | 排行榜日期: " + (s.ranking_day || "-");
+        byId("userCurveHint").textContent = "周期 " + (s.curve_days || curveDays) + " 天";
+        renderUserCurve(Array.isArray(s.user_curve) ? s.user_curve : []);
       }
 
       async function loadCatalog(forceRefresh, customOffset, customLimit) {
@@ -3691,6 +3834,102 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         return Math.round(value / 60000) + "m";
       }
 
+      function renderUserCurve(points) {
+        const chartEl = byId("userCurveChart");
+        if (!chartEl) return;
+        const list = Array.isArray(points) ? points : [];
+        if (!window.echarts) {
+          chartEl.innerHTML = "<div style='padding:12px;color:#6b7280;font-size:12px'>ECharts 加载失败，无法渲染曲线</div>";
+          return;
+        }
+        if (!userCurveChart) {
+          userCurveChart = window.echarts.init(chartEl, null, { renderer: "canvas" });
+          userCurveChart.on("click", function (params) {
+            if (!params || typeof params.dataIndex !== "number") return;
+            const item = list[params.dataIndex];
+            if (!item) return;
+            byId("userCurveHint").textContent =
+              item.day + " | 累计用户 " + Number(item.total_users || 0) + " | 日活用户 " + Number(item.daily_active_users || 0);
+          });
+        }
+        if (list.length === 0) {
+          userCurveChart.clear();
+          userCurveChart.setOption({
+            title: {
+              text: "暂无用户趋势数据",
+              left: 12,
+              top: 12,
+              textStyle: { color: "#6b7280", fontSize: 12, fontWeight: 400 },
+            },
+            xAxis: { show: false, type: "category", data: [] },
+            yAxis: { show: false, type: "value" },
+            series: [],
+          });
+          return;
+        }
+        const xData = list.map((item) => item.day);
+        const totalSeries = list.map((item) => Number(item.total_users || 0));
+        const activeSeries = list.map((item) => Number(item.daily_active_users || 0));
+        const yMax = Math.max(1, ...totalSeries, ...activeSeries);
+        userCurveChart.setOption({
+          animation: true,
+          grid: { left: 48, right: 20, top: 18, bottom: 32 },
+          tooltip: {
+            trigger: "axis",
+            backgroundColor: "rgba(17,24,39,0.92)",
+            borderWidth: 0,
+            textStyle: { color: "#fff", fontSize: 12 },
+            formatter: function (params) {
+              if (!Array.isArray(params) || params.length === 0) return "";
+              const idx = params[0].dataIndex;
+              const item = list[idx];
+              if (!item) return "";
+              return [
+                "<div>" + item.day + "</div>",
+                "<div>累计用户: " + Number(item.total_users || 0) + "</div>",
+                "<div>日活用户: " + Number(item.daily_active_users || 0) + "</div>",
+              ].join("");
+            },
+          },
+          xAxis: {
+            type: "category",
+            data: xData,
+            boundaryGap: false,
+            axisLabel: { color: "#6b7280", fontSize: 11 },
+            axisLine: { lineStyle: { color: "#d1d5db" } },
+          },
+          yAxis: {
+            type: "value",
+            min: 0,
+            max: yMax,
+            axisLabel: { color: "#6b7280", fontSize: 11 },
+            splitLine: { lineStyle: { color: "#eef2f7" } },
+          },
+          series: [
+            {
+              name: "累计用户",
+              type: "line",
+              smooth: true,
+              showSymbol: true,
+              symbolSize: 6,
+              itemStyle: { color: "#0f766e" },
+              lineStyle: { width: 2.5, color: "#0f766e" },
+              data: totalSeries,
+            },
+            {
+              name: "日活用户",
+              type: "line",
+              smooth: true,
+              showSymbol: true,
+              symbolSize: 6,
+              itemStyle: { color: "#2563eb" },
+              lineStyle: { width: 2.2, color: "#2563eb" },
+              data: activeSeries,
+            },
+          ],
+        }, { notMerge: true });
+      }
+
       setupTabs();
       byId("loginBtn").addEventListener("click", login);
       byId("password").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
@@ -3704,6 +3943,7 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       byId("refreshUserSkillBtn").addEventListener("click", () => loadUserSkills(state.selectedUser));
       byId("refreshOverviewBtn").addEventListener("click", loadStats);
       byId("activeWindow").addEventListener("change", loadStats);
+      byId("userCurveDays").addEventListener("change", loadStats);
       byId("startScanBtn").addEventListener("click", startScan);
       byId("stopScanBtn").addEventListener("click", stopScan);
       byId("retryFailedScanBtn").addEventListener("click", retryFailedScan);
@@ -3712,6 +3952,7 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       byId("catalogQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") loadCatalog(false, 0); });
       byId("userQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") { byId("userOffset").value = "0"; loadUsers(); } });
       byId("userSkillQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") { byId("userSkillOffset").value = "0"; loadUserSkills(state.selectedUser); } });
+      window.addEventListener("resize", () => { if (userCurveChart) userCurveChart.resize(); });
 
       loadSession().then(loadAll);
     </script>
