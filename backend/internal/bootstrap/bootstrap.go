@@ -135,7 +135,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		api.WithSettingsAccounts(accountRepo),
 		api.WithSettingsCredentialCipher(credentialCipher),
 	)
-	toolingHandler := api.NewToolingHandler()
+	toolingHandler := api.NewToolingHandler(api.WithToolingHTTPClient(upstreamHTTPClient))
 	apiMux.Handle("/settings/codex/backup", settingsHandler)
 	apiMux.Handle("/settings/codex/backups", settingsHandler)
 	apiMux.Handle("/settings/codex/backups/", settingsHandler)

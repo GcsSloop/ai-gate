@@ -47,6 +47,8 @@ var skillMetricsReportMu sync.Mutex
 var skillMetricsHeartbeatHomes sync.Map
 var toolingAnonymousIDCache sync.Map
 var defaultToolingSkillMetricsBaseURL = defaultSkillMetricsBaseURL
+var toolingHTTPClientMu sync.RWMutex
+var toolingHTTPClientOverride *http.Client
 
 type defaultSkillRepoSeed struct {
 	Platform string
@@ -61,8 +63,34 @@ type ToolingHandler struct {
 	skillDiscoveryRefreshInFlight atomic.Bool
 }
 
-func NewToolingHandler() *ToolingHandler {
-	return &ToolingHandler{}
+type ToolingHandlerOption func(*ToolingHandler)
+
+func WithToolingHTTPClient(client *http.Client) ToolingHandlerOption {
+	return func(_ *ToolingHandler) {
+		toolingHTTPClientMu.Lock()
+		defer toolingHTTPClientMu.Unlock()
+		toolingHTTPClientOverride = client
+	}
+}
+
+func NewToolingHandler(opts ...ToolingHandlerOption) *ToolingHandler {
+	handler := &ToolingHandler{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(handler)
+		}
+	}
+	return handler
+}
+
+func toolingHTTPClient() *http.Client {
+	toolingHTTPClientMu.RLock()
+	client := toolingHTTPClientOverride
+	toolingHTTPClientMu.RUnlock()
+	if client != nil {
+		return client
+	}
+	return http.DefaultClient
 }
 
 type toolingConfig struct {
@@ -1677,7 +1705,7 @@ func resolveGitHubRepoBranches(owner string, name string) ([]string, string, err
 	params := req.URL.Query()
 	params.Set("per_page", "100")
 	req.URL.RawQuery = params.Encode()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1706,7 +1734,7 @@ func fetchGitHubDefaultBranch(owner string, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -1732,7 +1760,7 @@ func resolveGitLabRepoBranches(owner string, name string) ([]string, string, err
 	params := req.URL.Query()
 	params.Set("per_page", "100")
 	req.URL.RawQuery = params.Encode()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return nil, "", err
 	}
@@ -2257,7 +2285,7 @@ func fetchCentralTrackedSkillRepos(registryURL string) ([]skillRepoRecord, error
 	if token := strings.TrimSpace(os.Getenv("AIGATE_SKILL_REPO_REGISTRY_TOKEN")); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -2376,7 +2404,7 @@ func fetchGitHubRepoStarsCount(owner string, name string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return 0, err
 	}
@@ -3185,7 +3213,7 @@ func searchGitHubRepos(query string) ([]repoSearchResult, error) {
 	params.Set("q", query+" skill")
 	params.Set("per_page", "8")
 	req.URL.RawQuery = params.Encode()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -3231,7 +3259,7 @@ func searchGitLabRepos(query string) ([]repoSearchResult, error) {
 	params.Set("search", query)
 	params.Set("per_page", "8")
 	req.URL.RawQuery = params.Encode()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -3708,7 +3736,7 @@ func fetchCentralSkillsCatalog(baseURL string) (centralDiscoveredSkillResponse, 
 		return centralDiscoveredSkillResponse{}, err
 	}
 	req.Header.Set("User-Agent", "ai-gate")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return centralDiscoveredSkillResponse{}, err
 	}
@@ -3729,7 +3757,7 @@ func fetchCentralRecommendedTop10(baseURL string) ([]string, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "ai-gate")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -4099,7 +4127,7 @@ func sendSkillMetricsInstallEvent(baseURL string, payload map[string]string) (in
 	if token := strings.TrimSpace(os.Getenv("AIGATE_SKILL_METRICS_INGEST_TOKEN")); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return 0, err
 	}
@@ -4201,7 +4229,7 @@ func fetchGitHubArchiveFiles(repo skillRepoRecord, match func(string) bool) (map
 		if err != nil {
 			return nil, err
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := toolingHTTPClient().Do(req)
 		if err != nil {
 			return nil, err
 		}
@@ -4279,7 +4307,7 @@ func discoverGitLabRepoSkills(repo skillRepoRecord, installed map[string]discove
 	params.Set("recursive", "true")
 	params.Set("per_page", "100")
 	req.URL.RawQuery = params.Encode()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -4318,7 +4346,7 @@ func fetchGitLabFile(repo skillRepoRecord, projectID string, path string) (strin
 	params := req.URL.Query()
 	params.Set("ref", repo.Branch)
 	req.URL.RawQuery = params.Encode()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -4797,7 +4825,7 @@ func fetchGitHubSkillTree(repo skillRepoRecord) ([]struct {
 	params.Set("recursive", "1")
 	req.URL.RawQuery = params.Encode()
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -4831,7 +4859,7 @@ func fetchGitLabSkillTree(repo skillRepoRecord) ([]struct {
 	params.Set("recursive", "true")
 	params.Set("per_page", "100")
 	req.URL.RawQuery = params.Encode()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -5001,7 +5029,7 @@ func fetchGitHubSkillFilesViaTree(repo skillRepoRecord, prefix string) (map[stri
 	params.Set("recursive", "1")
 	req.URL.RawQuery = params.Encode()
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -5047,7 +5075,7 @@ func fetchGitHubBlob(repo skillRepoRecord, sha string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -5085,7 +5113,7 @@ func fetchGitLabSkillFiles(repo skillRepoRecord, sourcePath string) (map[string]
 	params.Set("recursive", "true")
 	params.Set("per_page", "100")
 	req.URL.RawQuery = params.Encode()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := toolingHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
