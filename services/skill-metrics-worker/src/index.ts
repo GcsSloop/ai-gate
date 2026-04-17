@@ -3210,7 +3210,7 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       .tab-panel { display:none; }
       .tab-panel.active { display:block; }
       .table-wrap { max-height: 420px; overflow:auto; border:1px solid var(--line); border-radius:10px; }
-      .list-wrap { max-height: 520px; overflow:auto; border:1px solid var(--line); border-radius:10px; padding:8px; background:#fff; }
+      .list-wrap { max-height: 620px; overflow:auto; border:1px solid var(--line); border-radius:10px; padding:8px; background:#fff; }
       .user-card { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:8px; background:#fff; }
       .user-card:last-child { margin-bottom:0; }
       .user-card .title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; }
@@ -3218,6 +3218,10 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       .kv { display:grid; grid-template-columns: 130px 1fr; gap:6px 10px; font-size:12px; }
       .kv .k { color:var(--muted); }
       .detail-panel { border:1px solid var(--line); border-radius:10px; padding:12px; background:#fff; }
+      .modal { position:fixed; inset:0; background:rgba(15,23,42,0.35); display:flex; align-items:center; justify-content:center; padding:20px; z-index:1000; }
+      .modal-card { width:min(1100px, 100%); max-height:90vh; overflow:auto; border:1px solid var(--line); border-radius:14px; background:#fff; padding:16px; box-shadow:0 16px 48px rgba(15,23,42,0.24); }
+      .detail-cards { display:grid; gap:12px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+      .detail-card { border:1px solid var(--line); border-radius:10px; padding:12px; background:#fff; min-width:0; }
       .progress-wrap { margin-top:10px; }
       .progress-track { width:100%; height:10px; border-radius:999px; background:#e5e7eb; overflow:hidden; }
       .progress-bar { height:100%; width:0%; background:linear-gradient(90deg,#0f766e,#14b8a6); transition:width .25s ease; }
@@ -3413,37 +3417,42 @@ function renderAdminPage(initialAuthenticated: boolean): string {
             <button id="refreshUsersBtn">刷新用户列表</button>
             <span class="muted" id="usersPageInfo">默认列表，点击查看详情</span>
           </div>
-          <div class="row" style="align-items:flex-start">
-            <div style="flex:1; min-width:360px">
-              <div class="list-wrap" id="userList"></div>
+          <div class="list-wrap" id="userList"></div>
+        </div>
+      </div>
+    </div>
+    <div id="userDetailModal" class="modal hidden">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-label="用户详情弹窗">
+        <div class="row" style="justify-content:space-between; margin-bottom:8px">
+          <div class="mono muted" id="userSkillTitle">用户详情</div>
+          <button id="closeUserDetailBtn">关闭</button>
+        </div>
+        <div class="detail-cards">
+          <div class="detail-card">
+            <div class="kv" id="userDetailKv" style="margin-top:4px">
+              <div class="k">匿名ID</div><div>-</div>
+              <div class="k">用户哈希</div><div>-</div>
+              <div class="k">最近活跃</div><div>-</div>
+              <div class="k">首次活跃</div><div>-</div>
+              <div class="k">安装技能数</div><div>-</div>
+              <div class="k">总事件数</div><div>-</div>
+              <div class="k">活跃天数</div><div>-</div>
+              <div class="k">客户端</div><div>-</div>
+              <div class="k">系统</div><div>-</div>
             </div>
-            <div style="flex:1; min-width:360px">
-              <div class="detail-panel">
-                <div class="mono muted" id="userSkillTitle">选择左侧用户</div>
-                <div class="kv" id="userDetailKv" style="margin-top:8px">
-                  <div class="k">匿名ID</div><div>-</div>
-                  <div class="k">用户哈希</div><div>-</div>
-                  <div class="k">最近活跃</div><div>-</div>
-                  <div class="k">首次活跃</div><div>-</div>
-                  <div class="k">安装技能数</div><div>-</div>
-                  <div class="k">总事件数</div><div>-</div>
-                  <div class="k">活跃天数</div><div>-</div>
-                  <div class="k">客户端</div><div>-</div>
-                  <div class="k">系统</div><div>-</div>
-                </div>
-              </div>
-              <div class="row" style="margin:8px 0">
-                <input id="userSkillQuery" placeholder="筛选 skill 名称" style="min-width:220px;max-width:100%" />
-                <input id="userSkillOffset" type="number" value="0" style="width:100px" />
-                <input id="userSkillLimit" type="number" value="100" style="width:100px" />
-                <button id="refreshUserSkillBtn">刷新明细</button>
-              </div>
-              <div class="table-wrap">
-                <table>
-                  <thead><tr><th>Skill</th><th>来源</th><th>次数</th><th>最近时间</th></tr></thead>
-                  <tbody id="userSkillRows"></tbody>
-                </table>
-              </div>
+          </div>
+          <div class="detail-card">
+            <div class="row" style="margin-bottom:8px">
+              <input id="userSkillQuery" placeholder="筛选 skill 名称" style="min-width:220px;max-width:100%" />
+              <input id="userSkillOffset" type="number" value="0" style="width:100px" />
+              <input id="userSkillLimit" type="number" value="100" style="width:100px" />
+              <button id="refreshUserSkillBtn">刷新明细</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Skill</th><th>来源</th><th>次数</th><th>最近时间</th></tr></thead>
+                <tbody id="userSkillRows"></tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -3754,17 +3763,18 @@ function renderAdminPage(initialAuthenticated: boolean): string {
               "<b class='mono'>" + (item.anonymous_id_prefix || "-") + "</b>" +
               "<button data-user='" + user + "'>查看详情</button>" +
             "</div>" +
-            "<div class='muted mono'>hash: " + summarizeId(user) + "</div>" +
+            "<div class='muted'>首次活跃: " + (item.first_seen || "-") + "</div>" +
             "<div class='muted'>最近活跃: " + (item.last_seen || "-") + "</div>" +
-            "<div class='muted'>安装技能数: " + Number(item.installs || 0) + " | 总事件: " + Number(item.total_events || 0) + "</div>" +
-            "<div class='muted'>客户端: " + (item.client_app || "-") + (item.client_version ? (" " + item.client_version) : "") + "</div>" +
-            "<div class='muted'>系统: " + [item.client_platform || "-", item.client_arch || "-"].join(" / ") + "</div>";
+            "<div class='muted'>总事件: " + Number(item.total_events || 0) + " | 安装技能数: " + Number(item.installs || 0) + "</div>" +
+            "<div class='muted'>操作系统: " + [item.client_platform || "-", item.client_arch || "-"].join(" / ") + "</div>" +
+            "<div class='muted'>版本号: " + (item.client_version || "-") + "</div>";
           list.appendChild(card);
         }
         byId("usersPageInfo").textContent = "共 " + (data.total || 0) + " 用户，当前 offset=" + (data.offset || 0) + "，limit=" + (data.limit || 0);
         list.querySelectorAll("button[data-user]").forEach((btn) => {
           btn.addEventListener("click", async () => {
             state.selectedUser = btn.getAttribute("data-user") || "";
+            openUserDetailModal();
             await loadUserDetail(state.selectedUser);
             await loadUserSkills(state.selectedUser);
           });
@@ -3793,9 +3803,6 @@ function renderAdminPage(initialAuthenticated: boolean): string {
 
       async function loadUserSkills(user) {
         if (!user) return;
-        if (!byId("userSkillTitle").textContent || byId("userSkillTitle").textContent === "选择左侧用户") {
-          byId("userSkillTitle").textContent = user;
-        }
         const query = new URLSearchParams();
         query.set("limit", String(Number(byId("userSkillLimit").value || 100)));
         query.set("offset", String(Number(byId("userSkillOffset").value || 0)));
@@ -3814,11 +3821,12 @@ function renderAdminPage(initialAuthenticated: boolean): string {
         }
       }
 
-      function summarizeId(value) {
-        const text = String(value || "").trim();
-        if (!text) return "-";
-        if (text.length <= 14) return text;
-        return text.slice(0, 10) + "..." + text.slice(-4);
+      function openUserDetailModal() {
+        byId("userDetailModal").classList.remove("hidden");
+      }
+
+      function closeUserDetailModal() {
+        byId("userDetailModal").classList.add("hidden");
       }
 
       async function loadAll() {
@@ -3941,6 +3949,13 @@ function renderAdminPage(initialAuthenticated: boolean): string {
       byId("refreshRankBtn").addEventListener("click", loadRanking);
       byId("refreshUsersBtn").addEventListener("click", loadUsers);
       byId("refreshUserSkillBtn").addEventListener("click", () => loadUserSkills(state.selectedUser));
+      byId("closeUserDetailBtn").addEventListener("click", closeUserDetailModal);
+      byId("userDetailModal").addEventListener("click", (e) => {
+        if (e.target === byId("userDetailModal")) closeUserDetailModal();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeUserDetailModal();
+      });
       byId("refreshOverviewBtn").addEventListener("click", loadStats);
       byId("activeWindow").addEventListener("change", loadStats);
       byId("userCurveDays").addEventListener("change", loadStats);
