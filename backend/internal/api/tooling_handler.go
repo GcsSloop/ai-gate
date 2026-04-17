@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gcssloop/codex-router/backend/internal/buildinfo"
 	toml "github.com/pelletier/go-toml/v2"
 )
 
@@ -4074,11 +4075,7 @@ func toolingClientTelemetryMeta() map[string]string {
 		"client_platform": runtime.GOOS,
 		"client_arch":     runtime.GOARCH,
 	}
-	if version := strings.TrimSpace(firstNonEmpty(
-		os.Getenv("AIGATE_APP_VERSION"),
-		os.Getenv("AIGATE_VERSION"),
-		os.Getenv("APP_VERSION"),
-	)); version != "" {
+	if version := strings.TrimSpace(buildinfo.Version()); version != "" {
 		meta["client_version"] = version
 	}
 	return meta
