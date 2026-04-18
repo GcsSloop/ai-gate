@@ -20,6 +20,8 @@ vi.mock("../../lib/api", async () => {
     invalidateToolingInstalledSkillsEnrichedCache: vi.fn(),
     getToolingDiscoveredSkills: vi.fn(),
     refreshToolingDiscoveredSkills: vi.fn(),
+    readCachedToolingState: vi.fn(),
+    writeCachedToolingState: vi.fn(),
     installToolingDiscoveredSkill: vi.fn(),
     searchToolingRepos: vi.fn(),
     resolveToolingRepo: vi.fn(),
@@ -233,6 +235,8 @@ describe("ToolingPage", () => {
         ],
       }),
     );
+    vi.mocked((api as typeof api & { readCachedToolingState: typeof vi.fn }).readCachedToolingState).mockReturnValue(null);
+    vi.mocked((api as typeof api & { writeCachedToolingState: typeof vi.fn }).writeCachedToolingState).mockImplementation(() => {});
     vi.mocked((api as typeof api & { installToolingDiscoveredSkill: typeof vi.fn }).installToolingDiscoveredSkill).mockResolvedValue({
       applied: 1,
       enabled: true,
@@ -434,7 +438,7 @@ describe("ToolingPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /发现技能/ }));
 
     const dialog = await screen.findByRole("dialog", { name: /发现技能/ });
-    expect(vi.mocked(api.refreshToolingDiscoveredSkills)).toHaveBeenCalledWith({ limit: 80, offset: 0, query: "" });
+    expect(vi.mocked(api.getToolingDiscoveredSkills)).toHaveBeenCalledWith({ limit: 80, offset: 0, query: "" });
     expect(within(dialog).getByPlaceholderText("搜索发现的技能")).toBeInTheDocument();
     expect(await within(dialog).findByText("最新索引")).toBeInTheDocument();
     expect(within(dialog).getByText("2 skills")).toBeInTheDocument();
@@ -446,7 +450,7 @@ describe("ToolingPage", () => {
     vi.mocked((api as typeof api & { getToolingSkillsState: typeof vi.fn }).getToolingSkillsState)
       .mockResolvedValueOnce(buildToolingState())
       .mockImplementation(() => new Promise(() => {}));
-    vi.mocked(api.refreshToolingDiscoveredSkills)
+    vi.mocked(api.getToolingDiscoveredSkills)
       .mockResolvedValueOnce(buildDiscoveredSkillResponse())
       .mockResolvedValueOnce(buildDiscoveredSkillResponse())
       .mockImplementationOnce(() => new Promise(() => {}));
@@ -475,7 +479,7 @@ describe("ToolingPage", () => {
     const dialog = await screen.findByRole("dialog", { name: /发现技能/ });
     fireEvent.click(within(dialog).getByRole("button", { name: "刷新技能索引" }));
 
-    await waitFor(() => expect(vi.mocked(api.refreshToolingDiscoveredSkills)).toHaveBeenCalledWith({ limit: 80, offset: 0, query: "" }));
+    await waitFor(() => expect(vi.mocked(api.getToolingDiscoveredSkills)).toHaveBeenCalledWith({ limit: 80, offset: 0, query: "" }));
 
     fireEvent.click(within(dialog).getByRole("button", { name: "查看 Alpha Skill 的仓库页面" }));
     expect(vi.mocked(desktopShell.openExternalUrl)).toHaveBeenCalledWith("https://github.com/openai/codex-skills/tree/main/skills/alpha");
@@ -519,7 +523,6 @@ describe("ToolingPage", () => {
         },
       ],
     });
-    vi.mocked((api as typeof api & { refreshToolingDiscoveredSkills: typeof vi.fn }).refreshToolingDiscoveredSkills).mockResolvedValue(discoveredState);
     vi.mocked((api as typeof api & { getToolingDiscoveredSkills: typeof vi.fn }).getToolingDiscoveredSkills).mockResolvedValue(discoveredState);
     render(<ToolingPage mode="skills" t={(text) => text} />);
 
@@ -534,7 +537,7 @@ describe("ToolingPage", () => {
   });
 
   it("searches discovered skills on Enter and calls server only once per confirmed query", async () => {
-    vi.mocked(api.refreshToolingDiscoveredSkills)
+    vi.mocked(api.getToolingDiscoveredSkills)
       .mockResolvedValueOnce(
         buildDiscoveredSkillResponse({
           indexed_total: 35,
@@ -567,7 +570,25 @@ describe("ToolingPage", () => {
     fireEvent.change(search, { target: { value: "alpha" } });
     fireEvent.keyDown(search, { key: "Enter", code: "Enter" });
     await within(dialog).findByText("Alpha Skill");
-    expect(vi.mocked(api.refreshToolingDiscoveredSkills)).toHaveBeenLastCalledWith({ limit: 80, offset: 0, query: "alpha" });
+    expect(vi.mocked(api.getToolingDiscoveredSkills)).toHaveBeenLastCalledWith({ limit: 80, offset: 0, query: "alpha" });
+  });
+
+  it("renders cached tooling state immediately and updates state cache after background refresh", async () => {
+    const cached = buildToolingState();
+    const deferred = createDeferred<api.ToolingState>();
+    vi.mocked((api as typeof api & { readCachedToolingState: typeof vi.fn }).readCachedToolingState).mockReturnValue(cached);
+    vi.mocked(api.getToolingState).mockImplementation(() => deferred.promise);
+
+    render(<ToolingPage mode="skills" t={(text) => text} />);
+
+    expect(screen.getByText("Skill 技能")).toBeInTheDocument();
+    expect(screen.getByText("superpowers")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+
+    deferred.resolve(cached);
+    await waitFor(() =>
+      expect(vi.mocked((api as typeof api & { writeCachedToolingState: typeof vi.fn }).writeCachedToolingState)).toHaveBeenCalledWith(cached),
+    );
   });
 
   it("renders the minimal mcp management layout and toggles codex sync", async () => {

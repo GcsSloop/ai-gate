@@ -30,7 +30,7 @@ func TestSkillDiscoveryCacheRefreshDue(t *testing.T) {
 	if due := skillDiscoveryCacheRefreshDue(skillDiscoveryCache{
 		FetchedAt: now.Add(-25 * time.Hour).Format(time.RFC3339),
 	}); !due {
-		t.Fatal("expected cache due when fetched_at is older than 24h")
+		t.Fatal("expected cache due when fetched_at is older than minimum refresh interval")
 	}
 }
 
@@ -96,5 +96,55 @@ func TestToolingHandlerListDiscoveredSkillsReadsCacheOnly(t *testing.T) {
 	}
 	if len(payload.Items) != 1 || payload.Items[0].Name != "Alpha Skill" {
 		t.Fatalf("unexpected paged items: %#v", payload.Items)
+	}
+}
+
+func TestToolingHandlerListDiscoveredSkillsIgnoresRefreshFlagAndReturnsCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cache := skillDiscoveryCache{
+		FetchedAt:         timeNowUTC().Add(-1 * time.Hour).Format(time.RFC3339),
+		NextAutoRefreshAt: timeNowUTC().Add(6 * time.Hour).Format(time.RFC3339),
+		Items: []discoveredSkillRecord{
+			{
+				ID:         "github:openai/skills:main:skills/alpha",
+				Name:       "Alpha Skill",
+				Platform:   "github",
+				RepoOwner:  "openai",
+				RepoName:   "skills",
+				Branch:     "main",
+				SourcePath: "skills/alpha",
+			},
+		},
+	}
+	if err := os.MkdirAll(filepath.Dir(skillDiscoveryCachePath(home)), 0o755); err != nil {
+		t.Fatalf("mkdir cache dir: %v", err)
+	}
+	if err := saveSkillDiscoveryCache(home, cache); err != nil {
+		t.Fatalf("save cache: %v", err)
+	}
+
+	handler := NewToolingHandler()
+	req := httptest.NewRequest(http.MethodGet, "/tooling/skills/discover?refresh=1&limit=20&offset=0", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /tooling/skills/discover?refresh=1 status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload toolingSkillDiscoverResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !payload.Cached {
+		t.Fatal("expected cached=true when serving discovery cache")
+	}
+	if payload.Updating {
+		t.Fatal("expected updating=false when cache is not due, even with refresh=1")
+	}
+	if payload.Total != 1 || len(payload.Items) != 1 {
+		t.Fatalf("unexpected payload: total=%d items=%d", payload.Total, len(payload.Items))
 	}
 }

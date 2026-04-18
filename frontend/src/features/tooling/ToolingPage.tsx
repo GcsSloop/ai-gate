@@ -39,11 +39,12 @@ import {
   invalidateToolingInstalledSkillsEnrichedCache,
   installToolingDiscoveredSkill,
   removeToolingRepo,
-  refreshToolingDiscoveredSkills,
+  readCachedToolingState,
   resolveToolingRepo,
   reorderToolingRepos,
   updateToolingSkill,
   updateToolingRepo,
+  writeCachedToolingState,
   type ToolingDiscoveredSkill,
   type ToolingInstalledSkillEnriched,
   type ToolingMcpServer,
@@ -94,9 +95,10 @@ const managedClients: ManagedClientDescriptor[] = [
 ];
 
 export function ToolingPage({ mode, t }: ToolingPageProps) {
+  const cachedToolingState = readCachedToolingState();
   const [messageApi, contextHolder] = message.useMessage();
-  const [loading, setLoading] = useState(true);
-  const [state, setState] = useState<ToolingState | null>(null);
+  const [loading, setLoading] = useState(() => cachedToolingState === null);
+  const [state, setState] = useState<ToolingState | null>(() => cachedToolingState);
   const [installedSkillEnrichedByManagedName, setInstalledSkillEnrichedByManagedName] = useState<Record<string, ToolingInstalledSkillEnriched>>({});
   const [skillDiscoverOpen, setSkillDiscoverOpen] = useState(false);
   const [repoManagerOpen, setRepoManagerOpen] = useState(false);
@@ -125,6 +127,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   const repoResolveRequestRef = useRef(0);
   const repoDragSnapshotRef = useRef<ToolingSkillRepo[] | null>(null);
   const discoveryRequestRef = useRef(0);
+  const hasBootstrappedStateRef = useRef(cachedToolingState !== null);
   const discoveryListRef = useRef<HTMLDivElement | null>(null);
   const [skillBusyName, setSkillBusyName] = useState<string | null>(null);
   const [mcpBusyId, setMcpBusyId] = useState<string | null>(null);
@@ -141,6 +144,8 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     try {
       const next = mode === "skills" ? await getToolingSkillsState() : await getToolingMcpState();
       setState(next);
+      writeCachedToolingState(next);
+      hasBootstrappedStateRef.current = true;
       if (mode !== "skills") {
         setInstalledSkillEnrichedByManagedName({});
       } else {
@@ -158,7 +163,9 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
         }
       }
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : t("加载技能与 MCP 管理失败"));
+      if (!hasBootstrappedStateRef.current) {
+        void messageApi.error(error instanceof Error ? error.message : t("加载技能与 MCP 管理失败"));
+      }
     } finally {
       if (!background) {
         setLoading(false);
@@ -167,11 +174,11 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
   }
 
   useEffect(() => {
-    void reload();
+    void reload({ background: hasBootstrappedStateRef.current });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  async function loadDiscoveredSkillsPage(params?: { reset?: boolean; query?: string; forceStatus?: string; refresh?: boolean }) {
+  async function loadDiscoveredSkillsPage(params?: { reset?: boolean; query?: string; forceStatus?: string }) {
     const reset = params?.reset ?? false;
     const query = params?.query ?? discoveryQuery;
     const requestId = discoveryRequestRef.current + 1;
@@ -188,8 +195,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     }
     try {
       const nextOffset = reset ? 0 : discoveryOffset;
-      const request = params?.refresh ? refreshToolingDiscoveredSkills : getToolingDiscoveredSkills;
-      const response = await request({ limit: DISCOVERY_PAGE_SIZE, offset: nextOffset, query });
+      const response = await getToolingDiscoveredSkills({ limit: DISCOVERY_PAGE_SIZE, offset: nextOffset, query });
       if (discoveryRequestRef.current !== requestId) {
         return;
       }
@@ -219,7 +225,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
     if (!skillDiscoverOpen || mode !== "skills") {
       return;
     }
-    void loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("最新索引"), refresh: true });
+    void loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("最新缓存") });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [skillDiscoverOpen, mode, discoveryQuery]);
 
@@ -400,7 +406,7 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
 
   async function handleDiscoveryRefresh() {
     try {
-      await loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("后台更新中"), refresh: true });
+      await loadDiscoveredSkillsPage({ reset: true, query: discoveryQuery, forceStatus: t("最新缓存") });
       await reload({ background: true });
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("刷新发现技能失败"));
