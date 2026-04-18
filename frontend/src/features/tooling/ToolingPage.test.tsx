@@ -11,6 +11,8 @@ vi.mock("../../lib/api", async () => {
   return {
     ...actual,
     getToolingState: vi.fn(),
+    getToolingSkillsState: vi.fn(),
+    getToolingMcpState: vi.fn(),
     importToolingSkills: vi.fn(),
     updateToolingSkill: vi.fn(),
     deleteToolingSkill: vi.fn(),
@@ -204,7 +206,8 @@ function createDeferred<T>() {
 describe("ToolingPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(api.getToolingState).mockResolvedValue(buildToolingState());
+    vi.mocked(api.getToolingSkillsState).mockResolvedValue(buildToolingState());
+    vi.mocked(api.getToolingMcpState).mockResolvedValue(buildToolingState());
     vi.mocked(api.importToolingSkills).mockResolvedValue({ imported: 1 });
     vi.mocked(api.updateToolingSkill).mockResolvedValue({ applied: 1, enabled: true, skill_sync_method: "symlink" });
     vi.mocked(api.deleteToolingSkill).mockResolvedValue();
@@ -382,7 +385,7 @@ describe("ToolingPage", () => {
       managed_path: "/tmp/aigate/tooling/skills/superpowers",
       installed_apps: { codex: true },
     };
-    vi.mocked(api.getToolingState)
+    vi.mocked(api.getToolingSkillsState)
       .mockResolvedValueOnce({
         ...buildToolingState(),
         installed_skills: [managedCollection],
@@ -440,7 +443,7 @@ describe("ToolingPage", () => {
   });
 
   it("supports manual refresh, viewing source repo, and installing a discovered skill", async () => {
-    vi.mocked((api as typeof api & { getToolingState: typeof vi.fn }).getToolingState)
+    vi.mocked((api as typeof api & { getToolingSkillsState: typeof vi.fn }).getToolingSkillsState)
       .mockResolvedValueOnce(buildToolingState())
       .mockImplementation(() => new Promise(() => {}));
     vi.mocked(api.refreshToolingDiscoveredSkills)
@@ -594,7 +597,7 @@ describe("ToolingPage", () => {
 
   it("shows binary mcp servers with friendly title and path as subtitle", async () => {
     const binaryPath = "/Applications/Pencil.app/Contents/Resources/app.asar.unpacked/out/mcp-server-darwin-arm64";
-    vi.mocked(api.getToolingState).mockResolvedValue({
+    vi.mocked(api.getToolingMcpState).mockResolvedValue({
       ...buildToolingState(),
       mcp_servers: [
         {
@@ -660,7 +663,7 @@ describe("ToolingPage", () => {
   it("keeps the current content visible while a toggle refresh is pending", async () => {
     const initialState = buildToolingState();
     const refreshDeferred = createDeferred<api.ToolingState>();
-    vi.mocked(api.getToolingState)
+    vi.mocked(api.getToolingSkillsState)
       .mockResolvedValueOnce(initialState)
       .mockImplementationOnce(() => refreshDeferred.promise);
 
