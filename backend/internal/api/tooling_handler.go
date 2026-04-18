@@ -36,7 +36,8 @@ const (
 	githubArchiveRetryMaxAttempts      = 3
 	githubArchiveRetryBaseDelay        = 1500 * time.Millisecond
 	githubRepoRequestInterval          = 250 * time.Millisecond
-	skillDiscoveryAutoRefreshJitterMax = 3 * time.Hour
+	skillDiscoveryAutoRefreshMin       = 12 * time.Hour
+	skillDiscoveryAutoRefreshJitterMax = 12 * time.Hour
 	skillMetricsHeartbeatName          = "__client_active__"
 	skillMetricsHeartbeatSource        = "__aigate_client__"
 	skillMetricsActiveReportInterval   = time.Hour
@@ -680,22 +681,13 @@ func (h *ToolingHandler) listDiscoveredSkills(w http.ResponseWriter, r *http.Req
 	queryValues := r.URL.Query()
 	limit, offset := parseDiscoveredPaging(queryValues)
 	queryText := strings.TrimSpace(queryValues.Get("q"))
-	forceRefresh := isTruthyEnv(queryValues.Get("refresh"))
-	liveRefresh := isTruthyEnv(queryValues.Get("live"))
-
-	if forceRefresh && liveRefresh {
-		if _, _, err := h.refreshSkillDiscovery(home); err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-	}
 
 	cache, cacheOK := loadSkillDiscoveryCache(home)
 	if !cacheOK {
 		cache = skillDiscoveryCache{Items: []discoveredSkillRecord{}}
 	}
 
-	shouldRefresh := !liveRefresh && (forceRefresh || skillDiscoveryCacheRefreshDue(cache))
+	shouldRefresh := skillDiscoveryCacheRefreshDue(cache)
 	if shouldRefresh && !shouldDisableSkillDiscoveryBackgroundRefresh() {
 		h.triggerSkillDiscoveryRefresh(home)
 	}
@@ -2272,7 +2264,7 @@ func skillDiscoveryCacheRefreshDue(cache skillDiscoveryCache) bool {
 	if err != nil {
 		return true
 	}
-	return now.Sub(parsedFetchedAt) >= 24*time.Hour
+	return now.Sub(parsedFetchedAt) >= skillDiscoveryAutoRefreshMin
 }
 
 func (h *ToolingHandler) refreshSkillDiscovery(home string) ([]discoveredSkillRecord, string, error) {
@@ -2499,7 +2491,7 @@ func fetchGitHubRepoStarsCount(owner string, name string) (int, error) {
 }
 
 func nextSkillDiscoveryAutoRefreshAt(now time.Time) time.Time {
-	return now.Add(24*time.Hour + randomDuration(skillDiscoveryAutoRefreshJitterMax))
+	return now.Add(skillDiscoveryAutoRefreshMin + randomDuration(skillDiscoveryAutoRefreshJitterMax))
 }
 
 func randomDuration(max time.Duration) time.Duration {

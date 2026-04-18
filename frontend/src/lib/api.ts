@@ -1023,6 +1023,46 @@ export async function getToolingMcpState(): Promise<ToolingState> {
   return response.json();
 }
 
+const TOOLING_STATE_CACHE_KEY = "aigate:tooling:state:v1";
+let toolingStateCache: ToolingState | null = null;
+
+export function readCachedToolingState(): ToolingState | null {
+  if (toolingStateCache) {
+    return toolingStateCache;
+  }
+  if (typeof window === "undefined" || !window.localStorage) {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(TOOLING_STATE_CACHE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as {
+      payload?: ToolingState;
+    };
+    if (!parsed?.payload || typeof parsed.payload !== "object") {
+      return null;
+    }
+    toolingStateCache = parsed.payload;
+    return toolingStateCache;
+  } catch {
+    return null;
+  }
+}
+
+export function writeCachedToolingState(state: ToolingState): void {
+  toolingStateCache = state;
+  if (typeof window === "undefined" || !window.localStorage) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(TOOLING_STATE_CACHE_KEY, JSON.stringify({ payload: state }));
+  } catch {
+    // ignore cache persistence failures
+  }
+}
+
 const TOOLING_INSTALLED_ENRICHED_CACHE_TTL_MS = 5 * 60 * 1000;
 const TOOLING_INSTALLED_ENRICHED_CACHE_KEY = "aigate:tooling:installed-enriched:v1";
 let toolingInstalledEnrichedCache:
