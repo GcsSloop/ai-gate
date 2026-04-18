@@ -32,7 +32,8 @@ import {
   deleteToolingSkill,
   getToolingDiscoveredSkills,
   getToolingInstalledSkillsEnriched,
-  getToolingState,
+  getToolingMcpState,
+  getToolingSkillsState,
   importToolingMcpServers,
   importToolingSkills,
   invalidateToolingInstalledSkillsEnrichedCache,
@@ -138,19 +139,23 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
       setLoading(true);
     }
     try {
-      const next = await getToolingState();
+      const next = mode === "skills" ? await getToolingSkillsState() : await getToolingMcpState();
       setState(next);
-      try {
-        const enriched = await getToolingInstalledSkillsEnriched(next.installed_skills ?? []);
-        setInstalledSkillEnrichedByManagedName(
-          Object.fromEntries(
-            (enriched.items ?? [])
-              .filter((item) => typeof item.managed_name === "string" && item.managed_name.trim() !== "")
-              .map((item) => [item.managed_name.trim().toLowerCase(), item]),
-          ),
-        );
-      } catch {
+      if (mode !== "skills") {
         setInstalledSkillEnrichedByManagedName({});
+      } else {
+        try {
+          const enriched = await getToolingInstalledSkillsEnriched(next.installed_skills ?? []);
+          setInstalledSkillEnrichedByManagedName(
+            Object.fromEntries(
+              (enriched.items ?? [])
+                .filter((item) => typeof item.managed_name === "string" && item.managed_name.trim() !== "")
+                .map((item) => [item.managed_name.trim().toLowerCase(), item]),
+            ),
+          );
+        } catch {
+          setInstalledSkillEnrichedByManagedName({});
+        }
       }
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : t("加载技能与 MCP 管理失败"));
@@ -163,7 +168,8 @@ export function ToolingPage({ mode, t }: ToolingPageProps) {
 
   useEffect(() => {
     void reload();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
 
   async function loadDiscoveredSkillsPage(params?: { reset?: boolean; query?: string; forceStatus?: string; refresh?: boolean }) {
     const reset = params?.reset ?? false;

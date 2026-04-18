@@ -1007,6 +1007,22 @@ export async function getToolingState(): Promise<ToolingState> {
   return response.json();
 }
 
+export async function getToolingSkillsState(): Promise<ToolingState> {
+  const response = await fetch(apiPath("/tooling/skills/state"));
+  if (!response.ok) {
+    throw new Error("failed to load tooling skills state");
+  }
+  return response.json();
+}
+
+export async function getToolingMcpState(): Promise<ToolingState> {
+  const response = await fetch(apiPath("/tooling/mcp/state"));
+  if (!response.ok) {
+    throw new Error("failed to load tooling mcp state");
+  }
+  return response.json();
+}
+
 const TOOLING_INSTALLED_ENRICHED_CACHE_TTL_MS = 5 * 60 * 1000;
 const TOOLING_INSTALLED_ENRICHED_CACHE_KEY = "aigate:tooling:installed-enriched:v1";
 let toolingInstalledEnrichedCache:
@@ -1328,6 +1344,7 @@ async function requestToolingDiscoveredSkills(
   const search = buildDiscoverySearch(params);
   if (refresh) {
     search.set("refresh", "1");
+    search.set("live", "1");
   }
   const response = await fetch(apiPath(`/tooling/skills/discover?${search.toString()}`));
   if (!response.ok) {
