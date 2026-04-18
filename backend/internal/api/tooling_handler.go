@@ -50,6 +50,7 @@ var toolingAnonymousIDCache sync.Map
 var defaultToolingSkillMetricsBaseURL = defaultSkillMetricsBaseURL
 var toolingHTTPClientMu sync.RWMutex
 var toolingHTTPClientOverride *http.Client
+var skillDiscoveryAutoRefreshHomes sync.Map
 
 type defaultSkillRepoSeed struct {
 	Platform string
@@ -453,6 +454,10 @@ func (h *ToolingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/tooling/state":
 		h.getState(w)
+	case r.Method == http.MethodGet && r.URL.Path == "/tooling/skills/state":
+		h.getSkillsState(w)
+	case r.Method == http.MethodGet && r.URL.Path == "/tooling/mcp/state":
+		h.getMcpState(w)
 	case r.Method == http.MethodPut && r.URL.Path == "/tooling/settings":
 		h.updateSettings(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/tooling/skills/discover/install":
@@ -503,6 +508,18 @@ func (h *ToolingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ToolingHandler) getState(w http.ResponseWriter) {
+	h.writeToolingState(w, true, true)
+}
+
+func (h *ToolingHandler) getSkillsState(w http.ResponseWriter) {
+	h.writeToolingState(w, true, false)
+}
+
+func (h *ToolingHandler) getMcpState(w http.ResponseWriter) {
+	h.writeToolingState(w, false, true)
+}
+
+func (h *ToolingHandler) writeToolingState(w http.ResponseWriter, includeSkills bool, includeMCP bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -510,26 +527,47 @@ func (h *ToolingHandler) getState(w http.ResponseWriter) {
 	}
 
 	cfg := h.loadConfig(home)
-	cfg, _ = h.syncManagedCodexMcpServers(home, cfg)
 	clients := toolingClientStates(home)
-	skills := scanManagedSkills(home, clients)
-	ensureToolingClientActiveHeartbeat(home)
-	go reportToolingClientActive(home)
-	repoResults := defaultRepoSearchResults()
-	discoveredServers := discoverMcpServers(home)
-	servers := h.buildMcpViews(home, cfg)
+	skills := []managedSkillRecord{}
+	skillStats := skillStatsResponse{Total: 0, BySource: map[string]int{}}
+	skillRepos := []skillRepoRecord{}
+	repoResults := []repoSearchResult{}
+	discoveredServers := []toolingDiscoveredMcpServerView{}
+	servers := []toolingMcpServerView{}
+
+	if includeSkills {
+		skills = scanManagedSkills(home, clients)
+		skillStats = buildSkillStats(skills)
+		skillRepos = cfg.SkillRepos
+		repoResults = defaultRepoSearchResults()
+		ensureSkillDiscoveryAutoRefresh(home, h)
+		ensureToolingClientActiveHeartbeat(home)
+		go reportToolingClientActive(home)
+	}
+	if includeMCP {
+		cfg, _ = h.syncManagedCodexMcpServers(home, cfg)
+		discoveredServers = discoverMcpServers(home)
+		servers = h.buildMcpViews(home, cfg)
+	}
 
 	writeJSON(w, http.StatusOK, toolingStateResponse{
 		SkillSyncMethod:      normalizeSkillSyncMethod(cfg.SkillSyncMethod),
 		Clients:              clients,
-		SkillStats:           buildSkillStats(skills),
-		SkillRepos:           cfg.SkillRepos,
+		SkillStats:           skillStats,
+		SkillRepos:           skillRepos,
 		InstalledSkills:      skills,
 		RepoSearchResults:    repoResults,
 		DiscoveredMcpServers: discoveredServers,
-		McpTemplates:         toolingTemplates,
+		McpTemplates:         chooseMcpTemplates(includeMCP),
 		McpServers:           servers,
 	})
+}
+
+func chooseMcpTemplates(includeMCP bool) []mcpTemplateRecord {
+	if !includeMCP {
+		return []mcpTemplateRecord{}
+	}
+	return toolingTemplates
 }
 
 func (h *ToolingHandler) listInstalledSkillsEnriched(w http.ResponseWriter) {
@@ -643,13 +681,21 @@ func (h *ToolingHandler) listDiscoveredSkills(w http.ResponseWriter, r *http.Req
 	limit, offset := parseDiscoveredPaging(queryValues)
 	queryText := strings.TrimSpace(queryValues.Get("q"))
 	forceRefresh := isTruthyEnv(queryValues.Get("refresh"))
+	liveRefresh := isTruthyEnv(queryValues.Get("live"))
+
+	if forceRefresh && liveRefresh {
+		if _, _, err := h.refreshSkillDiscovery(home); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
 
 	cache, cacheOK := loadSkillDiscoveryCache(home)
 	if !cacheOK {
 		cache = skillDiscoveryCache{Items: []discoveredSkillRecord{}}
 	}
 
-	shouldRefresh := forceRefresh || skillDiscoveryCacheRefreshDue(cache)
+	shouldRefresh := !liveRefresh && (forceRefresh || skillDiscoveryCacheRefreshDue(cache))
 	if shouldRefresh && !shouldDisableSkillDiscoveryBackgroundRefresh() {
 		h.triggerSkillDiscoveryRefresh(home)
 	}
@@ -668,6 +714,33 @@ func (h *ToolingHandler) listDiscoveredSkills(w http.ResponseWriter, r *http.Req
 		Query:        queryText,
 		Items:        paged,
 	})
+}
+
+func ensureSkillDiscoveryAutoRefresh(home string, h *ToolingHandler) {
+	if shouldDisableSkillDiscoveryBackgroundRefresh() {
+		return
+	}
+	if strings.TrimSpace(home) == "" {
+		return
+	}
+	if _, exists := skillDiscoveryAutoRefreshHomes.LoadOrStore(home, struct{}{}); exists {
+		return
+	}
+	go func(homeDir string) {
+		checkAndRefresh := func() {
+			cache, _ := loadSkillDiscoveryCache(homeDir)
+			if !skillDiscoveryCacheRefreshDue(cache) {
+				return
+			}
+			h.triggerSkillDiscoveryRefresh(homeDir)
+		}
+		checkAndRefresh()
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			checkAndRefresh()
+		}
+	}(home)
 }
 
 func (h *ToolingHandler) installDiscoveredSkill(w http.ResponseWriter, r *http.Request) {

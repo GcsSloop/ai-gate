@@ -162,6 +162,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/tooling/skills/repos", toolingHandler)
 	apiMux.Handle("/tooling/skills/repos/search", toolingHandler)
 	apiMux.Handle("/tooling/skills/repos/", toolingHandler)
+	apiMux.Handle("/tooling/mcp/state", toolingHandler)
 	apiMux.Handle("/tooling/mcp/templates", toolingHandler)
 	apiMux.Handle("/tooling/mcp/servers", toolingHandler)
 	apiMux.Handle("/tooling/mcp/servers/", toolingHandler)
