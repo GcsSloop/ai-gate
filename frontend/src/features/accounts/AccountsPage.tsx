@@ -64,6 +64,7 @@ import {
   deleteAccount,
   duplicateAccount,
   fetchPPChatTokenLogs,
+  startOfficialAuth,
   getLuaUsageScript,
   importCurrentCodexAuth,
   importSharedAccount,
@@ -81,7 +82,7 @@ import {
   type AccountTestResult,
 } from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
-import { refreshDesktopTrayState } from "../../lib/desktop-shell";
+import { openExternalUrl, refreshDesktopTrayState } from "../../lib/desktop-shell";
 import type { AppLanguage, Translator } from "../../lib/i18n";
 import sourceClaudeCodeIcon from "../../assets/providers/claude-code.png";
 import sourceOpenAIIcon from "../../assets/providers/openai.png";
@@ -91,6 +92,7 @@ const { Title, Text } = Typography;
 
 const defaultBaseURL = "https://code.ppchat.vip/v1";
 type AddModalMode = "official" | "third_party" | "shared_import" | null;
+type OfficialEntryMode = "oauth" | "local_import";
 
 const statusColorMap: Record<string, string> = {
   active: "green",
@@ -685,6 +687,9 @@ export function AccountsPage({
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [internalAddModalMode, setInternalAddModalMode] =
     useState<AddModalMode>(null);
+  const [officialEntryMode, setOfficialEntryMode] =
+    useState<OfficialEntryMode>("oauth");
+  const [officialOAuthLaunching, setOfficialOAuthLaunching] = useState(false);
   const [editingAccount, setEditingAccount] = useState<AccountRecord | null>(
     null,
   );
@@ -757,6 +762,13 @@ export function AccountsPage({
     setInternalAddModalMode(externalAddModalMode);
     onAddModalModeConsumed?.();
   }, [externalAddModalMode, onAddModalModeConsumed]);
+
+  useEffect(() => {
+    if (internalAddModalMode !== "official") {
+      setOfficialEntryMode("oauth");
+      setOfficialOAuthLaunching(false);
+    }
+  }, [internalAddModalMode]);
 
   useEffect(() => {
     if (!detailAccount) {
@@ -955,6 +967,26 @@ export function AccountsPage({
     await refreshAll();
     void refreshDesktopTrayState();
     void messageApi.success(t("官方账户已导入"));
+  }
+
+  async function handleStartOfficialOAuth() {
+    setOfficialOAuthLaunching(true);
+    try {
+      let targetURL = "https://auth.openai.com/codex/device";
+      try {
+        const session = await startOfficialAuth();
+        const candidate = (session.authorization_url || "").trim();
+        if (/^https?:\/\//i.test(candidate)) {
+          targetURL = candidate;
+        }
+      } catch {
+        // Fallback to Codex device login URL when backend oauth metadata is unavailable.
+      }
+      await openExternalUrl(targetURL);
+      void messageApi.success(t("已打开 OAuth 登录页"));
+    } finally {
+      setOfficialOAuthLaunching(false);
+    }
   }
 
   async function handleImportShared(values: { payload: string }) {
@@ -1947,6 +1979,24 @@ export function AccountsPage({
           layout="vertical"
           onFinish={(values) => void handleCreateOfficial(values)}
         >
+          <Form.Item label={t("登录方式")}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button
+                type={officialEntryMode === "oauth" ? "primary" : "default"}
+                onClick={() => setOfficialEntryMode("oauth")}
+              >
+                {t("OAuth 登录")}
+              </Button>
+              <Button
+                type={
+                  officialEntryMode === "local_import" ? "primary" : "default"
+                }
+                onClick={() => setOfficialEntryMode("local_import")}
+              >
+                {t("导入本地")}
+              </Button>
+            </div>
+          </Form.Item>
           <Form.Item
             label={t("账户名称")}
             name="account_name"
@@ -1954,24 +2004,42 @@ export function AccountsPage({
           >
             <Input />
           </Form.Item>
-          <Text type="secondary">
-            {language === "en-US" ? (
-              <>
-                The app reads <code>~/.codex/auth.json</code> directly from the
-                current user directory.
-              </>
-            ) : (
-              <>
-                将直接读取当前用户目录下的 <code>~/.codex/auth.json</code>。
-              </>
-            )}
-          </Text>
+          {officialEntryMode === "oauth" ? (
+            <Text type="secondary">
+              {t(
+                "先完成 OAuth 授权，再点击导入。授权完成后将读取当前用户目录下的 ~/.codex/auth.json。",
+              )}
+            </Text>
+          ) : (
+            <Text type="secondary">
+              {language === "en-US" ? (
+                <>
+                  The app reads <code>~/.codex/auth.json</code> directly from
+                  the current user directory.
+                </>
+              ) : (
+                <>
+                  将直接读取当前用户目录下的 <code>~/.codex/auth.json</code>。
+                </>
+              )}
+            </Text>
+          )}
           <div className="modal-footer">
             <Button onClick={() => setInternalAddModalMode(null)}>
               {t("取消")}
             </Button>
+            {officialEntryMode === "oauth" ? (
+              <Button
+                onClick={() => void handleStartOfficialOAuth()}
+                loading={officialOAuthLaunching}
+              >
+                {t("打开 OAuth 登录页")}
+              </Button>
+            ) : null}
             <Button type="primary" htmlType="submit">
-              {t("导入")}
+              {officialEntryMode === "oauth"
+                ? t("导入已授权账号")
+                : t("导入")}
             </Button>
           </div>
         </Form>
