@@ -22,7 +22,7 @@ use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, Runtime, Size};
-use tauri_plugin_updater::{Update, UpdaterExt};
+use tauri_plugin_updater::{Update, UpdaterBuilder, UpdaterExt};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -190,9 +190,28 @@ struct AppSettingsPayload {
     lan_share_enabled: bool,
     proxy_host: String,
     proxy_port: u16,
+    upstream_proxy_mode: Option<String>,
+    upstream_proxy_url: Option<String>,
+    upstream_proxy_username: Option<String>,
+    upstream_proxy_password: Option<String>,
     auto_failover_enabled: bool,
     auto_backup_interval_hours: i32,
     backup_retention_count: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpstreamProxyMode {
+    System,
+    Direct,
+    Manual,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UpdaterProxyConfig {
+    mode: UpstreamProxyMode,
+    url: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -746,11 +765,87 @@ where
 }
 
 async fn fetch_update<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Update>, String> {
-    app.updater()
+    let mut builder = app.updater_builder();
+    if let Ok(proxy) = fetch_updater_proxy_config() {
+        builder = apply_updater_proxy_config(builder, &proxy)?;
+    }
+    builder
+        .build()
         .map_err(|err| format!("build updater failed: {err}"))?
         .check()
         .await
         .map_err(|err| format!("check update failed: {err}"))
+}
+
+fn fetch_updater_proxy_config() -> Result<UpdaterProxyConfig, String> {
+    let resp = request_backend("GET", "/ai-router/api/settings/app", "")?;
+    if resp.status >= 300 {
+        return Err(format!("load app settings for updater proxy failed: {}", resp.status));
+    }
+    parse_updater_proxy_config_from_settings(&resp.body)
+}
+
+fn parse_updater_proxy_config_from_settings(raw: &str) -> Result<UpdaterProxyConfig, String> {
+    let payload: AppSettingsPayload = serde_json::from_str(raw)
+        .map_err(|err| format!("parse app settings for updater proxy failed: {err}"))?;
+    let mode = match payload
+        .upstream_proxy_mode
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("system")
+    {
+        "direct" => UpstreamProxyMode::Direct,
+        "manual" => UpstreamProxyMode::Manual,
+        _ => UpstreamProxyMode::System,
+    };
+    let url = payload.upstream_proxy_url.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    let username = payload
+        .upstream_proxy_username
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let password = payload
+        .upstream_proxy_password
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    Ok(UpdaterProxyConfig {
+        mode,
+        url,
+        username,
+        password,
+    })
+}
+
+fn apply_updater_proxy_config(
+    builder: UpdaterBuilder,
+    proxy: &UpdaterProxyConfig,
+) -> Result<UpdaterBuilder, String> {
+    match proxy.mode {
+        UpstreamProxyMode::Direct => Ok(builder.no_proxy()),
+        UpstreamProxyMode::System => Ok(builder),
+        UpstreamProxyMode::Manual => {
+            let raw = proxy
+                .url
+                .as_ref()
+                .ok_or_else(|| "manual upstream proxy url is empty".to_string())?;
+            let mut parsed = reqwest::Url::parse(raw)
+                .map_err(|err| format!("parse upstream proxy url failed: {err}"))?;
+            if parsed.scheme().is_empty() || parsed.host_str().is_none() {
+                return Err("upstream proxy url must include scheme and host".to_string());
+            }
+            if !parsed.username().is_empty() {
+                return Ok(builder.proxy(parsed));
+            }
+            if let Some(username) = proxy.username.as_deref() {
+                parsed
+                    .set_username(username)
+                    .map_err(|_| "upstream proxy username contains invalid characters".to_string())?;
+                parsed
+                    .set_password(proxy.password.as_deref())
+                    .map_err(|_| "upstream proxy password contains invalid characters".to_string())?;
+            }
+            Ok(builder.proxy(parsed))
+        }
+    }
 }
 
 fn to_update_info_payload(
@@ -2188,7 +2283,8 @@ mod tests {
         append_recent_desktop_log, build_launch_agent_plist, clamp_recent_log_limit,
         current_backend_addr, current_settings_cache, decode_chunked_body, format_timeout_error,
         format_tray_title, load_settings_cache, map_backend_io_error, parse_account_menu_id,
-        parse_accounts_response, parse_proxy_status_response, persist_runtime_settings,
+        parse_accounts_response, parse_proxy_status_response,
+        parse_updater_proxy_config_from_settings, persist_runtime_settings,
         proxy_menu_enabled_states, request_backend, resolve_main_window_size,
         restart_sidecar_and_wait_ready, sanitize_main_window_size, should_attempt_sidecar_recovery,
         should_dispatch_resume_recovery, should_refresh_tray_after_action,
@@ -2200,9 +2296,9 @@ mod tests {
         wait_for_backend_ready, wait_for_backend_ready_with_probe, window_close_action,
         AppSettingsPayload, DesktopLogEntry, DesktopRuntime, DesktopSettingsCache, HttpResponse,
         UpdateInfoPayload, UpdateManagerState, UpdateProgressPayload, UpdateStatePayload,
-        UpdateStatus, WindowCloseAction, WindowSizeCache, DESKTOP_RUNTIME, MAIN_WINDOW_MIN_HEIGHT,
-        MAIN_WINDOW_MIN_WIDTH, SIDECAR_CHILD, SIDECAR_MACOS_NAME, SIDECAR_WINDOWS_NAME,
-        TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
+        UpdateStatus, UpstreamProxyMode, WindowCloseAction, WindowSizeCache, DESKTOP_RUNTIME,
+        MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH, SIDECAR_CHILD, SIDECAR_MACOS_NAME,
+        SIDECAR_WINDOWS_NAME, TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
         resolve_update_future_with_timeout,
     };
     use std::cell::RefCell;
@@ -2397,6 +2493,10 @@ mod tests {
             lan_share_enabled: true,
             proxy_host: "localhost".to_string(),
             proxy_port: 18080,
+            upstream_proxy_mode: None,
+            upstream_proxy_url: None,
+            upstream_proxy_username: None,
+            upstream_proxy_password: None,
             auto_failover_enabled: true,
             auto_backup_interval_hours: 12,
             backup_retention_count: 7,
@@ -2423,6 +2523,10 @@ mod tests {
             lan_share_enabled: false,
             proxy_host: "   ".to_string(),
             proxy_port: 0,
+            upstream_proxy_mode: None,
+            upstream_proxy_url: None,
+            upstream_proxy_username: None,
+            upstream_proxy_password: None,
             auto_failover_enabled: false,
             auto_backup_interval_hours: 24,
             backup_retention_count: 10,
@@ -2443,6 +2547,10 @@ mod tests {
             lan_share_enabled: true,
             proxy_host: "192.168.1.24".to_string(),
             proxy_port: 18080,
+            upstream_proxy_mode: None,
+            upstream_proxy_url: None,
+            upstream_proxy_username: None,
+            upstream_proxy_password: None,
             auto_failover_enabled: false,
             auto_backup_interval_hours: 24,
             backup_retention_count: 10,
@@ -2512,6 +2620,10 @@ mod tests {
             lan_share_enabled: false,
             proxy_host: "127.0.0.1".to_string(),
             proxy_port: 6789,
+            upstream_proxy_mode: None,
+            upstream_proxy_url: None,
+            upstream_proxy_username: None,
+            upstream_proxy_password: None,
             auto_failover_enabled: false,
             auto_backup_interval_hours: 24,
             backup_retention_count: 10,
@@ -3185,4 +3297,76 @@ mod tests {
             "check update timed out after 10ms"
         );
     }
+
+    #[test]
+    fn updater_proxy_config_defaults_to_system_mode() {
+        let parsed = parse_updater_proxy_config_from_settings(
+            r#"{
+                "launch_at_login": false,
+                "silent_start": false,
+                "close_to_tray": true,
+                "show_proxy_switch_on_home": true,
+                "lan_share_enabled": false,
+                "proxy_host": "127.0.0.1",
+                "proxy_port": 6789,
+                "auto_failover_enabled": true,
+                "auto_backup_interval_hours": 24,
+                "backup_retention_count": 10
+            }"#,
+        )
+        .expect("parse updater proxy config");
+        assert_eq!(parsed.mode, UpstreamProxyMode::System);
+        assert!(parsed.url.is_none());
+    }
+
+    #[test]
+    fn updater_proxy_config_parses_direct_mode() {
+        let parsed = parse_updater_proxy_config_from_settings(
+            r#"{
+                "launch_at_login": false,
+                "silent_start": false,
+                "close_to_tray": true,
+                "show_proxy_switch_on_home": true,
+                "lan_share_enabled": false,
+                "proxy_host": "127.0.0.1",
+                "proxy_port": 6789,
+                "upstream_proxy_mode": "direct",
+                "upstream_proxy_url": "http://127.0.0.1:7890",
+                "auto_failover_enabled": true,
+                "auto_backup_interval_hours": 24,
+                "backup_retention_count": 10
+            }"#,
+        )
+        .expect("parse updater proxy config");
+        assert_eq!(parsed.mode, UpstreamProxyMode::Direct);
+        assert_eq!(parsed.url.as_deref(), Some("http://127.0.0.1:7890"));
+    }
+
+    #[test]
+    fn updater_proxy_config_parses_manual_mode_and_credentials() {
+        let parsed = parse_updater_proxy_config_from_settings(
+            r#"{
+                "launch_at_login": false,
+                "silent_start": false,
+                "close_to_tray": true,
+                "show_proxy_switch_on_home": true,
+                "lan_share_enabled": false,
+                "proxy_host": "127.0.0.1",
+                "proxy_port": 6789,
+                "upstream_proxy_mode": "manual",
+                "upstream_proxy_url": "http://127.0.0.1:7890",
+                "upstream_proxy_username": "alice",
+                "upstream_proxy_password": "secret",
+                "auto_failover_enabled": true,
+                "auto_backup_interval_hours": 24,
+                "backup_retention_count": 10
+            }"#,
+        )
+        .expect("parse updater proxy config");
+        assert_eq!(parsed.mode, UpstreamProxyMode::Manual);
+        assert_eq!(parsed.url.as_deref(), Some("http://127.0.0.1:7890"));
+        assert_eq!(parsed.username.as_deref(), Some("alice"));
+        assert_eq!(parsed.password.as_deref(), Some("secret"));
+    }
+
 }
