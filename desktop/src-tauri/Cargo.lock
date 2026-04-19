@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "aigate-desktop"
-version = "1.3.20"
+version = "1.4.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",
