@@ -732,7 +732,12 @@ export async function deleteAccount(id: number): Promise<void> {
   }
 }
 
-export async function startOfficialAuth(): Promise<void> {
+export type OfficialAuthSession = {
+  authorization_url?: string;
+  state?: string;
+};
+
+export async function startOfficialAuth(): Promise<OfficialAuthSession> {
   const response = await fetch(apiPath("/accounts/auth/authorize"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -741,6 +746,8 @@ export async function startOfficialAuth(): Promise<void> {
   if (!response.ok) {
     throw new Error("failed to start official auth");
   }
+  const payload = (await response.json()) as OfficialAuthSession;
+  return payload;
 }
 
 export async function importLocalCodexAuth(

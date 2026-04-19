@@ -10,12 +10,14 @@ import { App as AntApp, ConfigProvider } from "antd";
 import {
   refreshDesktopTrayState,
   isDesktopShell,
+  openExternalUrl,
   writeDesktopClipboardText,
 } from "../../lib/desktop-shell";
 import { AccountsPage } from "./AccountsPage";
 
 vi.mock("../../lib/desktop-shell", () => ({
   refreshDesktopTrayState: vi.fn(),
+  openExternalUrl: vi.fn(),
   writeDesktopClipboardText: vi.fn(),
   isDesktopShell: vi.fn(() => false),
 }));
@@ -34,6 +36,112 @@ describe("AccountsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(isDesktopShell).mockReturnValue(false);
+  });
+
+  it("supports official oauth branch and keeps local import as a separate branch", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/auth/authorize" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              authorization_url: "https://auth.openai.com/codex/device",
+              state: "state-1",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/import-current" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(new Response(null, { status: 201 }));
+      }
+      if (
+        url === "/ai-router/api/accounts/usage/refresh" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /添加账户/ }));
+    fireEvent.click(await screen.findByText("官方账户"));
+
+    const officialModal = await screen.findByRole("dialog", {
+      name: "添加官方账户",
+    });
+
+    fireEvent.click(within(officialModal).getByRole("button", { name: "OAuth 登录" }));
+    fireEvent.click(
+      within(officialModal).getByRole("button", { name: "打开 OAuth 登录页" }),
+    );
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/auth/authorize",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(openExternalUrl).toHaveBeenCalledWith(
+        "https://auth.openai.com/codex/device",
+      );
+    });
+
+    fireEvent.click(
+      within(officialModal).getByRole("button", {
+        name: /导\s*入已授权账号/,
+      }),
+    );
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/import-current",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ account_name: "local-codex" }),
+        }),
+      );
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /添加账户/ }));
+    fireEvent.click(await screen.findByText("官方账户"));
+    const reopenedModal = await screen.findByRole("dialog", {
+      name: "添加官方账户",
+    });
+    fireEvent.click(
+      within(reopenedModal).getByRole("button", { name: "导入本地" }),
+    );
+    expect(
+      within(reopenedModal).getByRole("button", { name: /导\s*入$/ }),
+    ).toBeInTheDocument();
   });
 
   it("supports official upload, third-party create, and chat test in a single dashboard", async () => {
@@ -179,7 +287,9 @@ describe("AccountsPage", () => {
       target: { value: "current-codex" },
     });
     fireEvent.click(
-      within(officialModal).getByRole("button", { name: /导\s*入/ }),
+      within(officialModal).getByRole("button", {
+        name: /导\s*入已授权账号/,
+      }),
     );
 
     await waitFor(() => {
