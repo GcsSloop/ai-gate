@@ -1636,9 +1636,6 @@ export function AccountsPage({
               <div className="account-main-text">
                 <div className="account-title-row">
                   <Text strong>{record.account_name}</Text>
-                  {getRoutingCooldownSeconds(record) ? (
-                    <Tag color="gold">{t(getRoutingCooldownLabel(record))}</Tag>
-                  ) : null}
                   {record.is_active ? (
                     <Tag color="green">{t("当前使用中")}</Tag>
                   ) : null}
