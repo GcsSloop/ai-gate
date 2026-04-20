@@ -208,6 +208,8 @@ submit_output="$(xcrun notarytool submit "$NOTARY_TARGET_PATH" \
 
 notary_id="$(extract_notary_field id "$submit_output")"
 notary_status="$(extract_notary_field status "$submit_output")"
+notary_status_code="$(extract_notary_field statusCode "$submit_output")"
+notary_status_summary="$(extract_notary_field statusSummary "$submit_output")"
 
 if [[ -z "$notary_id" || -z "$notary_status" ]]; then
   echo "Unexpected notarytool response:"
@@ -217,6 +219,14 @@ fi
 
 if [[ "$notary_status" != "Accepted" ]]; then
   echo "Notarization failed with status: $notary_status"
+  if [[ "$notary_status_code" == "7000" ]]; then
+    echo "Apple team is not configured for notarization yet (statusCode=7000)."
+    if [[ -n "$notary_status_summary" ]]; then
+      echo "Notary summary: $notary_status_summary"
+    fi
+    echo "Skip notarization and continue release packaging."
+    exit 0
+  fi
   xcrun notarytool log "$notary_id" \
     --key "$APPLE_API_KEY_PATH" \
     --key-id "$APPLE_API_KEY_ID" \
