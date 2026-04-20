@@ -31,8 +31,9 @@ import (
 const officialCodexBaseURL = "https://chatgpt.com/backend-api/codex"
 const defaultCodexInstructions = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals. Be pragmatic, concise, and focus on completing the user's task."
 const thinResponsesOfficialLowRemainingThreshold = 3.0
-const thinResponsesCapacityCooldownWindow = 30 * time.Minute
-const thinResponsesRateLimitCooldownWindow = 15 * time.Minute
+const thinResponsesCapacityCooldownWindow = 3 * time.Minute
+const thinResponsesRateLimitCooldownWindow = 1 * time.Minute
+const activeAccountFailoverRetryAttempts = 3
 
 var errThinGatewayRequiresResponsesAccount = errors.New("thin gateway mode requires an account that supports /responses")
 var errThinGatewayActiveAccountUnsupported = errors.New("active account does not support /responses in thin gateway mode")
@@ -199,166 +200,195 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 	var fallbackBody []byte
 
 	for index, candidate := range candidates {
-		account := candidate.Account
-		if !account.NativeResponsesCapable() {
-			logThinGatewayCandidate(account, "skip", "supports_responses=false")
-			continue
+		maxAttempts := 1
+		if candidate.Account.IsActive && candidate.Account.RoutingCooldownActive(time.Now().UTC()) {
+			maxAttempts = activeAccountFailoverRetryAttempts
 		}
-		if reason, ok := h.skipReasonForThinCandidate(candidate); ok {
-			logThinGatewayCandidate(account, "skip", reason)
-			cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, reason)
-			if shouldCooldownThinCandidate(candidate, reason) {
-				changed, err := h.markThinCandidateCooldown(account, candidate.Snapshot, reason)
-				if err != nil {
-					lastErr = err
-					break
+		for attemptIndex := 0; attemptIndex < maxAttempts; attemptIndex++ {
+			account := candidate.Account
+			if !account.NativeResponsesCapable() {
+				logThinGatewayCandidate(account, "skip", "supports_responses=false")
+				break
+			}
+			if reason, ok := h.skipReasonForThinCandidate(candidate); ok {
+				logThinGatewayCandidate(account, "skip", reason)
+				cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, reason)
+				if shouldCooldownThinCandidate(candidate, reason) {
+					changed, err := h.markThinCandidateCooldown(account, candidate.Snapshot, reason)
+					if err != nil {
+						lastErr = err
+						break
+					}
+					if changed {
+						h.publishAccountRoutingStateChanged()
+					}
 				}
-				if changed {
-					h.publishAccountRoutingStateChanged()
+				if next, ok := h.nextThinFailoverTarget(candidates, index); ok {
+					logResponsesFailover(conversationID, account, next.Account, reason, "preemptive", req.Model, cooldownUntil)
 				}
+				lastErr = errThinGatewayNoHealthyCandidate
+				break
 			}
-			if next, ok := h.nextThinFailoverTarget(candidates, index); ok {
-				logResponsesFailover(conversationID, account, next.Account, reason, "preemptive", req.Model, cooldownUntil)
-			}
-			lastErr = errThinGatewayNoHealthyCandidate
-			continue
-		}
 
-		if err := ensureOfficialAccountSession(r.Context(), h.client, h.accounts, &account); err != nil {
-			startedAt := time.Now().UTC()
-			persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
-			logFailureSummary("responses", conversationID, account.ID, account.AccountName, "ensure_session", startedAt, err)
-			lastErr = err
-			if shouldFailoverOnThinError(err) {
-				continue
-			}
-			writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
-			return
-		}
-
-		credential, err := resolveCredential(account)
-		if err != nil {
-			startedAt := time.Now().UTC()
-			persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
-			logFailureSummary("responses", conversationID, account.ID, account.AccountName, "resolve_credential", startedAt, err)
-			lastErr = err
-			if shouldFailoverOnThinError(err) {
-				continue
-			}
-			writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
-			return
-		}
-
-		startedAt := time.Now().UTC()
-		logUpstreamSummary("responses", conversationID, account, "/responses", req.Model)
-		resp, err := h.executeThinResponsesUpstreamRequest(r.Context(), account, credential, rawBody, req.Stream, conversationID, req.Model, startedAt)
-		if err != nil {
-			persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
-			logFailureSummary("responses", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
-			lastErr = err
-			if shouldFailoverOnThinError(err) {
-				continue
-			}
-			writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
-			return
-		}
-
-		if resp.StatusCode >= 400 {
-			responseBody, readErr := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			if readErr != nil {
-				persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(readErr)), usage.Snapshot{AccountID: account.ID}, startedAt)
-				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_response", startedAt, readErr)
-				lastErr = readErr
-				if shouldFailoverOnThinError(readErr) {
+			if err := ensureOfficialAccountSession(r.Context(), h.client, h.accounts, &account); err != nil {
+				startedAt := time.Now().UTC()
+				persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "ensure_session", startedAt, err)
+				lastErr = err
+				if shouldFailoverOnThinError(err) && attemptIndex+1 < maxAttempts {
 					continue
 				}
-				writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, readErr)
+				if shouldFailoverOnThinError(err) {
+					break
+				}
+				writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
 				return
 			}
 
-			runStatus := classifyThinResponseStatus(account, resp, responseBody)
-			upstreamErr := buildUpstreamStatusError(resp.StatusCode, responseBody)
-			logFailureSummary("responses", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, upstreamErr)
-			persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
-
-			if shouldFailoverOnThinStatus(runStatus) {
-				cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, runStatus)
-				changed, err := h.markThinCandidateCooldown(account, candidate.Snapshot, runStatus)
-				if err != nil {
-					lastErr = err
+			credential, err := resolveCredential(account)
+			if err != nil {
+				startedAt := time.Now().UTC()
+				persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "resolve_credential", startedAt, err)
+				lastErr = err
+				if shouldFailoverOnThinError(err) && attemptIndex+1 < maxAttempts {
+					continue
+				}
+				if shouldFailoverOnThinError(err) {
 					break
 				}
-				if changed {
-					h.publishAccountRoutingStateChanged()
-				}
-				if next, ok := h.nextThinFailoverTarget(candidates, index); ok {
-					logResponsesFailover(conversationID, account, next.Account, runStatus, strconv.Itoa(resp.StatusCode), req.Model, cooldownUntil)
-				}
-				fallbackStatusCode = resp.StatusCode
-				fallbackHeaders = resp.Header.Clone()
-				fallbackBody = append(fallbackBody[:0], responseBody...)
-				lastErr = upstreamErr
-				continue
+				writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
+				return
 			}
 
+			startedAt := time.Now().UTC()
+			logUpstreamSummary("responses", conversationID, account, "/responses", req.Model)
+			resp, err := h.executeThinResponsesUpstreamRequest(r.Context(), account, credential, rawBody, req.Stream, conversationID, req.Model, startedAt)
+			if err != nil {
+				persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
+				lastErr = err
+				if shouldFailoverOnThinError(err) {
+					continue
+				}
+				writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
+				return
+			}
+
+			if resp.StatusCode >= 400 {
+				responseBody, readErr := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				if readErr != nil {
+					persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(readErr)), usage.Snapshot{AccountID: account.ID}, startedAt)
+					logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_response", startedAt, readErr)
+					lastErr = readErr
+					if shouldFailoverOnThinError(readErr) && attemptIndex+1 < maxAttempts {
+						continue
+					}
+					if shouldFailoverOnThinError(readErr) {
+						break
+					}
+					writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, readErr)
+					return
+				}
+
+				runStatus := classifyThinResponseStatus(account, resp, responseBody)
+				upstreamErr := buildUpstreamStatusError(resp.StatusCode, responseBody)
+				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, upstreamErr)
+				persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
+
+				if shouldFailoverOnThinStatus(runStatus) {
+					cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, runStatus)
+					if shouldCooldownForRunStatus(runStatus) {
+						changed, err := h.markThinCandidateCooldown(account, candidate.Snapshot, runStatus)
+						if err != nil {
+							lastErr = err
+							break
+						}
+						if changed {
+							h.publishAccountRoutingStateChanged()
+						}
+					}
+					if next, ok := h.nextThinFailoverTarget(candidates, index); ok {
+						logResponsesFailover(conversationID, account, next.Account, runStatus, strconv.Itoa(resp.StatusCode), req.Model, cooldownUntil)
+					}
+					fallbackStatusCode = resp.StatusCode
+					fallbackHeaders = resp.Header.Clone()
+					fallbackBody = append(fallbackBody[:0], responseBody...)
+					lastErr = upstreamErr
+					if attemptIndex+1 < maxAttempts {
+						continue
+					}
+					break
+				}
+
+				copyResponseHeaders(w.Header(), resp.Header)
+				w.Header().Set("OpenAI-Model", req.Model)
+				w.WriteHeader(resp.StatusCode)
+				_, _ = w.Write(responseBody)
+				return
+			}
+
+			runStatus := "completed"
 			copyResponseHeaders(w.Header(), resp.Header)
 			w.Header().Set("OpenAI-Model", req.Model)
+			// Some upstream official /responses streams arrive as SSE payloads without a
+			// reliable text/event-stream content type. When the caller requested
+			// stream=true, prefer the SSE path so response.completed usage is not lost.
+			streamResponse := req.Stream || isEventStreamResponse(resp.Header)
+			if streamResponse {
+				collector := newResponsesUsageCollector(account.ID)
+				w.WriteHeader(resp.StatusCode)
+				if err := copyResponseStreamWithObserver(w, resp.Body, collector.Observe); err != nil {
+					runStatus = runStatusForErrorClass(classifyRunError(err))
+					logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_stream", startedAt, err)
+					persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
+					_ = resp.Body.Close()
+					writeThinGatewayFailure(w, true, http.StatusBadGateway, err)
+					return
+				}
+				_ = resp.Body.Close()
+				logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, "")
+				collector.Save(h.usage)
+				persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, collector.snapshotOrDefault(), startedAt)
+				if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
+					h.publishAccountRoutingStateChanged()
+				}
+				if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
+					h.publishAccountRoutingStateChanged()
+				}
+				return
+			}
+
+			responseBody, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_response", startedAt, err)
+				lastErr = err
+				if shouldFailoverOnThinError(err) && attemptIndex+1 < maxAttempts {
+					continue
+				}
+				if shouldFailoverOnThinError(err) {
+					break
+				}
+				writeThinGatewayFailure(w, false, http.StatusBadGateway, err)
+				return
+			}
+
+			result := parseResponsesJSONResponse(responseBody, account.ID)
+			logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, result.Text)
+			persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, result.Snapshot, startedAt)
+			if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
+				h.publishAccountRoutingStateChanged()
+			}
+			if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
+				h.publishAccountRoutingStateChanged()
+			}
 			w.WriteHeader(resp.StatusCode)
 			_, _ = w.Write(responseBody)
 			return
 		}
-
-		runStatus := "completed"
-		copyResponseHeaders(w.Header(), resp.Header)
-		w.Header().Set("OpenAI-Model", req.Model)
-		// Some upstream official /responses streams arrive as SSE payloads without a
-		// reliable text/event-stream content type. When the caller requested
-		// stream=true, prefer the SSE path so response.completed usage is not lost.
-		streamResponse := req.Stream || isEventStreamResponse(resp.Header)
-		if streamResponse {
-			collector := newResponsesUsageCollector(account.ID)
-			w.WriteHeader(resp.StatusCode)
-			if err := copyResponseStreamWithObserver(w, resp.Body, collector.Observe); err != nil {
-				runStatus = runStatusForErrorClass(classifyRunError(err))
-				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_stream", startedAt, err)
-				persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
-				_ = resp.Body.Close()
-				writeThinGatewayFailure(w, true, http.StatusBadGateway, err)
-				return
-			}
-			_ = resp.Body.Close()
-			logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, "")
-			collector.Save(h.usage)
-			persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, collector.snapshotOrDefault(), startedAt)
-			if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
-				h.publishAccountRoutingStateChanged()
-			}
-			return
-		}
-
-		responseBody, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if err != nil {
-			persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
-			logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_response", startedAt, err)
-			lastErr = err
-			if shouldFailoverOnThinError(err) {
-				continue
-			}
-			writeThinGatewayFailure(w, false, http.StatusBadGateway, err)
-			return
-		}
-
-		result := parseResponsesJSONResponse(responseBody, account.ID)
-		logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, result.Text)
-		persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, result.Snapshot, startedAt)
-		if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
-			h.publishAccountRoutingStateChanged()
-		}
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(responseBody)
-		return
 	}
 
 	if lastErr == nil {
@@ -782,7 +812,7 @@ func (h *ResponsesHandler) skipReasonForThinCandidate(candidate routing.Candidat
 	case accounts.StatusInvalid:
 		return "status=invalid", true
 	}
-	if candidate.Account.RoutingCooldownActive(now) {
+	if candidate.Account.RoutingCooldownActive(now) && !candidate.Account.IsActive {
 		return "routing_cooldown", true
 	}
 	if officialRemainingBelowThreshold(candidate) {
@@ -810,7 +840,19 @@ func shouldCooldownThinCandidate(candidate routing.Candidate, reason string) boo
 	if reason == "routing_cooldown" {
 		return false
 	}
-	return reason == "official_remaining_below_3pct"
+	if candidate.Account.IsActive {
+		return false
+	}
+	return false
+}
+
+func shouldCooldownForRunStatus(status string) bool {
+	switch status {
+	case "capacity_failed", "rate_limited":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldFailoverOnThinError(err error) bool {

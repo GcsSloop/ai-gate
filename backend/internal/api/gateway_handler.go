@@ -183,6 +183,9 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, string(upstreamResponse))
 			persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", parseChatCompletionsUsage(upstreamResponse, account.ID), startedAt)
+			if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
+				h.publishAccountRoutingStateChanged()
+			}
 			if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
 				h.publishAccountRoutingStateChanged()
 			}
@@ -319,6 +322,9 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		}
 		logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, "")
 		persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", collector.snapshotOrDefault(), startedAt)
+		if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
+			h.publishAccountRoutingStateChanged()
+		}
 		if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
 			h.publishAccountRoutingStateChanged()
 		}
@@ -345,11 +351,11 @@ func (h *GatewayHandler) publishAccountRoutingStateChanged() {
 func (h *GatewayHandler) orderedCandidates(candidates []routing.Candidate) ([]routing.Candidate, error) {
 	if !autoFailoverEnabled(h.settings) {
 		if candidate, ok := activeCandidate(candidates); ok {
-			return []routing.Candidate{candidate}, nil
+			return expandActiveCandidateRetries([]routing.Candidate{candidate}, activeAccountFailoverRetryAttempts), nil
 		}
 		return orderCandidatesByPriority(candidates), nil
 	}
-	return orderCandidatesActiveFirst(candidates), nil
+	return expandActiveCandidateRetries(orderCandidatesActiveFirst(candidates), activeAccountFailoverRetryAttempts), nil
 }
 
 func resolveCredential(account accounts.Account) (string, error) {
