@@ -80,6 +80,7 @@ import {
   type AccountRecord,
   type PPChatTokenLogsPayload,
   type AccountTestResult,
+  type OfficialAuthSession,
 } from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
 import { openExternalUrl, refreshDesktopTrayState } from "../../lib/desktop-shell";
@@ -690,6 +691,8 @@ export function AccountsPage({
   const [officialEntryMode, setOfficialEntryMode] =
     useState<OfficialEntryMode>("oauth");
   const [officialOAuthLaunching, setOfficialOAuthLaunching] = useState(false);
+  const [officialOAuthSession, setOfficialOAuthSession] =
+    useState<OfficialAuthSession | null>(null);
   const [editingAccount, setEditingAccount] = useState<AccountRecord | null>(
     null,
   );
@@ -975,17 +978,36 @@ export function AccountsPage({
       let targetURL = "https://auth.openai.com/codex/device";
       try {
         const session = await startOfficialAuth();
+        setOfficialOAuthSession(session);
         const candidate = (session.authorization_url || "").trim();
         if (/^https?:\/\//i.test(candidate)) {
           targetURL = candidate;
         }
+        const verificationURI = (session.verification_uri || "").trim();
+        if (/^https?:\/\//i.test(verificationURI)) {
+          targetURL = verificationURI;
+        }
       } catch {
+        setOfficialOAuthSession(null);
         // Fallback to Codex device login URL when backend oauth metadata is unavailable.
       }
       await openExternalUrl(targetURL);
       void messageApi.success(t("已打开 OAuth 登录页"));
     } finally {
       setOfficialOAuthLaunching(false);
+    }
+  }
+
+  async function handleCopyOfficialUserCode() {
+    const code = (officialOAuthSession?.user_code || "").trim();
+    if (code === "") {
+      return;
+    }
+    try {
+      await writeClipboardText(code);
+      void messageApi.success(t("设备码已复制"));
+    } catch {
+      void messageApi.error(t("复制失败，请检查系统剪贴板权限"));
     }
   }
 
@@ -1969,7 +1991,10 @@ export function AccountsPage({
       <Modal
         open={internalAddModalMode === "official"}
         title={t("添加官方账户")}
-        onCancel={() => setInternalAddModalMode(null)}
+        onCancel={() => {
+          setInternalAddModalMode(null);
+          setOfficialOAuthSession(null);
+        }}
         footer={null}
         destroyOnHidden
         centered
@@ -2005,11 +2030,38 @@ export function AccountsPage({
             <Input />
           </Form.Item>
           {officialEntryMode === "oauth" ? (
-            <Text type="secondary">
-              {t(
-                "先完成 OAuth 授权，再点击导入。授权完成后将读取当前用户目录下的 ~/.codex/auth.json。",
-              )}
-            </Text>
+            <div style={{ display: "grid", gap: 8 }}>
+              <Text type="secondary">
+                {t(
+                  "先完成 OAuth 授权，再点击导入。授权完成后将读取当前用户目录下的 ~/.codex/auth.json。",
+                )}
+              </Text>
+              {officialOAuthSession?.user_code ? (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    border: "1px solid var(--color-border, #d9d9d9)",
+                    borderRadius: 8,
+                    padding: "8px 12px",
+                    gap: 8,
+                  }}
+                >
+                  <div>
+                    <Text type="secondary">{t("设备码")}</Text>
+                    <div>
+                      <Text strong code>
+                        {officialOAuthSession.user_code}
+                      </Text>
+                    </div>
+                  </div>
+                  <Button onClick={() => void handleCopyOfficialUserCode()}>
+                    {t("复制设备码")}
+                  </Button>
+                </div>
+              ) : null}
+            </div>
           ) : (
             <Text type="secondary">
               {language === "en-US" ? (
@@ -2033,7 +2085,9 @@ export function AccountsPage({
                 onClick={() => void handleStartOfficialOAuth()}
                 loading={officialOAuthLaunching}
               >
-                {t("打开 OAuth 登录页")}
+                {officialOAuthSession?.user_code
+                  ? t("重新获取设备码")
+                  : t("打开 OAuth 登录页")}
               </Button>
             ) : null}
             <Button type="primary" htmlType="submit">

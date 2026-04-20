@@ -72,6 +72,9 @@ describe("AccountsPage", () => {
             JSON.stringify({
               authorization_url: "https://auth.openai.com/codex/device",
               state: "state-1",
+              user_code: "ABCD-EFGH",
+              device_code: "device-auth-id-1",
+              verification_uri: "https://auth.openai.com/codex/device",
             }),
             { status: 200, headers: { "Content-Type": "application/json" } },
           ),
@@ -114,6 +117,12 @@ describe("AccountsPage", () => {
       expect(openExternalUrl).toHaveBeenCalledWith(
         "https://auth.openai.com/codex/device",
       );
+    });
+    expect(within(officialModal).getByText("设备码")).toBeInTheDocument();
+    expect(within(officialModal).getByText("ABCD-EFGH")).toBeInTheDocument();
+    fireEvent.click(within(officialModal).getByRole("button", { name: "复制设备码" }));
+    await waitFor(() => {
+      expect(writeDesktopClipboardText).not.toHaveBeenCalled();
     });
 
     fireEvent.click(

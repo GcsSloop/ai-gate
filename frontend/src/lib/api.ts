@@ -735,6 +735,11 @@ export async function deleteAccount(id: number): Promise<void> {
 export type OfficialAuthSession = {
   authorization_url?: string;
   state?: string;
+  device_code?: string;
+  user_code?: string;
+  verification_uri?: string;
+  expires_in?: number;
+  interval?: number;
 };
 
 export async function startOfficialAuth(): Promise<OfficialAuthSession> {
