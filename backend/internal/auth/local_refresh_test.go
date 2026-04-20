@@ -98,6 +98,36 @@ func TestRefreshLocalAuthFile(t *testing.T) {
 	}
 }
 
+func TestSuggestedAccountNameFromLocalAuthFilePrefersDisplayName(t *testing.T) {
+	t.Parallel()
+
+	file := LocalAuthFile{AuthMode: "chatgpt"}
+	file.Tokens.IDToken = testJWT(t, map[string]any{
+		"name":               "OpenAI QA User",
+		"preferred_username": "qa_user",
+		"email":              "qa@example.com",
+	})
+
+	got := SuggestedAccountNameFromLocalAuthFile(file)
+	if got != "OpenAI QA User" {
+		t.Fatalf("SuggestedAccountNameFromLocalAuthFile = %q, want %q", got, "OpenAI QA User")
+	}
+}
+
+func TestSuggestedAccountNameFromLocalAuthFileFallsBackToEmailPrefix(t *testing.T) {
+	t.Parallel()
+
+	file := LocalAuthFile{AuthMode: "chatgpt"}
+	file.Tokens.IDToken = testJWT(t, map[string]any{
+		"email": "demo.user@example.com",
+	})
+
+	got := SuggestedAccountNameFromLocalAuthFile(file)
+	if got != "demo.user" {
+		t.Fatalf("SuggestedAccountNameFromLocalAuthFile = %q, want %q", got, "demo.user")
+	}
+}
+
 func testJWT(t *testing.T, claims map[string]any) string {
 	t.Helper()
 	headerRaw, err := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})

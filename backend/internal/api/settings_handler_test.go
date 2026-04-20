@@ -3,7 +3,6 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -690,16 +689,8 @@ func TestSettingsHandlerProxyEnableWithoutAuthJSONSkipsAuthBackup(t *testing.T) 
 		t.Fatalf("unmarshal enable response: %v", err)
 	}
 	backupID, _ := payload["last_backup_id"].(string)
-	if strings.TrimSpace(backupID) == "" {
-		t.Fatal("last_backup_id is empty")
-	}
-
-	backupDir := filepath.Join(home, ".aigate", "data", "codex", "backup", backupID)
-	if _, err := os.Stat(filepath.Join(backupDir, "config.toml")); err != nil {
-		t.Fatalf("stat backup config.toml: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(backupDir, "auth.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("backup auth.json err = %v, want not exists", err)
+	if strings.TrimSpace(backupID) != "" {
+		t.Fatalf("last_backup_id = %q, want empty when proxy enable no longer creates backup", backupID)
 	}
 }
 
@@ -849,7 +840,7 @@ func TestSettingsHandlerProxyDisableIgnoresLegacyForceParam(t *testing.T) {
 	assertFileContains(t, filepath.Join(home, ".codex", "auth.json"), `"token-before"`)
 }
 
-func TestSettingsHandlerEnablePatchesThirdPartyProviderAndDisableRestoresOriginalBaseURL(t *testing.T) {
+func TestSettingsHandlerEnableWithThirdPartyProviderDoesNotMutateProviderBaseURL(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	prepareCodexFiles(t, home, `model_provider = "ppchat"
@@ -868,7 +859,9 @@ wire_api = "responses"
 	if enableRec.Code != http.StatusOK {
 		t.Fatalf("enable status = %d, want %d", enableRec.Code, http.StatusOK)
 	}
-	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "ppchat"`)
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "aigate"`)
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "https://code.ppchat.vip/v1"`)
+	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `[model_providers.aigate]`)
 	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "http://127.0.0.1:6789/ai-router/api"`)
 
 	statusReq := httptest.NewRequest(http.MethodGet, "/settings/proxy/status", nil)
@@ -881,11 +874,8 @@ wire_api = "responses"
 	if err := json.Unmarshal(statusRec.Body.Bytes(), &statusPayload); err != nil {
 		t.Fatalf("unmarshal status: %v", err)
 	}
-	if statusPayload["mode"] != "patched_existing_provider" {
-		t.Fatalf("mode = %v, want patched_existing_provider", statusPayload["mode"])
-	}
-	if statusPayload["target_provider"] != "ppchat" {
-		t.Fatalf("target_provider = %v, want ppchat", statusPayload["target_provider"])
+	if statusPayload["mode"] != "aigate_only" {
+		t.Fatalf("mode = %v, want aigate_only", statusPayload["mode"])
 	}
 
 	disableReq := httptest.NewRequest(http.MethodPost, "/settings/proxy/disable", nil)
@@ -894,7 +884,8 @@ wire_api = "responses"
 	if disableRec.Code != http.StatusOK {
 		t.Fatalf("disable status = %d, want %d", disableRec.Code, http.StatusOK)
 	}
-	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "ppchat"`)
+	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "ppchat"`)
+	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `model_provider = "aigate"`)
 	assertFileContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "https://code.ppchat.vip/v1"`)
 	assertFileNotContains(t, filepath.Join(home, ".codex", "config.toml"), `base_url = "http://127.0.0.1:6789/ai-router/api"`)
 }

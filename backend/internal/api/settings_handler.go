@@ -113,14 +113,10 @@ type proxyState struct {
 }
 
 type proxySession struct {
-	SessionID             string `json:"session_id"`
-	BackupID              string `json:"backup_id"`
-	Mode                  string `json:"mode"`
-	TargetProvider        string `json:"target_provider,omitempty"`
-	PreviousModelProvider string `json:"previous_model_provider,omitempty"`
-	OriginalBaseURL       string `json:"original_base_url,omitempty"`
-	EnabledConfigHash     string `json:"enabled_config_hash"`
-	CreatedAt             string `json:"created_at"`
+	SessionID         string `json:"session_id"`
+	Mode              string `json:"mode"`
+	EnabledConfigHash string `json:"enabled_config_hash"`
+	CreatedAt         string `json:"created_at"`
 }
 
 type proxyStatusResponse struct {
@@ -480,12 +476,6 @@ func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
 		return
 	}
 
-	backupID, _, err := createCodexBackupSnapshot(home, codexBackupKindRegular, backupSourceProxyEnable)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	configPath := filepath.Join(home, ".codex", "config.toml")
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
@@ -493,58 +483,34 @@ func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
 		return
 	}
 	content := string(raw)
-	currentProvider := currentModelProvider(content)
 	updated := content
-	mode := "created_aigate_provider"
-	targetProvider := "aigate"
-	originalBaseURL := ""
-
 	proxyBaseURL := h.proxyBaseURL()
-	if isThirdPartyProvider(content, currentProvider) {
-		baseURL, ok := getProviderValue(content, currentProvider, "base_url")
-		if !ok {
-			http.Error(w, "current provider missing base_url; cannot patch provider", http.StatusBadRequest)
-			return
-		}
-		mode = "patched_existing_provider"
-		targetProvider = currentProvider
-		originalBaseURL = baseURL
-		updated = setProviderValue(content, currentProvider, "base_url", strconv.Quote(proxyBaseURL))
-	} else {
-		updated = setModelProvider(content, "aigate")
-		updated = ensureAigateProvider(updated, proxyBaseURL)
-	}
+	updated = setModelProvider(content, "aigate")
+	updated = ensureAigateProvider(updated, proxyBaseURL)
 	if err := writeAtomic(configPath, []byte(updated), 0o600); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	session := proxySession{
-		SessionID:             time.Now().Format("20060102-150405.000"),
-		BackupID:              backupID,
-		Mode:                  mode,
-		TargetProvider:        targetProvider,
-		PreviousModelProvider: currentProvider,
-		OriginalBaseURL:       originalBaseURL,
-		EnabledConfigHash:     hashString(updated),
-		CreatedAt:             time.Now().UTC().Format(time.RFC3339),
+		SessionID:         time.Now().Format("20060102-150405.000"),
+		Mode:              "aigate_only",
+		EnabledConfigHash: hashString(updated),
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := writeProxySession(home, session); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	state, _ := readProxyState(home)
-	state.LastBackupID = backupID
 	state.SessionID = session.SessionID
 	_ = writeProxyState(home, state)
 
 	writeJSON(w, http.StatusOK, proxyStatusResponse{
-		Enabled:        true,
-		LastBackupID:   backupID,
-		Mode:           session.Mode,
-		TargetProvider: session.TargetProvider,
-		Host:           h.appSettings().ProxyHost,
-		Port:           h.appSettings().ProxyPort,
+		Enabled: true,
+		Mode:    session.Mode,
+		Host:    h.appSettings().ProxyHost,
+		Port:    h.appSettings().ProxyPort,
 	})
 }
 
@@ -604,7 +570,6 @@ func (h *SettingsHandler) getProxyStatus(w http.ResponseWriter) {
 	}
 	if sessionErr == nil {
 		resp.Mode = session.Mode
-		resp.TargetProvider = session.TargetProvider
 		configPath := filepath.Join(home, ".codex", "config.toml")
 		if raw, err := os.ReadFile(configPath); err == nil {
 			resp.ConfigConflict = hashBytes(raw) != session.EnabledConfigHash
@@ -713,16 +678,8 @@ func (h *SettingsHandler) updateEnabledProxyConfig(value settings.AppSettings) e
 
 	updated := string(raw)
 	proxyBaseURL := proxyBaseURLForSettings(value)
-	if session.Mode == "patched_existing_provider" {
-		targetProvider := strings.TrimSpace(session.TargetProvider)
-		if targetProvider == "" {
-			return fmt.Errorf("proxy session missing target provider")
-		}
-		updated = setProviderValue(updated, targetProvider, "base_url", strconv.Quote(proxyBaseURL))
-	} else {
-		updated = setModelProvider(updated, "aigate")
-		updated = ensureAigateProvider(updated, proxyBaseURL)
-	}
+	updated = setModelProvider(updated, "aigate")
+	updated = ensureAigateProvider(updated, proxyBaseURL)
 
 	if err := writeAtomic(configPath, []byte(updated), 0o600); err != nil {
 		return err
@@ -732,32 +689,8 @@ func (h *SettingsHandler) updateEnabledProxyConfig(value settings.AppSettings) e
 }
 
 func detachProxyConfig(content string, session proxySession) (string, error) {
-	updated := content
-	previousProvider := strings.TrimSpace(session.PreviousModelProvider)
-
-	if session.Mode == "patched_existing_provider" {
-		targetProvider := strings.TrimSpace(session.TargetProvider)
-		if targetProvider == "" {
-			return "", errors.New("proxy session missing target provider")
-		}
-		originalBaseURL := strings.TrimSpace(session.OriginalBaseURL)
-		if originalBaseURL == "" {
-			return "", errors.New("proxy session missing original base_url")
-		}
-		updated = setProviderValue(updated, targetProvider, "base_url", strconv.Quote(originalBaseURL))
-		if previousProvider == "" || previousProvider == "aigate" {
-			previousProvider = targetProvider
-		}
-	}
-
-	if previousProvider == "" || previousProvider == "aigate" {
-		previousProvider = defaultModelProvider
-	}
-	if previousProvider == defaultModelProvider {
-		updated = removeModelProvider(updated)
-	} else {
-		updated = setModelProvider(updated, previousProvider)
-	}
+	_ = session
+	updated := removeModelProvider(content)
 	updated = removeAigateProviderDefinitions(updated)
 	return updated, nil
 }
