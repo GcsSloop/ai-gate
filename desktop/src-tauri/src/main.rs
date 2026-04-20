@@ -7,7 +7,7 @@ use once_cell::sync::Lazy;
 use reqwest::header::{HeaderValue, ACCEPT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
@@ -615,7 +615,10 @@ async fn check_for_app_update<R: Runtime>(app: AppHandle<R>) -> Result<UpdateSta
     let checking_snapshot = {
         let mut manager = lock_update_manager()?;
         if !manager.begin_check() {
-            Some(normalize_update_snapshot(manager.snapshot(), &current_version))
+            Some(normalize_update_snapshot(
+                manager.snapshot(),
+                &current_version,
+            ))
         } else {
             None
         }
@@ -624,7 +627,13 @@ async fn check_for_app_update<R: Runtime>(app: AppHandle<R>) -> Result<UpdateSta
         return Ok(snapshot);
     }
 
-    match resolve_update_future_with_timeout(fetch_update(&app), UPDATE_CHECK_TIMEOUT, "check update").await {
+    match resolve_update_future_with_timeout(
+        fetch_update(&app),
+        UPDATE_CHECK_TIMEOUT,
+        "check update",
+    )
+    .await
+    {
         Ok(Some(update)) => {
             let payload = to_update_info_payload(&current_version, &update)?;
             let snapshot = UpdateStatePayload {
@@ -678,8 +687,8 @@ async fn start_update_download<R: Runtime>(
         UPDATE_CHECK_TIMEOUT,
         "fetch update metadata",
     )
-        .await?
-        .ok_or_else(|| "Update is no longer available. Check again and retry.".to_string())?;
+    .await?
+    .ok_or_else(|| "Update is no longer available. Check again and retry.".to_string())?;
     let payload = to_update_info_payload(&current_version, &update)?;
     if payload.version != version {
         return Err("Update version mismatch. Check again and retry.".to_string());
@@ -780,7 +789,10 @@ async fn fetch_update<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Update>, 
 fn fetch_updater_proxy_config() -> Result<UpdaterProxyConfig, String> {
     let resp = request_backend("GET", "/ai-router/api/settings/app", "")?;
     if resp.status >= 300 {
-        return Err(format!("load app settings for updater proxy failed: {}", resp.status));
+        return Err(format!(
+            "load app settings for updater proxy failed: {}",
+            resp.status
+        ));
     }
     parse_updater_proxy_config_from_settings(&resp.body)
 }
@@ -798,7 +810,10 @@ fn parse_updater_proxy_config_from_settings(raw: &str) -> Result<UpdaterProxyCon
         "manual" => UpstreamProxyMode::Manual,
         _ => UpstreamProxyMode::System,
     };
-    let url = payload.upstream_proxy_url.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    let url = payload
+        .upstream_proxy_url
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let username = payload
         .upstream_proxy_username
         .map(|value| value.trim().to_string())
@@ -821,7 +836,7 @@ fn apply_updater_proxy_config(
 ) -> Result<UpdaterBuilder, String> {
     match proxy.mode {
         UpstreamProxyMode::Direct => Ok(builder.no_proxy()),
-        UpstreamProxyMode::System => Ok(builder),
+        UpstreamProxyMode::System => apply_system_proxy_for_updater(builder),
         UpstreamProxyMode::Manual => {
             let raw = proxy
                 .url
@@ -836,16 +851,79 @@ fn apply_updater_proxy_config(
                 return Ok(builder.proxy(parsed));
             }
             if let Some(username) = proxy.username.as_deref() {
-                parsed
-                    .set_username(username)
-                    .map_err(|_| "upstream proxy username contains invalid characters".to_string())?;
+                parsed.set_username(username).map_err(|_| {
+                    "upstream proxy username contains invalid characters".to_string()
+                })?;
                 parsed
                     .set_password(proxy.password.as_deref())
-                    .map_err(|_| "upstream proxy password contains invalid characters".to_string())?;
+                    .map_err(|_| {
+                        "upstream proxy password contains invalid characters".to_string()
+                    })?;
             }
             Ok(builder.proxy(parsed))
         }
     }
+}
+
+fn apply_system_proxy_for_updater(builder: UpdaterBuilder) -> Result<UpdaterBuilder, String> {
+    let proxy = resolve_system_proxy_url("https");
+    if let Some(proxy_url) = proxy {
+        return Ok(builder.proxy(proxy_url));
+    }
+    Ok(builder)
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_system_proxy_url(request_scheme: &str) -> Option<reqwest::Url> {
+    let output = Command::new("scutil").arg("--proxy").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8(output.stdout).ok()?;
+    resolve_system_proxy_url_from_scutil_output(&raw, request_scheme)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn resolve_system_proxy_url(_request_scheme: &str) -> Option<reqwest::Url> {
+    None
+}
+
+fn resolve_system_proxy_url_from_scutil_output(
+    raw: &str,
+    request_scheme: &str,
+) -> Option<reqwest::Url> {
+    let values = parse_scutil_proxy_output(raw);
+    if request_scheme.eq_ignore_ascii_case("https") {
+        if let Some(proxy) = proxy_from_scutil_values(&values, "HTTPS") {
+            return Some(proxy);
+        }
+    }
+    proxy_from_scutil_values(&values, "HTTP")
+}
+
+fn parse_scutil_proxy_output(raw: &str) -> HashMap<String, String> {
+    raw.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || !trimmed.contains(" : ") {
+                return None;
+            }
+            let (key, value) = trimmed.split_once(" : ")?;
+            Some((key.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+fn proxy_from_scutil_values(
+    values: &HashMap<String, String>,
+    prefix: &str,
+) -> Option<reqwest::Url> {
+    if values.get(&format!("{prefix}Enable"))? != "1" {
+        return None;
+    }
+    let host = values.get(&format!("{prefix}Proxy"))?;
+    let port = values.get(&format!("{prefix}Port"))?;
+    reqwest::Url::parse(&format!("http://{host}:{port}")).ok()
 }
 
 fn to_update_info_payload(
@@ -2286,20 +2364,20 @@ mod tests {
         parse_accounts_response, parse_proxy_status_response,
         parse_updater_proxy_config_from_settings, persist_runtime_settings,
         proxy_menu_enabled_states, request_backend, resolve_main_window_size,
+        resolve_system_proxy_url_from_scutil_output, resolve_update_future_with_timeout,
         restart_sidecar_and_wait_ready, sanitize_main_window_size, should_attempt_sidecar_recovery,
         should_dispatch_resume_recovery, should_refresh_tray_after_action,
         should_restart_sidecar_after_exit, should_retry_sidecar_request,
-        should_trigger_resume_recovery, shutdown_sidecar_with_reason,
-        sidecar_candidate_paths, sidecar_creation_flags, sidecar_request_with_recovery,
-        sidecar_request_with_recovery_hooks, sidecar_resource_name, spawn_sidecar,
-        tray_icon_bytes_for_platform, tray_icon_is_template_for_platform, update_download_progress,
-        wait_for_backend_ready, wait_for_backend_ready_with_probe, window_close_action,
-        AppSettingsPayload, DesktopLogEntry, DesktopRuntime, DesktopSettingsCache, HttpResponse,
-        UpdateInfoPayload, UpdateManagerState, UpdateProgressPayload, UpdateStatePayload,
-        UpdateStatus, UpstreamProxyMode, WindowCloseAction, WindowSizeCache, DESKTOP_RUNTIME,
+        should_trigger_resume_recovery, shutdown_sidecar_with_reason, sidecar_candidate_paths,
+        sidecar_creation_flags, sidecar_request_with_recovery, sidecar_request_with_recovery_hooks,
+        sidecar_resource_name, spawn_sidecar, tray_icon_bytes_for_platform,
+        tray_icon_is_template_for_platform, update_download_progress, wait_for_backend_ready,
+        wait_for_backend_ready_with_probe, window_close_action, AppSettingsPayload,
+        DesktopLogEntry, DesktopRuntime, DesktopSettingsCache, HttpResponse, UpdateInfoPayload,
+        UpdateManagerState, UpdateProgressPayload, UpdateStatePayload, UpdateStatus,
+        UpstreamProxyMode, WindowCloseAction, WindowSizeCache, DESKTOP_RUNTIME,
         MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH, SIDECAR_CHILD, SIDECAR_MACOS_NAME,
         SIDECAR_WINDOWS_NAME, TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
-        resolve_update_future_with_timeout,
     };
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -3369,4 +3447,41 @@ mod tests {
         assert_eq!(parsed.password.as_deref(), Some("secret"));
     }
 
+    #[test]
+    fn updater_system_proxy_prefers_https_proxy_from_scutil_output() {
+        let parsed = resolve_system_proxy_url_from_scutil_output(
+            r#"
+            <dictionary> {
+              HTTPEnable : 1
+              HTTPProxy : 127.0.0.1
+              HTTPPort : 8080
+              HTTPSEnable : 1
+              HTTPSProxy : 127.0.0.2
+              HTTPSPort : 8443
+            }
+            "#,
+            "https",
+        )
+        .expect("parse https proxy");
+        assert_eq!(parsed.as_str(), "http://127.0.0.2:8443/");
+    }
+
+    #[test]
+    fn updater_system_proxy_falls_back_to_http_proxy_from_scutil_output() {
+        let parsed = resolve_system_proxy_url_from_scutil_output(
+            r#"
+            <dictionary> {
+              HTTPEnable : 1
+              HTTPProxy : 127.0.0.1
+              HTTPPort : 8080
+              HTTPSEnable : 0
+              HTTPSProxy : 127.0.0.2
+              HTTPSPort : 8443
+            }
+            "#,
+            "https",
+        )
+        .expect("fallback to http proxy");
+        assert_eq!(parsed.as_str(), "http://127.0.0.1:8080/");
+    }
 }
