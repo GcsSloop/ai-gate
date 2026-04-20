@@ -66,8 +66,10 @@ field = sys.argv[1]
 payload = sys.argv[2]
 data = json.loads(payload)
 value = data.get(field, "")
-if isinstance(value, str):
-    print(value)
+if value is None:
+    print("")
+else:
+    print(str(value))
 PY
 }
 
