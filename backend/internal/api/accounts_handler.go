@@ -537,7 +537,7 @@ func (h *AccountsHandler) refreshAccountsUsage(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *AccountsHandler) createAuthSession(w http.ResponseWriter, _ *http.Request) {
+func (h *AccountsHandler) createAuthSession(w http.ResponseWriter, r *http.Request) {
 	authURL, state, err := h.connector.AuthorizationURL()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -548,10 +548,19 @@ func (h *AccountsHandler) createAuthSession(w http.ResponseWriter, _ *http.Reque
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{
+	resp := map[string]any{
 		"authorization_url": authURL,
 		"state":             state,
-	})
+	}
+	if session, err := h.connector.StartDeviceAuth(r.Context(), h.client); err == nil {
+		resp["device_code"] = session.DeviceCode
+		resp["user_code"] = session.UserCode
+		resp["verification_uri"] = session.VerificationURI
+		resp["expires_in"] = session.ExpiresIn
+		resp["interval"] = session.Interval
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *AccountsHandler) importLocalAuth(w http.ResponseWriter, r *http.Request) {
