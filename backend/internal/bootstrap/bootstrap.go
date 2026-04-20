@@ -83,7 +83,11 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	upstreamHTTPClient := netproxy.NewHTTPClient(settingsRepo)
 	conversationRepo := conversations.NewSQLiteRepository(store.DB())
 	policyRepo := policy.NewMemoryRepository()
-	authConnector := auth.NewOAuthConnector(auth.Config{})
+	authConnector := auth.NewOAuthConnector(auth.Config{
+		ClientID:              "app_EMoamEEZ73f0CkXaXp7hrann",
+		DeviceAuthUserCodeURL: "https://auth.openai.com/api/accounts/deviceauth/usercode",
+		DeviceVerificationURL: "https://auth.openai.com/codex/device",
+	})
 	stateStore := auth.NewStateStore(5 * time.Minute)
 	stateEvents := api.NewStateEventBus()
 	driverRegistry, err := registry.New(

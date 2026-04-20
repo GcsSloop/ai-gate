@@ -27,6 +27,79 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv/registry"
 )
 
+func TestAccountsHandlerAuthorizeReturnsDeviceCode(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	deviceAuthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("device auth method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/device-auth" {
+			t.Fatalf("device auth path = %s, want /device-auth", r.URL.Path)
+		}
+		writeJSON := func(value any) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(value)
+		}
+		writeJSON(map[string]any{
+			"device_auth_id": "dev-auth-1",
+			"user_code":      "ABCD-EFGH",
+			"expires_in":     900,
+			"interval":       5,
+		})
+	}))
+	t.Cleanup(deviceAuthServer.Close)
+
+	connector := auth.NewOAuthConnector(auth.Config{
+		ClientID:              "client-id",
+		AuthorizeURL:          "https://auth.example.test/oauth/authorize",
+		TokenURL:              "https://auth.example.test/oauth/token",
+		RedirectURL:           "http://localhost:8080/callback",
+		Scopes:                []string{"model.read"},
+		DeviceAuthUserCodeURL: deviceAuthServer.URL + "/device-auth",
+		DeviceVerificationURL: "https://auth.openai.com/codex/device",
+	})
+	handler := api.NewAccountsHandler(
+		repo,
+		nil,
+		connector,
+		auth.NewStateStore(5*time.Minute),
+		api.WithAccountsHTTPClient(deviceAuthServer.Client()),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/auth/authorize", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /accounts/auth/authorize status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if payload["user_code"] != "ABCD-EFGH" {
+		t.Fatalf("user_code = %v, want ABCD-EFGH", payload["user_code"])
+	}
+	if payload["device_code"] != "dev-auth-1" {
+		t.Fatalf("device_code = %v, want dev-auth-1", payload["device_code"])
+	}
+	if payload["verification_uri"] != "https://auth.openai.com/codex/device" {
+		t.Fatalf("verification_uri = %v, want https://auth.openai.com/codex/device", payload["verification_uri"])
+	}
+	if _, ok := payload["authorization_url"]; !ok {
+		t.Fatalf("authorization_url missing from response: %#v", payload)
+	}
+}
+
 func TestAccountsHandler(t *testing.T) {
 	t.Parallel()
 
