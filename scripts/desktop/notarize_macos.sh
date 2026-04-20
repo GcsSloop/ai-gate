@@ -221,6 +221,20 @@ fi
 
 if [[ "$notary_status" != "Accepted" ]]; then
   echo "Notarization failed with status: $notary_status"
+  notary_log_output="$(xcrun notarytool log "$notary_id" \
+    --key "$APPLE_API_KEY_PATH" \
+    --key-id "$APPLE_API_KEY_ID" \
+    --issuer "$APPLE_API_ISSUER" 2>&1 || true)"
+
+  # Some notarytool submit responses do not include statusCode/statusSummary.
+  # Use log payload as source of truth for fallback classification.
+  if [[ -z "$notary_status_code" ]]; then
+    notary_status_code="$(extract_notary_field statusCode "$notary_log_output" 2>/dev/null || true)"
+  fi
+  if [[ -z "$notary_status_summary" ]]; then
+    notary_status_summary="$(extract_notary_field statusSummary "$notary_log_output" 2>/dev/null || true)"
+  fi
+
   if [[ "$notary_status_code" == "7000" ]]; then
     echo "Apple team is not configured for notarization yet (statusCode=7000)."
     if [[ -n "$notary_status_summary" ]]; then
@@ -229,10 +243,7 @@ if [[ "$notary_status" != "Accepted" ]]; then
     echo "Skip notarization and continue release packaging."
     exit 0
   fi
-  xcrun notarytool log "$notary_id" \
-    --key "$APPLE_API_KEY_PATH" \
-    --key-id "$APPLE_API_KEY_ID" \
-    --issuer "$APPLE_API_ISSUER"
+  echo "$notary_log_output"
   exit 1
 fi
 
