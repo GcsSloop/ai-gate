@@ -1236,11 +1236,11 @@ func TestResponsesHandlerThinModeFailsOverAfterOfficialUsageLimit(t *testing.T) 
 	if primaryAccount.Status != accounts.StatusActive {
 		t.Fatalf("status = %q, want %q", primaryAccount.Status, accounts.StatusActive)
 	}
-	if primaryAccount.CooldownUntil == nil {
-		t.Fatal("CooldownUntil = nil, want cooldown timestamp")
+	if primaryAccount.CooldownUntil != nil {
+		t.Fatalf("CooldownUntil = %v, want nil for soft cooldown on usage_limited", primaryAccount.CooldownUntil)
 	}
-	if primaryAccount.CooldownReason != "usage_limited" {
-		t.Fatalf("CooldownReason = %q, want usage_limited", primaryAccount.CooldownReason)
+	if primaryAccount.CooldownReason != "" {
+		t.Fatalf("CooldownReason = %q, want empty for soft cooldown on usage_limited", primaryAccount.CooldownReason)
 	}
 	fallbackAccount, err := accountRepo.GetByID(2)
 	if err != nil {
@@ -1270,6 +1270,125 @@ func TestResponsesHandlerThinModeFailsOverAfterOfficialUsageLimit(t *testing.T) 
 	}
 	if events[1].AccountID != 1 || events[1].Status != "usage_limited" {
 		t.Fatalf("previous event = %+v, want primary usage_limited", events[1])
+	}
+}
+
+func TestResponsesHandlerThinModeRetriesActiveCooldownBeforeFailover(t *testing.T) {
+	t.Parallel()
+
+	primaryCalls := 0
+	primaryUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"You've hit your usage limit. Upgrade to Pro or try again later."}}`)
+	}))
+	defer primaryUpstream.Close()
+
+	secondaryCalls := 0
+	secondaryUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondaryCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_fallback","object":"response","status":"completed","output_text":"fallback-after-retry"}`)
+	}))
+	defer secondaryUpstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	cooldownUntil := time.Now().UTC().Add(5 * time.Minute)
+	for _, account := range []accounts.Account{
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "active-cooling",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           primaryUpstream.URL + "/v1",
+			CredentialRef:     "sk-primary",
+			SupportsResponses: true,
+			IsActive:          true,
+			Priority:          1,
+			Status:            accounts.StatusActive,
+			CooldownUntil:     &cooldownUntil,
+			CooldownReason:    "rate_limited",
+		},
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "fallback",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           secondaryUpstream.URL + "/v1",
+			CredentialRef:     "sk-fallback",
+			SupportsResponses: true,
+			Priority:          2,
+			Status:            accounts.StatusActive,
+		},
+	} {
+		if err := accountRepo.Create(account); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for _, snapshot := range []usage.Snapshot{
+		{
+			AccountID:            1,
+			QuotaRemaining:       100000,
+			RPMRemaining:         80,
+			TPMRemaining:         80,
+			HealthScore:          0.9,
+			PrimaryUsedPercent:   40,
+			SecondaryUsedPercent: 40,
+			CheckedAt:            time.Now().UTC(),
+		},
+		{
+			AccountID:            2,
+			QuotaRemaining:       100000,
+			RPMRemaining:         100,
+			TPMRemaining:         100,
+			HealthScore:          0.8,
+			PrimaryUsedPercent:   20,
+			SecondaryUsedPercent: 20,
+			CheckedAt:            time.Now().UTC(),
+		},
+	} {
+		if err := usageRepo.Save(snapshot); err != nil {
+			t.Fatalf("Save returned error: %v", err)
+		}
+	}
+
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	current := settings.DefaultAppSettings()
+	current.AutoFailoverEnabled = true
+	if err := settingsRepo.SaveAppSettings(current); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+
+	handler := api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithResponsesSettings(settingsRepo),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"output_text":"fallback-after-retry"`) {
+		t.Fatalf("body = %s, want fallback response", rec.Body.String())
+	}
+	if primaryCalls != 3 {
+		t.Fatalf("primaryCalls = %d, want 3 retries for active cooling account", primaryCalls)
+	}
+	if secondaryCalls != 1 {
+		t.Fatalf("secondaryCalls = %d, want 1", secondaryCalls)
 	}
 }
 

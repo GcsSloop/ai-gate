@@ -55,6 +55,9 @@ func eligibleForExplicitQueue(account accounts.Account) bool {
 	case accounts.StatusDisabled, accounts.StatusInvalid:
 		return false
 	default:
+		if account.IsActive {
+			return true
+		}
 		return !account.RoutingCooldownActive(time.Now().UTC())
 	}
 }

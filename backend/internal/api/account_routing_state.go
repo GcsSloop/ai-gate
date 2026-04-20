@@ -2,6 +2,7 @@ package api
 
 import (
 	"sort"
+	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/routing"
@@ -10,6 +11,10 @@ import (
 
 type activeAccountWriter interface {
 	SetActive(id int64) error
+}
+
+type cooldownAccountWriter interface {
+	Update(account accounts.Account) error
 }
 
 func autoFailoverEnabled(repo settings.ReadRepository) bool {
@@ -71,4 +76,38 @@ func syncActiveAccount(repo activeAccountWriter, account accounts.Account) (bool
 		return false, err
 	}
 	return true, nil
+}
+
+func clearRoutingCooldownIfNeeded(repo cooldownAccountWriter, account accounts.Account) (bool, error) {
+	if repo == nil {
+		return false, nil
+	}
+	if account.CooldownUntil == nil && account.CooldownReason == "" {
+		return false, nil
+	}
+	account.CooldownUntil = nil
+	account.CooldownReason = ""
+	if err := repo.Update(account); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func expandActiveCandidateRetries(candidates []routing.Candidate, attempts int) []routing.Candidate {
+	if attempts <= 1 || len(candidates) == 0 {
+		return candidates
+	}
+	first := candidates[0]
+	if !first.Account.IsActive {
+		return candidates
+	}
+	if !first.Account.RoutingCooldownActive(time.Now().UTC()) {
+		return candidates
+	}
+	expanded := make([]routing.Candidate, 0, len(candidates)+attempts-1)
+	for i := 0; i < attempts; i++ {
+		expanded = append(expanded, first)
+	}
+	expanded = append(expanded, candidates[1:]...)
+	return expanded
 }
