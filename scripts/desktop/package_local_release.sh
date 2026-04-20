@@ -37,6 +37,7 @@ else
 fi
 
 TARGET_PLATFORM="$(resolve_local_platform)"
+export RELEASE_VERSION="$TAG"
 
 bash "$ROOT_DIR/scripts/release/sync_release_metadata.sh" "${sync_args[@]}"
 case "$TARGET_PLATFORM" in

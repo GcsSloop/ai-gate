@@ -5,9 +5,42 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT_DIR="$ROOT_DIR/desktop/src-tauri/bin"
 mkdir -p "$OUT_DIR"
 
-APP_VERSION="$(node -p "require('$ROOT_DIR/desktop/package.json').version" 2>/dev/null || true)"
-if [[ -z "${APP_VERSION}" ]]; then
-  APP_VERSION="dev"
+resolve_app_version() {
+  local raw="${RELEASE_VERSION:-}"
+  local normalized
+  if [[ -n "$raw" ]]; then
+    normalized="${raw#v}"
+    normalized="${normalized#V}"
+    printf '%s\n' "$normalized"
+    return 0
+  fi
+
+  local tauri_conf="$ROOT_DIR/desktop/src-tauri/tauri.conf.json"
+  if [[ -f "$tauri_conf" ]]; then
+    normalized="$(node -e 'const fs = require("fs"); const f = process.argv[1]; const value = JSON.parse(fs.readFileSync(f, "utf8")).version || ""; process.stdout.write(String(value));' "$tauri_conf" 2>/dev/null || true)"
+    normalized="$(printf '%s' "$normalized" | tr -d '\r\n[:space:]')"
+    if [[ -n "$normalized" ]]; then
+      printf '%s\n' "$normalized"
+      return 0
+    fi
+  fi
+
+  local desktop_pkg="$ROOT_DIR/desktop/package.json"
+  if [[ -f "$desktop_pkg" ]]; then
+    normalized="$(node -e 'const fs = require("fs"); const f = process.argv[1]; const value = JSON.parse(fs.readFileSync(f, "utf8")).version || ""; process.stdout.write(String(value));' "$desktop_pkg" 2>/dev/null || true)"
+    normalized="$(printf '%s' "$normalized" | tr -d '\r\n[:space:]')"
+    if [[ -n "$normalized" ]]; then
+      printf '%s\n' "$normalized"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+if ! APP_VERSION="$(resolve_app_version)"; then
+  echo "Failed to resolve AppVersion for macOS sidecar build. Set RELEASE_VERSION or ensure desktop metadata version exists." >&2
+  exit 1
 fi
 LDFLAGS="-X github.com/gcssloop/codex-router/backend/internal/buildinfo.AppVersion=${APP_VERSION}"
 
