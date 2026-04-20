@@ -61,6 +61,7 @@ import {
 
 import {
   createAccount,
+  completeOfficialAuthDevice,
   deleteAccount,
   duplicateAccount,
   fetchPPChatTokenLogs,
@@ -691,8 +692,11 @@ export function AccountsPage({
   const [officialEntryMode, setOfficialEntryMode] =
     useState<OfficialEntryMode>("oauth");
   const [officialOAuthLaunching, setOfficialOAuthLaunching] = useState(false);
+  const [officialImporting, setOfficialImporting] = useState(false);
   const [officialOAuthSession, setOfficialOAuthSession] =
     useState<OfficialAuthSession | null>(null);
+  const officialOAuthPollingTimerRef = useRef<number | null>(null);
+  const officialOAuthPollingInFlightRef = useRef(false);
   const [editingAccount, setEditingAccount] = useState<AccountRecord | null>(
     null,
   );
@@ -959,26 +963,39 @@ export function AccountsPage({
   }
 
   async function handleCreateOfficial(values: { account_name: string }) {
-    await importCurrentCodexAuth(values.account_name || "local-codex");
+    setOfficialImporting(true);
     try {
-      await refreshAccountUsage();
-    } catch {
-      // Keep import successful even if immediate usage refresh fails.
+      if (
+        officialEntryMode === "oauth" &&
+        (officialOAuthSession?.device_code || "").trim() !== "" &&
+        (officialOAuthSession?.user_code || "").trim() !== ""
+      ) {
+        await completeOfficialAuthDevice({
+          account_name: values.account_name || "local-codex",
+          device_code: officialOAuthSession?.device_code || "",
+          user_code: officialOAuthSession?.user_code || "",
+        }, { allowPending: false });
+      } else {
+        await importCurrentCodexAuth(values.account_name || "local-codex");
+      }
+      await finishOfficialImportFlow(t("官方账户已导入"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("导入失败");
+      void messageApi.error(message);
+    } finally {
+      setOfficialImporting(false);
     }
-    officialForm.resetFields();
-    setInternalAddModalMode(null);
-    await refreshAll();
-    void refreshDesktopTrayState();
-    void messageApi.success(t("官方账户已导入"));
   }
 
   async function handleStartOfficialOAuth() {
     setOfficialOAuthLaunching(true);
     try {
       let targetURL = "https://auth.openai.com/codex/device";
+      let startedSession: OfficialAuthSession | null = null;
       try {
         const session = await startOfficialAuth();
         setOfficialOAuthSession(session);
+        startedSession = session;
         const candidate = (session.authorization_url || "").trim();
         if (/^https?:\/\//i.test(candidate)) {
           targetURL = candidate;
@@ -993,10 +1010,103 @@ export function AccountsPage({
       }
       await openExternalUrl(targetURL);
       void messageApi.success(t("已打开 OAuth 登录页"));
+      startOfficialOAuthAutoPoll(startedSession);
     } finally {
       setOfficialOAuthLaunching(false);
     }
   }
+
+  function sessionOrNull(session: OfficialAuthSession | null): OfficialAuthSession | null {
+    if (
+      session &&
+      (session.device_code || "").trim() !== "" &&
+      (session.user_code || "").trim() !== ""
+    ) {
+      return session;
+    }
+    return null;
+  }
+
+  function stopOfficialOAuthAutoPoll() {
+    if (officialOAuthPollingTimerRef.current !== null) {
+      window.clearInterval(officialOAuthPollingTimerRef.current);
+      officialOAuthPollingTimerRef.current = null;
+    }
+    officialOAuthPollingInFlightRef.current = false;
+  }
+
+  function closeOfficialModal() {
+    stopOfficialOAuthAutoPoll();
+    setInternalAddModalMode(null);
+    setOfficialOAuthSession(null);
+  }
+
+  async function finishOfficialImportFlow(successMessage: string) {
+    stopOfficialOAuthAutoPoll();
+    try {
+      await refreshAccountUsage();
+    } catch {
+      // Keep import successful even if immediate usage refresh fails.
+    }
+    officialForm.resetFields();
+    setOfficialOAuthSession(null);
+    setInternalAddModalMode(null);
+    await refreshAll();
+    void refreshDesktopTrayState();
+    void messageApi.success(successMessage);
+  }
+
+  function startOfficialOAuthAutoPoll(session: OfficialAuthSession | null) {
+    stopOfficialOAuthAutoPoll();
+    const readySession = sessionOrNull(session);
+    if (!readySession) {
+      return;
+    }
+    const runOnce = async () => {
+      if (officialOAuthPollingInFlightRef.current) {
+        return;
+      }
+      officialOAuthPollingInFlightRef.current = true;
+      try {
+        const result = await completeOfficialAuthDevice(
+          {
+            account_name: officialForm.getFieldValue("account_name") || "local-codex",
+            device_code: readySession.device_code || "",
+            user_code: readySession.user_code || "",
+          },
+          { allowPending: true },
+        );
+        if (result === "completed") {
+          await finishOfficialImportFlow(t("检测到 OAuth 登录完成，已自动导入"));
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (/expired/i.test(message) || /gone/i.test(message)) {
+          stopOfficialOAuthAutoPoll();
+          void messageApi.error(t("OAuth 设备码已过期，请重新获取"));
+        }
+      } finally {
+        officialOAuthPollingInFlightRef.current = false;
+      }
+    };
+
+    officialOAuthPollingTimerRef.current = window.setInterval(() => {
+      void runOnce();
+    }, 2000);
+    void runOnce();
+  }
+
+  useEffect(() => {
+    if (internalAddModalMode !== "official" || officialEntryMode !== "oauth") {
+      stopOfficialOAuthAutoPoll();
+    }
+  }, [internalAddModalMode, officialEntryMode]);
+
+  useEffect(() => {
+    return () => {
+      stopOfficialOAuthAutoPoll();
+    };
+  }, []);
 
   async function handleCopyOfficialUserCode() {
     const code = (officialOAuthSession?.user_code || "").trim();
@@ -1991,10 +2101,7 @@ export function AccountsPage({
       <Modal
         open={internalAddModalMode === "official"}
         title={t("添加官方账户")}
-        onCancel={() => {
-          setInternalAddModalMode(null);
-          setOfficialOAuthSession(null);
-        }}
+        onCancel={closeOfficialModal}
         footer={null}
         destroyOnHidden
         centered
@@ -2031,11 +2138,6 @@ export function AccountsPage({
           </Form.Item>
           {officialEntryMode === "oauth" ? (
             <div style={{ display: "grid", gap: 8 }}>
-              <Text type="secondary">
-                {t(
-                  "先完成 OAuth 授权，再点击导入。授权完成后将读取当前用户目录下的 ~/.codex/auth.json。",
-                )}
-              </Text>
               {officialOAuthSession?.user_code ? (
                 <div
                   style={{
@@ -2077,7 +2179,7 @@ export function AccountsPage({
             </Text>
           )}
           <div className="modal-footer">
-            <Button onClick={() => setInternalAddModalMode(null)}>
+            <Button onClick={closeOfficialModal}>
               {t("取消")}
             </Button>
             {officialEntryMode === "oauth" ? (
@@ -2090,9 +2192,17 @@ export function AccountsPage({
                   : t("打开 OAuth 登录页")}
               </Button>
             ) : null}
-            <Button type="primary" htmlType="submit">
+            <Button
+              type="primary"
+              htmlType="submit"
+              loading={officialImporting}
+              disabled={
+                officialEntryMode === "oauth" &&
+                (officialOAuthSession?.device_code || "").trim() === ""
+              }
+            >
               {officialEntryMode === "oauth"
-                ? t("导入已授权账号")
+                ? t("已完成登录")
                 : t("导入")}
             </Button>
           </div>

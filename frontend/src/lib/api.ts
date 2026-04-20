@@ -755,6 +755,28 @@ export async function startOfficialAuth(): Promise<OfficialAuthSession> {
   return payload;
 }
 
+export async function completeOfficialAuthDevice(payload: {
+  account_name: string;
+  device_code: string;
+  user_code: string;
+}, options?: {
+  allowPending?: boolean;
+}): Promise<"completed" | "pending"> {
+  const response = await fetch(apiPath("/accounts/auth/device/complete"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (response.status === 409 && options?.allowPending) {
+    return "pending";
+  }
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to complete official auth");
+  }
+  return "completed";
+}
+
 export async function importLocalCodexAuth(
   file: File,
   accountName = "local-codex",
