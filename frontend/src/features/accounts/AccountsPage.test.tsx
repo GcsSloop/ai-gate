@@ -39,6 +39,7 @@ describe("AccountsPage", () => {
   });
 
   it("supports official oauth branch and keeps local import as a separate branch", async () => {
+    let completeCalls = 0;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (
@@ -81,9 +82,13 @@ describe("AccountsPage", () => {
         );
       }
       if (
-        url === "/ai-router/api/accounts/import-current" &&
+        url === "/ai-router/api/accounts/auth/device/complete" &&
         init?.method === "POST"
       ) {
+        completeCalls += 1;
+        if (completeCalls === 1) {
+          return Promise.resolve(new Response("authorization pending", { status: 409 }));
+        }
         return Promise.resolve(new Response(null, { status: 201 }));
       }
       if (
@@ -106,6 +111,9 @@ describe("AccountsPage", () => {
     });
 
     fireEvent.click(within(officialModal).getByRole("button", { name: "OAuth 登录" }));
+    expect(
+      within(officialModal).getByRole("button", { name: "已完成登录" }),
+    ).toBeDisabled();
     fireEvent.click(
       within(officialModal).getByRole("button", { name: "打开 OAuth 登录页" }),
     );
@@ -118,6 +126,9 @@ describe("AccountsPage", () => {
         "https://auth.openai.com/codex/device",
       );
     });
+    expect(
+      within(officialModal).getByRole("button", { name: "已完成登录" }),
+    ).toBeEnabled();
     expect(within(officialModal).getByText("设备码")).toBeInTheDocument();
     expect(within(officialModal).getByText("ABCD-EFGH")).toBeInTheDocument();
     fireEvent.click(within(officialModal).getByRole("button", { name: "复制设备码" }));
@@ -127,15 +138,19 @@ describe("AccountsPage", () => {
 
     fireEvent.click(
       within(officialModal).getByRole("button", {
-        name: /导\s*入已授权账号/,
+        name: /已完成登录/,
       }),
     );
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/ai-router/api/accounts/import-current",
+        "/ai-router/api/accounts/auth/device/complete",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ account_name: "local-codex" }),
+          body: JSON.stringify({
+            account_name: "local-codex",
+            device_code: "device-auth-id-1",
+            user_code: "ABCD-EFGH",
+          }),
         }),
       );
     });
@@ -296,8 +311,11 @@ describe("AccountsPage", () => {
       target: { value: "current-codex" },
     });
     fireEvent.click(
+      within(officialModal).getByRole("button", { name: "导入本地" }),
+    );
+    fireEvent.click(
       within(officialModal).getByRole("button", {
-        name: /导\s*入已授权账号/,
+        name: /导\s*入$/,
       }),
     );
 
