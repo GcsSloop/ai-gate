@@ -85,7 +85,10 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	policyRepo := policy.NewMemoryRepository()
 	authConnector := auth.NewOAuthConnector(auth.Config{
 		ClientID:              "app_EMoamEEZ73f0CkXaXp7hrann",
+		TokenURL:              "https://auth.openai.com/oauth/token",
 		DeviceAuthUserCodeURL: "https://auth.openai.com/api/accounts/deviceauth/usercode",
+		DeviceAuthTokenURL:    "https://auth.openai.com/api/accounts/deviceauth/token",
+		DeviceRedirectURL:     "https://auth.openai.com/deviceauth/callback",
 		DeviceVerificationURL: "https://auth.openai.com/codex/device",
 	})
 	stateStore := auth.NewStateStore(5 * time.Minute)
