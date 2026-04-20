@@ -115,6 +115,8 @@ jobs:
         run: npm --prefix desktop ci
 
       - name: Build sidecar
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
         run: bash "${{ matrix.sidecar_script }}"
 
       - name: Desktop sidecar tests
