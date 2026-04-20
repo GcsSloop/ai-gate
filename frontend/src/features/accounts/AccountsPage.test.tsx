@@ -110,12 +110,11 @@ describe("AccountsPage", () => {
       name: "添加官方账户",
     });
 
-    fireEvent.click(within(officialModal).getByRole("button", { name: "OAuth 登录" }));
-    expect(
-      within(officialModal).getByRole("button", { name: "已完成登录" }),
-    ).toBeDisabled();
+    fireEvent.click(within(officialModal).getByRole("tab", { name: "OAuth 登录" }));
+    expect(within(officialModal).queryByText("登录方式")).toBeNull();
+    expect(within(officialModal).queryByLabelText("账户名称")).toBeNull();
     fireEvent.click(
-      within(officialModal).getByRole("button", { name: "打开 OAuth 登录页" }),
+      within(officialModal).getByRole("button", { name: "使用 ChatGPT 登录" }),
     );
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -126,9 +125,6 @@ describe("AccountsPage", () => {
         "https://auth.openai.com/codex/device",
       );
     });
-    expect(
-      within(officialModal).getByRole("button", { name: "已完成登录" }),
-    ).toBeEnabled();
     expect(within(officialModal).getByText("设备码")).toBeInTheDocument();
     expect(within(officialModal).getByText("ABCD-EFGH")).toBeInTheDocument();
     fireEvent.click(within(officialModal).getByRole("button", { name: "复制设备码" }));
@@ -136,18 +132,12 @@ describe("AccountsPage", () => {
       expect(writeDesktopClipboardText).not.toHaveBeenCalled();
     });
 
-    fireEvent.click(
-      within(officialModal).getByRole("button", {
-        name: /已完成登录/,
-      }),
-    );
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/ai-router/api/accounts/auth/device/complete",
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({
-            account_name: "local-codex",
             device_code: "device-auth-id-1",
             user_code: "ABCD-EFGH",
           }),
@@ -161,7 +151,7 @@ describe("AccountsPage", () => {
       name: "添加官方账户",
     });
     fireEvent.click(
-      within(reopenedModal).getByRole("button", { name: "导入本地" }),
+      within(reopenedModal).getByRole("tab", { name: "导入本地" }),
     );
     expect(
       within(reopenedModal).getByRole("button", { name: /导\s*入$/ }),
@@ -307,12 +297,12 @@ describe("AccountsPage", () => {
     expect(officialModal.closest(".ant-modal-wrap")).toHaveClass(
       "ant-modal-centered",
     );
+    fireEvent.click(
+      within(officialModal).getByRole("tab", { name: "导入本地" }),
+    );
     fireEvent.change(within(officialModal).getByLabelText("账户名称"), {
       target: { value: "current-codex" },
     });
-    fireEvent.click(
-      within(officialModal).getByRole("button", { name: "导入本地" }),
-    );
     fireEvent.click(
       within(officialModal).getByRole("button", {
         name: /导\s*入$/,
@@ -427,16 +417,14 @@ describe("AccountsPage", () => {
     ).toBeInTheDocument();
     fireEvent.click(within(detailModal).getByRole("button", { name: "Close" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "编辑-mirror-east" }));
-    const editTestModal = await screen.findByRole("dialog", {
-      name: "编辑账户",
+    expect(
+      screen.queryByRole("button", { name: "复制-mirror-east" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "测试-mirror-east" }));
+    const testModal = await screen.findByRole("dialog", {
+      name: "连接测试",
     });
-    fireEvent.change(within(editTestModal).getByLabelText("输入内容"), {
-      target: { value: "ping" },
-    });
-    fireEvent.click(
-      within(editTestModal).getByRole("button", { name: /测\s*试/ }),
-    );
+    fireEvent.click(within(testModal).getByRole("button", { name: /测\s*试/ }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
@@ -449,9 +437,9 @@ describe("AccountsPage", () => {
     });
 
     expect(
-      await within(editTestModal).findByText("远端连通性测试成功"),
+      await within(testModal).findByText("远端连通性测试成功"),
     ).toBeInTheDocument();
-    expect(within(editTestModal).getByText("pong")).toBeInTheDocument();
+    expect(within(testModal).getByText("pong")).toBeInTheDocument();
   });
 
   it("confirms before sharing and only copies after explicit approval", async () => {
@@ -1646,7 +1634,7 @@ describe("AccountsPage", () => {
     expect(order).toEqual(["high-priority", "mid-priority", "low-priority"]);
   });
 
-  it("duplicates an account with the copy action", async () => {
+  it("opens test modal and runs ping after user clicks test", async () => {
     const initialList = [
       {
         id: 1,
@@ -1672,16 +1660,6 @@ describe("AccountsPage", () => {
         secondary_used_percent: 0,
       },
     ];
-    const duplicatedList = [
-      initialList[0],
-      {
-        ...initialList[0],
-        id: 2,
-        account_name: "mirror-east 1",
-        is_active: false,
-      },
-    ];
-    let listCallCount = 0;
 
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -1689,10 +1667,8 @@ describe("AccountsPage", () => {
         url === "/ai-router/api/accounts" &&
         (!init?.method || init.method === "GET")
       ) {
-        const payload = listCallCount === 0 ? initialList : duplicatedList;
-        listCallCount += 1;
         return Promise.resolve(
-          new Response(JSON.stringify(payload), {
+          new Response(JSON.stringify(initialList), {
             status: 200,
             headers: { "Content-Type": "application/json" },
           }),
@@ -1709,11 +1685,17 @@ describe("AccountsPage", () => {
           }),
         );
       }
-      if (
-        url === "/ai-router/api/accounts/1/duplicate" &&
-        init?.method === "POST"
-      ) {
-        return Promise.resolve(new Response(null, { status: 201 }));
+      if (url === "/ai-router/api/accounts/1/test" && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              ok: true,
+              message: "远端连通性测试成功",
+              content: "pong",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
       }
       return Promise.resolve(new Response(null, { status: 404 }));
     });
@@ -1724,19 +1706,31 @@ describe("AccountsPage", () => {
 
     expect(await screen.findByText("mirror-east")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "复制-mirror-east" }));
+    expect(
+      screen.queryByRole("button", { name: "复制-mirror-east" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "测试-mirror-east" }));
+    const testModal = await screen.findByRole("dialog", { name: "连接测试" });
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/ai-router/api/accounts/1/test",
+      expect.anything(),
+    );
+    fireEvent.click(within(testModal).getByRole("button", { name: /测\s*试/ }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/ai-router/api/accounts/1/duplicate",
+        "/ai-router/api/accounts/1/test",
         expect.objectContaining({
           method: "POST",
+          body: JSON.stringify({ model: "gpt-5.4", input: "ping" }),
         }),
       );
     });
 
-    expect(await screen.findByText("mirror-east 1")).toBeInTheDocument();
-    expect(refreshDesktopTrayState).toHaveBeenCalledTimes(1);
+    expect(
+      await within(testModal).findByText("远端连通性测试成功"),
+    ).toBeInTheDocument();
+    expect(within(testModal).getByText("pong")).toBeInTheDocument();
   });
 
   it("renders dual official remaining meters with warning thresholds", async () => {

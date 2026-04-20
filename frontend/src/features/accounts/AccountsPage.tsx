@@ -1,7 +1,7 @@
 import {
+  ApiOutlined,
   BarChartOutlined,
   CheckCircleOutlined,
-  CopyOutlined,
   DeleteOutlined,
   EditOutlined,
   ExportOutlined,
@@ -10,6 +10,7 @@ import {
   PlusOutlined,
 } from "@ant-design/icons";
 import {
+  AutoComplete,
   App as AntApp,
   Avatar,
   Button,
@@ -63,7 +64,6 @@ import {
   createAccount,
   completeOfficialAuthDevice,
   deleteAccount,
-  duplicateAccount,
   fetchPPChatTokenLogs,
   startOfficialAuth,
   getLuaUsageScript,
@@ -96,14 +96,6 @@ const defaultBaseURL = "https://code.ppchat.vip/v1";
 type AddModalMode = "official" | "third_party" | "shared_import" | null;
 type OfficialEntryMode = "oauth" | "local_import";
 
-const statusColorMap: Record<string, string> = {
-  active: "green",
-  cooldown: "gold",
-  degraded: "orange",
-  invalid: "red",
-  disabled: "default",
-};
-
 const statusTextMap: Record<string, string> = {
   active: "可用",
   cooldown: "冷却中",
@@ -133,6 +125,17 @@ const sourceIconMap: Record<SourceIcon, { label: string; icon: string }> = {
   claude_code: { label: "Claude Code", icon: sourceClaudeCodeIcon },
   ppchat: { label: "PPChat", icon: sourcePPChatIcon },
 };
+
+const TEST_MODEL_SUGGESTIONS = [
+  "gpt-5.4",
+  "gpt-5.3-codex",
+  "gpt-5.2",
+  "gpt-5.2-codex",
+  "gpt-5.1",
+  "gpt-5.1-codex-max",
+  "gpt-5",
+  "gpt-4.1",
+];
 
 function normalizeSourceIcon(raw?: string): SourceIcon {
   if (raw === "ppchat") {
@@ -700,11 +703,15 @@ export function AccountsPage({
   const [editingAccount, setEditingAccount] = useState<AccountRecord | null>(
     null,
   );
+  const [testingAccount, setTestingAccount] = useState<AccountRecord | null>(
+    null,
+  );
   const [detailAccount, setDetailAccount] = useState<AccountRecord | null>(
     null,
   );
   const [sharedImportError, setSharedImportError] = useState<string>("");
   const [testResult, setTestResult] = useState<AccountTestResult | null>(null);
+  const [testLoading, setTestLoading] = useState(false);
   const [luaTestResult, setLuaTestResult] = useState<AccountTestResult | null>(
     null,
   );
@@ -962,7 +969,7 @@ export function AccountsPage({
     void messageApi.success(t("第三方账户已添加"));
   }
 
-  async function handleCreateOfficial(values: { account_name: string }) {
+  async function handleCreateOfficial(values: { account_name?: string }) {
     setOfficialImporting(true);
     try {
       if (
@@ -971,7 +978,6 @@ export function AccountsPage({
         (officialOAuthSession?.user_code || "").trim() !== ""
       ) {
         await completeOfficialAuthDevice({
-          account_name: values.account_name || "local-codex",
           device_code: officialOAuthSession?.device_code || "",
           user_code: officialOAuthSession?.user_code || "",
         }, { allowPending: false });
@@ -1009,7 +1015,7 @@ export function AccountsPage({
         // Fallback to Codex device login URL when backend oauth metadata is unavailable.
       }
       await openExternalUrl(targetURL);
-      void messageApi.success(t("已打开 OAuth 登录页"));
+      void messageApi.success(t("已打开 ChatGPT 登录页"));
       startOfficialOAuthAutoPoll(startedSession);
     } finally {
       setOfficialOAuthLaunching(false);
@@ -1070,7 +1076,6 @@ export function AccountsPage({
       try {
         const result = await completeOfficialAuthDevice(
           {
-            account_name: officialForm.getFieldValue("account_name") || "local-codex",
             device_code: readySession.device_code || "",
             user_code: readySession.user_code || "",
           },
@@ -1144,7 +1149,6 @@ export function AccountsPage({
 
   function openEditModal(account: AccountRecord) {
     setEditingAccount(account);
-    setTestResult(null);
     setLuaTestResult(null);
     editForm.setFieldsValue({
       account_name: account.account_name,
@@ -1213,12 +1217,35 @@ export function AccountsPage({
     );
   }
 
+  async function runConnectionTest(
+    account: AccountRecord,
+    values: { model: string; input: string },
+  ) {
+    setTestLoading(true);
+    try {
+      const result = await testAccount(account.id, values);
+      setTestResult(result);
+    } finally {
+      setTestLoading(false);
+    }
+  }
+
+  function openTestModal(account: AccountRecord) {
+    setTestingAccount(account);
+    setTestResult(null);
+    setTestLoading(false);
+    const payload = {
+      model: getDefaultTestModel(account),
+      input: "ping",
+    };
+    testForm.setFieldsValue(payload);
+  }
+
   async function handleTest(values: { model: string; input: string }) {
-    if (!editingAccount) {
+    if (!testingAccount) {
       return;
     }
-    const result = await testAccount(editingAccount.id, values);
-    setTestResult(result);
+    await runConnectionTest(testingAccount, values);
   }
 
   async function handleCopyLuaSkill() {
@@ -1335,19 +1362,6 @@ export function AccountsPage({
       setAccountsState(previous);
       void messageApi.error(
         error instanceof Error ? t(error.message) : t("切换激活账户失败"),
-      );
-    }
-  }
-
-  async function handleCopyAccount(record: AccountRecord) {
-    try {
-      await duplicateAccount(record.id);
-      await refreshAll();
-      void refreshDesktopTrayState();
-      void messageApi.success(t("已复制账户"));
-    } catch (error) {
-      void messageApi.warning(
-        error instanceof Error ? t(error.message) : t("复制失败，请稍后重试"),
       );
     }
   }
@@ -1622,9 +1636,6 @@ export function AccountsPage({
               <div className="account-main-text">
                 <div className="account-title-row">
                   <Text strong>{record.account_name}</Text>
-                  <Tag color={statusColorMap[record.status] ?? "default"}>
-                    {t(statusTextMap[record.status] ?? record.status)}
-                  </Tag>
                   {getRoutingCooldownSeconds(record) ? (
                     <Tag color="gold">{t(getRoutingCooldownLabel(record))}</Tag>
                   ) : null}
@@ -1706,10 +1717,10 @@ export function AccountsPage({
                 <Button
                   type="text"
                   className="account-action-button"
-                  aria-label={`${t("复制")}-${record.account_name}`}
-                  icon={<CopyOutlined />}
+                  aria-label={`${t("测试")}-${record.account_name}`}
+                  icon={<ApiOutlined />}
                   disabled={options.actionsDisabled}
-                  onClick={() => void handleCopyAccount(record)}
+                  onClick={() => openTestModal(record)}
                 />
                 <Button
                   type="text"
@@ -2105,105 +2116,104 @@ export function AccountsPage({
         footer={null}
         destroyOnHidden
         centered
+        className="official-account-modal"
       >
         <Form
           form={officialForm}
           layout="vertical"
+          className="official-account-form"
           onFinish={(values) => void handleCreateOfficial(values)}
         >
-          <Form.Item label={t("登录方式")}>
-            <div style={{ display: "flex", gap: 8 }}>
-              <Button
-                type={officialEntryMode === "oauth" ? "primary" : "default"}
+          <div className="official-account-header">
+            <div
+              className="menu-pill-group official-account-tabs"
+              role="tablist"
+              aria-label={t("账户导入方式")}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={officialEntryMode === "oauth"}
+                className={officialEntryMode === "oauth" ? "menu-pill-button is-active" : "menu-pill-button"}
                 onClick={() => setOfficialEntryMode("oauth")}
               >
                 {t("OAuth 登录")}
-              </Button>
-              <Button
-                type={
-                  officialEntryMode === "local_import" ? "primary" : "default"
-                }
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={officialEntryMode === "local_import"}
+                className={officialEntryMode === "local_import" ? "menu-pill-button is-active" : "menu-pill-button"}
                 onClick={() => setOfficialEntryMode("local_import")}
               >
                 {t("导入本地")}
-              </Button>
+              </button>
             </div>
-          </Form.Item>
-          <Form.Item
-            label={t("账户名称")}
-            name="account_name"
-            initialValue="local-codex"
-          >
-            <Input />
-          </Form.Item>
-          {officialEntryMode === "oauth" ? (
-            <div style={{ display: "grid", gap: 8 }}>
-              {officialOAuthSession?.user_code ? (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    border: "1px solid var(--color-border, #d9d9d9)",
-                    borderRadius: 8,
-                    padding: "8px 12px",
-                    gap: 8,
-                  }}
-                >
-                  <div>
-                    <Text type="secondary">{t("设备码")}</Text>
-                    <div>
-                      <Text strong code>
-                        {officialOAuthSession.user_code}
-                      </Text>
-                    </div>
-                  </div>
-                  <Button onClick={() => void handleCopyOfficialUserCode()}>
-                    {t("复制设备码")}
+          </div>
+          <div className="official-account-content">
+            {officialEntryMode === "oauth" ? (
+              <div className="official-account-panel">
+                {!officialOAuthLaunching && !officialOAuthSession?.user_code ? (
+                  <Button onClick={() => void handleStartOfficialOAuth()}>
+                    {t("使用 ChatGPT 登录")}
                   </Button>
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <Text type="secondary">
-              {language === "en-US" ? (
-                <>
-                  The app reads <code>~/.codex/auth.json</code> directly from
-                  the current user directory.
-                </>
-              ) : (
-                <>
-                  将直接读取当前用户目录下的 <code>~/.codex/auth.json</code>。
-                </>
-              )}
-            </Text>
-          )}
-          <div className="modal-footer">
+                ) : null}
+                {officialOAuthSession?.user_code ? (
+                  <div className="official-account-device-code">
+                    <Text type="secondary">{t("设备码")}</Text>
+                    <span className="official-account-device-code-plain">
+                      {officialOAuthSession.user_code}
+                    </span>
+                    <div className="official-account-device-code-slots">
+                      {officialOAuthSession.user_code.split("").map((char, index) =>
+                        char === "-" ? (
+                          <span
+                            key={`dash-${index}`}
+                            className="official-account-device-code-separator"
+                          >
+                            -
+                          </span>
+                        ) : (
+                          <span
+                            key={`slot-${index}`}
+                            className="official-account-device-code-slot"
+                          >
+                            {char}
+                          </span>
+                        ),
+                      )}
+                    </div>
+                    <Button
+                      block
+                      onClick={() => void handleCopyOfficialUserCode()}
+                    >
+                      {t("复制设备码")}
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="official-account-panel">
+                <Form.Item
+                  label={t("账户名称")}
+                  name="account_name"
+                  initialValue="local-codex"
+                >
+                  <Input />
+                </Form.Item>
+                <Button
+                  type="primary"
+                  htmlType="submit"
+                  loading={officialImporting}
+                >
+                  {t("导入")}
+                </Button>
+              </div>
+            )}
+          </div>
+          <div className="official-account-footer modal-footer">
             <Button onClick={closeOfficialModal}>
               {t("取消")}
-            </Button>
-            {officialEntryMode === "oauth" ? (
-              <Button
-                onClick={() => void handleStartOfficialOAuth()}
-                loading={officialOAuthLaunching}
-              >
-                {officialOAuthSession?.user_code
-                  ? t("重新获取设备码")
-                  : t("打开 OAuth 登录页")}
-              </Button>
-            ) : null}
-            <Button
-              type="primary"
-              htmlType="submit"
-              loading={officialImporting}
-              disabled={
-                officialEntryMode === "oauth" &&
-                (officialOAuthSession?.device_code || "").trim() === ""
-              }
-            >
-              {officialEntryMode === "oauth"
-                ? t("已完成登录")
-                : t("导入")}
             </Button>
           </div>
         </Form>
@@ -2421,54 +2431,6 @@ export function AccountsPage({
             </Button>
           </div>
         </Form>
-        <div className="edit-test-panel">
-          <Text strong>{t("连接测试")}</Text>
-          <Form
-            form={testForm}
-            layout="vertical"
-            initialValues={{ model: "gpt-5.4", input: "ping" }}
-            onFinish={(values) => void handleTest(values)}
-          >
-            <Form.Item
-              label={t("模型")}
-              name="model"
-              rules={[{ required: true, message: t("请选择模型") }]}
-            >
-              <Select
-                options={[
-                  { value: "gpt-5.4", label: "gpt-5.4" },
-                  { value: "gpt-5.1-codex-max", label: "gpt-5.1-codex-max" },
-                  { value: "gpt-5.2-codex", label: "gpt-5.2-codex" },
-                  { value: "gpt-5", label: "gpt-5" },
-                  { value: "gpt-4.1", label: "gpt-4.1" },
-                ]}
-              />
-            </Form.Item>
-            <Form.Item
-              label={t("输入内容")}
-              name="input"
-              rules={[{ required: true, message: t("请输入测试内容") }]}
-            >
-              <Input.TextArea rows={3} />
-            </Form.Item>
-            <div className="modal-footer">
-              <Button htmlType="submit">{t("测试")}</Button>
-            </div>
-          </Form>
-        </div>
-        {testResult ? (
-          <div className="test-result-panel">
-            <Tag color={testResult.ok ? "green" : "red"}>
-              {testResult.message}
-            </Tag>
-            {testResult.details ? (
-              <Text type="secondary">{testResult.details}</Text>
-            ) : null}
-            {testResult.content ? (
-              <pre className="test-output">{testResult.content}</pre>
-            ) : null}
-          </div>
-        ) : null}
         {luaTestResult ? (
           <div className="test-result-panel">
             <Tag color={luaTestResult.ok ? "green" : "red"}>
@@ -2479,6 +2441,66 @@ export function AccountsPage({
             ) : null}
             {luaTestResult.content ? (
               <pre className="test-output">{luaTestResult.content}</pre>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={!!testingAccount}
+        title={t("连接测试")}
+        onCancel={() => {
+          setTestingAccount(null);
+          setTestLoading(false);
+        }}
+        footer={null}
+        destroyOnHidden
+        centered
+      >
+        <Form
+          form={testForm}
+          layout="vertical"
+          onFinish={(values) => void handleTest(values)}
+        >
+          <Form.Item
+            label={t("模型")}
+            name="model"
+            rules={[{ required: true, message: t("请选择模型") }]}
+          >
+            <AutoComplete
+              options={TEST_MODEL_SUGGESTIONS.map((value) => ({ value }))}
+              filterOption={(inputValue, option) =>
+                (option?.value ?? "")
+                  .toString()
+                  .toLowerCase()
+                  .includes(inputValue.toLowerCase())
+              }
+              placeholder="gpt-5.4"
+            />
+          </Form.Item>
+          <Form.Item
+            label={t("输入内容")}
+            name="input"
+            rules={[{ required: true, message: t("请输入测试内容") }]}
+          >
+            <Input.TextArea rows={3} />
+          </Form.Item>
+          <div className="modal-footer">
+            <Button htmlType="submit" loading={testLoading}>
+              {t("测试")}
+            </Button>
+          </div>
+        </Form>
+        {testResult ? (
+          <div className="test-result-panel">
+            <Tag color={testResult.ok ? "green" : "red"}>
+              {testResult.message}
+            </Tag>
+            {testResult.details ? (
+              <Text type="secondary">{testResult.details}</Text>
+            ) : null}
+            {testResult.content ? (
+              <pre className="test-output">{testResult.content}</pre>
             ) : null}
           </div>
         ) : null}

@@ -2645,6 +2645,107 @@ html[data-theme-mode="dark"] .stats-chart-shell {
   gap: 12px;
 }
 
+.official-account-modal .ant-modal-body {
+  padding: 0;
+}
+
+.official-account-modal .ant-modal-content {
+  height: 340px;
+  display: flex;
+  flex-direction: column;
+}
+
+.official-account-form {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.official-account-header {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  margin-bottom: 14px;
+}
+
+.official-account-content {
+  height: 120px;
+  min-height: 120px;
+  max-height: 120px;
+  display: flex;
+  align-items: center;
+}
+
+.official-account-tabs {
+  margin-bottom: 0;
+}
+
+.official-account-panel {
+  display: grid;
+  gap: 12px;
+  padding: 0 2px;
+  width: 100%;
+}
+
+.official-account-panel .ant-form-item {
+  margin-bottom: 0;
+}
+
+.official-account-device-code {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--color-border, #d9d9d9);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.official-account-device-code-slots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.official-account-device-code-plain {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.official-account-device-code-slot {
+  min-width: 34px;
+  height: 44px;
+  border: 1px solid var(--color-border, #d9d9d9);
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  font-family: "SFMono-Regular", "SF Mono", "Roboto Mono", monospace;
+  letter-spacing: 0.02em;
+}
+
+.official-account-device-code-separator {
+  font-size: 20px;
+  line-height: 1;
+  color: var(--text-secondary);
+}
+
+.official-account-footer {
+  margin-top: 14px;
+  padding: 0 2px;
+  border-top: none;
+}
+
 .test-account-meta {
   margin-bottom: 16px;
 }
