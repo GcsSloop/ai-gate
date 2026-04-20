@@ -578,9 +578,6 @@ func (h *AccountsHandler) completeDeviceAuth(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	accountName := strings.TrimSpace(req.AccountName)
-	if accountName == "" {
-		accountName = "local-codex"
-	}
 	raw, err := h.connector.CompleteDeviceAuth(r.Context(), h.client, req.DeviceCode, req.UserCode)
 	if err != nil {
 		switch {
@@ -598,6 +595,15 @@ func (h *AccountsHandler) completeDeviceAuth(w http.ResponseWriter, r *http.Requ
 	if _, err := auth.LoadLocalAuthFileContent(raw); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if accountName == "" {
+		file, err := auth.LoadLocalAuthFileContent(raw)
+		if err == nil {
+			accountName = auth.SuggestedAccountNameFromLocalAuthFile(file)
+		}
+	}
+	if accountName == "" {
+		accountName = "local-codex"
 	}
 	err = h.repo.Create(applyBuiltInDriverDefaults(accounts.Account{
 		ProviderType:      accounts.ProviderOpenAIOfficial,

@@ -756,7 +756,7 @@ export async function startOfficialAuth(): Promise<OfficialAuthSession> {
 }
 
 export async function completeOfficialAuthDevice(payload: {
-  account_name: string;
+  account_name?: string;
   device_code: string;
   user_code: string;
 }, options?: {

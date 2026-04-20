@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -97,6 +98,86 @@ func TestAccountsHandlerAuthorizeReturnsDeviceCode(t *testing.T) {
 	}
 	if _, ok := payload["authorization_url"]; !ok {
 		t.Fatalf("authorization_url missing from response: %#v", payload)
+	}
+}
+
+func TestAccountsHandlerCompleteDeviceAuthUsesInferredName(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	oauthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON := func(value any) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(value)
+		}
+		switch r.URL.Path {
+		case "/device-token":
+			writeJSON(map[string]any{
+				"authorization_code": "auth-code-1",
+				"code_verifier":      "verifier-1",
+			})
+			return
+		case "/oauth-token":
+			writeJSON(map[string]any{
+				"access_token": testJWT(t, map[string]any{
+					"https://api.openai.com/auth": map[string]any{
+						"chatgpt_account_id": "acct-1",
+					},
+				}),
+				"id_token": testJWT(t, map[string]any{
+					"name": "OpenAI Test User",
+				}),
+				"refresh_token": "refresh-1",
+			})
+			return
+		default:
+			http.NotFound(w, r)
+			return
+		}
+	}))
+	t.Cleanup(oauthServer.Close)
+
+	connector := auth.NewOAuthConnector(auth.Config{
+		ClientID:              "client-id",
+		TokenURL:              oauthServer.URL + "/oauth-token",
+		DeviceAuthTokenURL:    oauthServer.URL + "/device-token",
+		DeviceRedirectURL:     "https://auth.openai.com/deviceauth/callback",
+		DeviceVerificationURL: "https://auth.openai.com/codex/device",
+	})
+	handler := api.NewAccountsHandler(
+		repo,
+		nil,
+		connector,
+		auth.NewStateStore(5*time.Minute),
+		api.WithAccountsHTTPClient(oauthServer.Client()),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/auth/device/complete", bytes.NewBufferString(`{
+		"device_code":"dev-1",
+		"user_code":"ABCD-EFGH"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /accounts/auth/device/complete status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	listed, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("List returned %d accounts, want 1", len(listed))
+	}
+	if listed[0].AccountName != "OpenAI Test User" {
+		t.Fatalf("AccountName = %q, want %q", listed[0].AccountName, "OpenAI Test User")
 	}
 }
 
@@ -231,6 +312,23 @@ func TestAccountsHandler(t *testing.T) {
 	if disableRec.Code != http.StatusNoContent {
 		t.Fatalf("POST /accounts/1/disable status = %d, want %d", disableRec.Code, http.StatusNoContent)
 	}
+}
+
+func testJWT(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	headerRaw, err := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})
+	if err != nil {
+		t.Fatalf("Marshal header returned error: %v", err)
+	}
+	claimsRaw, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("Marshal claims returned error: %v", err)
+	}
+	return encodeJWTPart(headerRaw) + "." + encodeJWTPart(claimsRaw) + "."
+}
+
+func encodeJWTPart(raw []byte) string {
+	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
 func TestAccountsHandlerImportLocalCodexAuth(t *testing.T) {

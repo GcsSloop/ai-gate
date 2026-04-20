@@ -217,3 +217,55 @@ func accountIDFromJWT(token string) string {
 	}
 	return claims.OpenAIAuth.ChatGPTAccountID
 }
+
+func SuggestedAccountNameFromLocalAuthFile(file LocalAuthFile) string {
+	candidates := []string{
+		jwtStringClaim(file.Tokens.IDToken, "name"),
+		jwtStringClaim(file.Tokens.IDToken, "preferred_username"),
+		jwtStringClaim(file.Tokens.IDToken, "nickname"),
+		jwtStringClaim(file.Tokens.IDToken, "email"),
+		jwtStringClaim(file.Tokens.AccessToken, "email"),
+	}
+	for _, candidate := range candidates {
+		name := normalizeSuggestedAccountName(candidate)
+		if name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func jwtStringClaim(token string, key string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	value, ok := claims[key]
+	if !ok {
+		return ""
+	}
+	str, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return str
+}
+
+func normalizeSuggestedAccountName(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if at := strings.Index(trimmed, "@"); at > 0 {
+		trimmed = trimmed[:at]
+	}
+	return strings.Join(strings.Fields(trimmed), " ")
+}
