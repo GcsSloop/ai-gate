@@ -140,6 +140,8 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.listAccounts(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts/auth/authorize":
 		h.createAuthSession(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/accounts/auth/device/complete":
+		h.completeDeviceAuth(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts/import-local":
 		h.importLocalAuth(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts/import-current":
@@ -194,6 +196,12 @@ type importLocalAuthRequest struct {
 
 type importCurrentAuthRequest struct {
 	AccountName string `json:"account_name"`
+}
+
+type completeDeviceAuthRequest struct {
+	AccountName string `json:"account_name"`
+	DeviceCode  string `json:"device_code"`
+	UserCode    string `json:"user_code"`
 }
 
 type importSharedAccountRequest struct {
@@ -563,6 +571,51 @@ func (h *AccountsHandler) createAuthSession(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *AccountsHandler) completeDeviceAuth(w http.ResponseWriter, r *http.Request) {
+	var req completeDeviceAuthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	accountName := strings.TrimSpace(req.AccountName)
+	if accountName == "" {
+		accountName = "local-codex"
+	}
+	raw, err := h.connector.CompleteDeviceAuth(r.Context(), h.client, req.DeviceCode, req.UserCode)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrAuthorizationPending):
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		case errors.Is(err, auth.ErrDeviceCodeExpired):
+			http.Error(w, err.Error(), http.StatusGone)
+			return
+		default:
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	if _, err := auth.LoadLocalAuthFileContent(raw); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	err = h.repo.Create(applyBuiltInDriverDefaults(accounts.Account{
+		ProviderType:      accounts.ProviderOpenAIOfficial,
+		AccountName:       accountName,
+		SourceIcon:        "openai",
+		AuthMode:          accounts.AuthModeLocalImport,
+		CredentialRef:     string(raw),
+		BaseURL:           officialCodexBaseURL,
+		Status:            accounts.StatusActive,
+		SupportsResponses: true,
+	}))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+}
+
 func (h *AccountsHandler) importLocalAuth(w http.ResponseWriter, r *http.Request) {
 	accountName, raw, err := decodeLocalImportRequest(r)
 	if err != nil {
@@ -612,7 +665,7 @@ func (h *AccountsHandler) importCurrentAuth(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	authPath := filepath.Join(home, ".codex", "auth.json")
-	_, raw, err := auth.LoadLocalAuthFile(authPath)
+	raw, err := waitForLocalAuthImportReady(r.Context(), authPath, 15*time.Second, 500*time.Millisecond)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -634,6 +687,37 @@ func (h *AccountsHandler) importCurrentAuth(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.WriteHeader(http.StatusCreated)
+}
+
+func waitForLocalAuthImportReady(ctx context.Context, authPath string, timeout time.Duration, interval time.Duration) ([]byte, error) {
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	if interval <= 0 {
+		interval = 500 * time.Millisecond
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var lastErr error
+	for {
+		_, raw, err := auth.LoadLocalAuthFile(authPath)
+		if err == nil {
+			return raw, nil
+		}
+		lastErr = err
+		select {
+		case <-waitCtx.Done():
+			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) && lastErr != nil {
+				return nil, fmt.Errorf("timed out waiting for local auth file: %w", lastErr)
+			}
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, waitCtx.Err()
+		case <-time.After(interval):
+		}
+	}
 }
 
 func (h *AccountsHandler) shareAccount(w http.ResponseWriter, r *http.Request) {
