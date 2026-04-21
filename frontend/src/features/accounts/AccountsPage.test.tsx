@@ -158,6 +158,203 @@ describe("AccountsPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not open browser when oauth authorize response misses device code", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/auth/authorize" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              authorization_url: "https://auth.openai.com/codex/device",
+              state: "state-1",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /添加账户/ }));
+    fireEvent.click(await screen.findByText("官方账户"));
+    const officialModal = await screen.findByRole("dialog", {
+      name: "添加官方账户",
+    });
+    fireEvent.click(
+      within(officialModal).getByRole("button", { name: "使用 ChatGPT 登录" }),
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/auth/authorize",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(openExternalUrl).not.toHaveBeenCalled();
+      expect(within(officialModal).queryByText("设备码")).toBeNull();
+      expect(
+        within(officialModal).getByRole("button", { name: "使用 ChatGPT 登录" }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("retries oauth authorize up to 3 times and succeeds on the third try", async () => {
+    let authorizeCalls = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/auth/authorize" &&
+        init?.method === "POST"
+      ) {
+        authorizeCalls += 1;
+        if (authorizeCalls < 3) {
+          return Promise.resolve(new Response("temporary unavailable", { status: 502 }));
+        }
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              authorization_url: "https://auth.openai.com/codex/device",
+              state: "state-3",
+              user_code: "IJKL-MNOP",
+              device_code: "device-auth-id-3",
+              verification_uri: "https://auth.openai.com/codex/device",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /添加账户/ }));
+    fireEvent.click(await screen.findByText("官方账户"));
+    const officialModal = await screen.findByRole("dialog", {
+      name: "添加官方账户",
+    });
+    fireEvent.click(
+      within(officialModal).getByRole("button", { name: "使用 ChatGPT 登录" }),
+    );
+
+    await waitFor(() => {
+      expect(authorizeCalls).toBe(3);
+      expect(openExternalUrl).toHaveBeenCalledWith(
+        "https://auth.openai.com/codex/device",
+      );
+      expect(within(officialModal).getByText("设备码")).toBeInTheDocument();
+      expect(within(officialModal).getByText("IJKL-MNOP")).toBeInTheDocument();
+    });
+  });
+
+  it("stops after 3 oauth authorize retries and does not open browser", async () => {
+    let authorizeCalls = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/auth/authorize" &&
+        init?.method === "POST"
+      ) {
+        authorizeCalls += 1;
+        return Promise.resolve(new Response("temporary unavailable", { status: 502 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /添加账户/ }));
+    fireEvent.click(await screen.findByText("官方账户"));
+    const officialModal = await screen.findByRole("dialog", {
+      name: "添加官方账户",
+    });
+    fireEvent.click(
+      within(officialModal).getByRole("button", { name: "使用 ChatGPT 登录" }),
+    );
+
+    await waitFor(() => {
+      expect(authorizeCalls).toBe(3);
+      expect(openExternalUrl).not.toHaveBeenCalled();
+      expect(within(officialModal).queryByText("设备码")).toBeNull();
+      expect(
+        within(officialModal).getByRole("button", { name: "使用 ChatGPT 登录" }),
+      ).toBeInTheDocument();
+    });
+  });
+
   it("supports official upload, third-party create, and chat test in a single dashboard", async () => {
     const accountList = [
       {

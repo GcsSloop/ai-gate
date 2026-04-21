@@ -749,9 +749,15 @@ export async function startOfficialAuth(): Promise<OfficialAuthSession> {
     body: "{}",
   });
   if (!response.ok) {
-    throw new Error("failed to start official auth");
+    const details = await response.text();
+    throw new Error(details || "failed to start official auth");
   }
   const payload = (await response.json()) as OfficialAuthSession;
+  const hasDeviceCode = (payload.device_code || "").trim() !== "";
+  const hasUserCode = (payload.user_code || "").trim() !== "";
+  if (!hasDeviceCode || !hasUserCode) {
+    throw new Error("device auth response missing user code");
+  }
   return payload;
 }
 

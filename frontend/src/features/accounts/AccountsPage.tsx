@@ -994,29 +994,47 @@ export function AccountsPage({
   }
 
   async function handleStartOfficialOAuth() {
+    if (officialOAuthLaunching) {
+      return;
+    }
     setOfficialOAuthLaunching(true);
     try {
       let targetURL = "https://auth.openai.com/codex/device";
-      let startedSession: OfficialAuthSession | null = null;
-      try {
-        const session = await startOfficialAuth();
-        setOfficialOAuthSession(session);
-        startedSession = session;
-        const candidate = (session.authorization_url || "").trim();
-        if (/^https?:\/\//i.test(candidate)) {
-          targetURL = candidate;
+      const maxRetries = 3;
+      let session: OfficialAuthSession | null = null;
+      let lastError: unknown = null;
+      for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+        try {
+          session = await startOfficialAuth();
+          break;
+        } catch (error) {
+          lastError = error;
+          if (attempt < maxRetries) {
+            await new Promise<void>((resolve) => {
+              window.setTimeout(resolve, 300);
+            });
+          }
         }
-        const verificationURI = (session.verification_uri || "").trim();
-        if (/^https?:\/\//i.test(verificationURI)) {
-          targetURL = verificationURI;
-        }
-      } catch {
-        setOfficialOAuthSession(null);
-        // Fallback to Codex device login URL when backend oauth metadata is unavailable.
+      }
+      if (!session) {
+        throw lastError instanceof Error ? lastError : new Error(t("启动 OAuth 失败"));
+      }
+      setOfficialOAuthSession(session);
+      const candidate = (session.authorization_url || "").trim();
+      if (/^https?:\/\//i.test(candidate)) {
+        targetURL = candidate;
+      }
+      const verificationURI = (session.verification_uri || "").trim();
+      if (/^https?:\/\//i.test(verificationURI)) {
+        targetURL = verificationURI;
       }
       await openExternalUrl(targetURL);
       void messageApi.success(t("已打开 ChatGPT 登录页"));
-      startOfficialOAuthAutoPoll(startedSession);
+      startOfficialOAuthAutoPoll(session);
+    } catch (error) {
+      setOfficialOAuthSession(null);
+      const friendlyMessage = t("网络波动，暂时无法获取设备码。已自动重试 3 次，请稍后重试。");
+      void messageApi.error(friendlyMessage);
     } finally {
       setOfficialOAuthLaunching(false);
     }

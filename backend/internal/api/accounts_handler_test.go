@@ -101,6 +101,49 @@ func TestAccountsHandlerAuthorizeReturnsDeviceCode(t *testing.T) {
 	}
 }
 
+func TestAccountsHandlerAuthorizeReturnsErrorWhenDeviceAuthUnavailable(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	deviceAuthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+	}))
+	t.Cleanup(deviceAuthServer.Close)
+
+	connector := auth.NewOAuthConnector(auth.Config{
+		ClientID:              "client-id",
+		AuthorizeURL:          "https://auth.example.test/oauth/authorize",
+		TokenURL:              "https://auth.example.test/oauth/token",
+		RedirectURL:           "http://localhost:8080/callback",
+		Scopes:                []string{"model.read"},
+		DeviceAuthUserCodeURL: deviceAuthServer.URL + "/device-auth",
+	})
+	handler := api.NewAccountsHandler(
+		repo,
+		nil,
+		connector,
+		auth.NewStateStore(5*time.Minute),
+		api.WithAccountsHTTPClient(deviceAuthServer.Client()),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/auth/authorize", bytes.NewBufferString(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("POST /accounts/auth/authorize status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	if !strings.Contains(rec.Body.String(), "start device auth:") {
+		t.Fatalf("POST /accounts/auth/authorize body = %q, want prefixed error", rec.Body.String())
+	}
+}
+
 func TestAccountsHandlerCompleteDeviceAuthUsesInferredName(t *testing.T) {
 	t.Parallel()
 
@@ -192,14 +235,42 @@ func TestAccountsHandler(t *testing.T) {
 
 	repo := accounts.NewSQLiteRepository(store.DB())
 	usageRepo := usage.NewSQLiteRepository(store.DB())
+	deviceAuthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON := func(value any) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(value)
+		}
+		switch r.URL.Path {
+		case "/device-auth":
+			writeJSON(map[string]any{
+				"device_auth_id": "dev-auth-generic",
+				"user_code":      "WXYZ-1234",
+				"expires_in":     900,
+				"interval":       5,
+			})
+			return
+		default:
+			http.NotFound(w, r)
+			return
+		}
+	}))
+	t.Cleanup(deviceAuthServer.Close)
+
 	connector := auth.NewOAuthConnector(auth.Config{
-		ClientID:     "client-id",
-		AuthorizeURL: "https://auth.example.test/oauth/authorize",
-		TokenURL:     "https://auth.example.test/oauth/token",
-		RedirectURL:  "http://localhost:8080/callback",
-		Scopes:       []string{"model.read"},
+		ClientID:              "client-id",
+		AuthorizeURL:          "https://auth.example.test/oauth/authorize",
+		TokenURL:              "https://auth.example.test/oauth/token",
+		RedirectURL:           "http://localhost:8080/callback",
+		Scopes:                []string{"model.read"},
+		DeviceAuthUserCodeURL: deviceAuthServer.URL + "/device-auth",
 	})
-	handler := api.NewAccountsHandler(repo, usageRepo, connector, auth.NewStateStore(5*time.Minute))
+	handler := api.NewAccountsHandler(
+		repo,
+		usageRepo,
+		connector,
+		auth.NewStateStore(5*time.Minute),
+		api.WithAccountsHTTPClient(deviceAuthServer.Client()),
+	)
 
 	createBody := bytes.NewBufferString(`{
 		"provider_type":"openai-compatible",
