@@ -560,13 +560,16 @@ func (h *AccountsHandler) createAuthSession(w http.ResponseWriter, r *http.Reque
 		"authorization_url": authURL,
 		"state":             state,
 	}
-	if session, err := h.connector.StartDeviceAuth(r.Context(), h.client); err == nil {
-		resp["device_code"] = session.DeviceCode
-		resp["user_code"] = session.UserCode
-		resp["verification_uri"] = session.VerificationURI
-		resp["expires_in"] = session.ExpiresIn
-		resp["interval"] = session.Interval
+	session, err := h.connector.StartDeviceAuth(r.Context(), h.client)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("start device auth: %v", err), http.StatusBadGateway)
+		return
 	}
+	resp["device_code"] = session.DeviceCode
+	resp["user_code"] = session.UserCode
+	resp["verification_uri"] = session.VerificationURI
+	resp["expires_in"] = session.ExpiresIn
+	resp["interval"] = session.Interval
 
 	writeJSON(w, http.StatusOK, resp)
 }
