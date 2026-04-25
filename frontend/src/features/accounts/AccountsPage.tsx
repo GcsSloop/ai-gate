@@ -127,6 +127,8 @@ const sourceIconMap: Record<SourceIcon, { label: string; icon: string }> = {
 };
 
 const TEST_MODEL_SUGGESTIONS = [
+  "gpt-5.5",
+  "gpt-5.5-pro",
   "gpt-5.4",
   "gpt-5.3-codex",
   "gpt-5.2",

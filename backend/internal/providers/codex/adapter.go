@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+const (
+	// Codex ChatGPT backend gates some models (e.g. gpt-5.5) behind minimum Codex versions.
+	// Use a recent Codex CLI version string to avoid unnecessary model gating.
+	codexClientVersion = "0.125.0"
+	codexOriginator    = "codex_cli_rs"
+	codexUserAgent     = "codex_cli_rs/" + codexClientVersion + " (ai-gate)"
+)
+
 type Adapter struct {
 	baseURL string
 }
@@ -32,16 +40,10 @@ func (a *Adapter) BuildResponsesEndpointRequest(ctx context.Context, credential 
 		req.Header.Set("Accept", "text/event-stream")
 	}
 	req.Header.Set("Authorization", "Bearer "+credential)
-	req.Header.Set("Origin", "https://chatgpt.com")
-	req.Header.Set("Referer", "https://chatgpt.com/")
 	req.Header.Set("ChatGPT-Account-Id", accountID)
-	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("Originator", "codex_cli_rs")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Codex/0.1.2507301649 Chrome/141.0.7390.65 Electron/37.2.6 Safari/537.36")
-	req.Header.Set("Version", "0.21.0")
-	req.Header.Set("Session_id", "codex-router-"+strconvTimeID())
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("originator", codexOriginator)
+	req.Header.Set("User-Agent", codexUserAgent)
+	req.Header.Set("session_id", "codex-router-"+strconvTimeID())
 	return req, nil
 }
 
@@ -60,11 +62,9 @@ func (a *Adapter) BuildUsageRequest(ctx context.Context, credential string, acco
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+credential)
-	req.Header.Set("Origin", "https://chatgpt.com")
-	req.Header.Set("Referer", "https://chatgpt.com/codex/settings/usage")
 	req.Header.Set("ChatGPT-Account-Id", accountID)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Codex/0.1.2507301649 Chrome/141.0.7390.65 Electron/37.2.6 Safari/537.36")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("originator", codexOriginator)
+	req.Header.Set("User-Agent", codexUserAgent)
 	return req, nil
 }
 
