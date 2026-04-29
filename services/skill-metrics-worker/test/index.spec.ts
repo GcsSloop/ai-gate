@@ -8,6 +8,53 @@ const noopEnv = {
 };
 
 describe("skill metrics worker", () => {
+	it("GET / renders public skills landing page", async () => {
+		const mockKv = {
+			get: async (key: string) => {
+				if (key === "catalog:skills:v1") {
+					return JSON.stringify({
+						fetched_at: "2026-04-30T00:00:00Z",
+						repos: [],
+						items: [
+							{
+								id: "github:openai/skills:main:alpha",
+								name: "Alpha Skill",
+								platform: "github",
+								repo_owner: "openai",
+								repo_name: "skills",
+								branch: "main",
+								repo_url: "https://github.com/openai/skills",
+								source_path: "skills/alpha",
+								source_url: "https://github.com/openai/skills/tree/main/skills/alpha",
+								managed_name: "skills-alpha",
+							},
+						],
+					});
+				}
+				return null;
+			},
+			put: async () => null,
+		} as unknown as KVNamespace;
+		const mockDb = {
+			prepare: () => ({
+				bind: () => ({
+					all: async () => ({ results: [] }),
+				}),
+			}),
+		} as unknown as D1Database;
+		const request = new Request("https://skills.ai-gate.work/");
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, { DB: mockDb, SKILL_METRICS_CACHE: mockKv }, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get("content-type")).toContain("text/html");
+		const body = await response.text();
+		expect(body).toContain("AI Gate Skills");
+		expect(body).toContain("Alpha Skill");
+		expect(body).toContain("https://github.com/GcsSloop/ai-gate");
+	});
+
 	it("GET /health requires admin auth", async () => {
 		const request = new Request("https://example.com/health");
 		const ctx = createExecutionContext();

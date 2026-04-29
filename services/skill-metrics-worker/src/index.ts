@@ -291,6 +291,7 @@ const SKILLS_SH_SKILLS_MAX_PAGES = 300;
 const SKILLS_SH_AUDITS_MAX_PAGES = 300;
 const EXTERNAL_FETCH_TIMEOUT_MS = 20_000;
 const EXTERNAL_FETCH_RETRIES = 3;
+const GITHUB_REPO_URL = "https://github.com/GcsSloop/ai-gate";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -299,6 +300,20 @@ export default {
     }
     const url = new URL(request.url);
     try {
+      if (request.method === "GET" && url.pathname === "/") {
+        const query = (url.searchParams.get("q") ?? "").trim();
+        const catalog = await getSkillCatalog(env, false);
+        const ranking = await getSkillRanking(env, utcDay(), 24);
+        const recommended = ranking.items.map((item) => item.skill_name);
+        const skills = filterAndSliceCatalog(catalog, query, 0, 24, recommended);
+        return html(renderLandingPage({
+          query,
+          fetchedAt: catalog.fetched_at,
+          indexedTotal: skills.indexedTotal,
+          total: skills.total,
+          items: skills.items,
+        }));
+      }
       if (request.method === "GET" && url.pathname === "/health") {
         await assertAdmin(request, env);
         return json({ ok: true, service: "aigate-skill-metrics" });
@@ -3009,6 +3024,15 @@ function html(content: string): Response {
   return new Response(content, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function httpError(status: number, message: string): Error & { status: number } {
   const err = new Error(message) as Error & { status: number };
   err.status = status;
@@ -3170,6 +3194,108 @@ async function assertBearer(request: Request, token?: string, options?: { requir
   if (!current || current !== token) {
     throw httpError(401, "invalid_bearer_token");
   }
+}
+
+function renderLandingPage(data: {
+  query: string;
+  fetchedAt: string;
+  indexedTotal: number;
+  total: number;
+  items: CatalogSkillItem[];
+}): string {
+  const cards = data.items.map((item) => {
+    const repoName = `${item.repo_owner}/${item.repo_name}`;
+    const path = item.source_path === "." ? "Repository root" : item.source_path;
+    const auditProviders = item.audits_summary?.providers ?? [];
+    const auditText = auditProviders.length > 0
+      ? auditProviders.map((provider) => `${provider.label}: ${provider.status}`).join(" · ")
+      : "Audit details pending";
+    return `<article class="skill-card">
+      <div class="card-top">
+        <p class="repo">${escapeHtml(repoName)}</p>
+        <a class="open-link" href="${escapeHtml(item.source_url)}" target="_blank" rel="noreferrer">View source</a>
+      </div>
+      <h2>${escapeHtml(item.name)}</h2>
+      <p class="path">${escapeHtml(path)}</p>
+      <p class="audit">${escapeHtml(auditText)}</p>
+    </article>`;
+  }).join("");
+  const emptyState = `<section class="empty">
+    <h2>No skills found</h2>
+    <p>Try a shorter query or browse the project repository for available AI Gate skill sources.</p>
+  </section>`;
+  const updated = data.fetchedAt ? new Date(data.fetchedAt).toISOString().slice(0, 10) : "pending";
+  const searchValue = escapeHtml(data.query);
+  const resultLabel = data.query
+    ? `${data.total} matching skills from ${data.indexedTotal} indexed`
+    : `${data.indexedTotal} indexed skills`;
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Gate Skills</title>
+    <style>
+      :root { color-scheme: light; --bg:#f6f8fb; --ink:#16201d; --muted:#66716d; --line:#dbe3e1; --panel:#ffffff; --accent:#0f766e; --accent-ink:#ffffff; --warm:#b45309; }
+      * { box-sizing: border-box; }
+      body { margin:0; min-height:100vh; font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--ink); background:linear-gradient(180deg,#f6f8fb 0%,#eef3f6 100%); }
+      a { color:inherit; }
+      .wrap { width:min(1120px, calc(100% - 32px)); margin:0 auto; }
+      header { padding:28px 0 18px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+      .brand { display:flex; align-items:center; gap:10px; font-weight:700; }
+      .mark { width:34px; height:34px; border-radius:8px; display:grid; place-items:center; color:var(--accent-ink); background:var(--accent); font-size:18px; }
+      .github { display:inline-flex; align-items:center; min-height:38px; padding:0 14px; border:1px solid var(--line); border-radius:8px; text-decoration:none; background:rgba(255,255,255,.76); font-weight:600; }
+      .hero { padding:38px 0 28px; border-top:1px solid rgba(220,226,221,.7); }
+      .hero h1 { margin:0; max-width:760px; font-size:64px; line-height:.98; letter-spacing:0; }
+      .hero p { margin:18px 0 0; max-width:620px; color:var(--muted); font-size:18px; line-height:1.55; }
+      .searchbar { margin-top:28px; display:flex; gap:10px; max-width:620px; }
+      .searchbar input { flex:1; min-width:0; height:46px; border:1px solid var(--line); border-radius:8px; padding:0 14px; font-size:15px; background:var(--panel); color:var(--ink); }
+      .searchbar button { height:46px; border:0; border-radius:8px; padding:0 18px; background:var(--accent); color:var(--accent-ink); font-weight:700; cursor:pointer; }
+      .meta { margin:24px 0 14px; display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; color:var(--muted); font-size:13px; }
+      .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; padding-bottom:54px; }
+      .skill-card { min-height:190px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; display:flex; flex-direction:column; gap:12px; box-shadow:0 12px 28px rgba(24,45,38,.07); }
+      .card-top { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+      .repo, .path, .audit { margin:0; color:var(--muted); font-size:13px; line-height:1.45; overflow-wrap:anywhere; }
+      .open-link { flex:none; text-decoration:none; color:var(--warm); font-size:13px; font-weight:700; }
+      .skill-card h2 { margin:0; font-size:20px; line-height:1.2; letter-spacing:0; overflow-wrap:anywhere; }
+      .audit { margin-top:auto; padding-top:12px; border-top:1px solid var(--line); }
+      .empty { margin:0 0 54px; padding:32px; border:1px dashed var(--line); border-radius:8px; background:rgba(255,255,255,.65); }
+      .empty h2 { margin:0 0 8px; }
+      .empty p { margin:0; color:var(--muted); }
+      @media (max-width:640px) {
+        header { align-items:flex-start; flex-direction:column; }
+        .hero { padding-top:26px; }
+        .hero h1 { font-size:42px; }
+        .searchbar { flex-direction:column; }
+        .searchbar button { width:100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div class="brand"><span class="mark">A</span><span>AI Gate Skills</span></div>
+        <a class="github" href="${GITHUB_REPO_URL}" target="_blank" rel="noreferrer">GitHub Repository</a>
+      </header>
+      <main>
+        <section class="hero">
+          <h1>AI Gate Skills</h1>
+          <p>Browse installable skills indexed for AI Gate, compare their source repositories, and jump directly to the GitHub project.</p>
+          <form class="searchbar" action="/" method="get">
+            <input name="q" value="${searchValue}" placeholder="Search skills, repositories, or paths" />
+            <button type="submit">Search</button>
+          </form>
+        </section>
+        <div class="meta">
+          <span>${escapeHtml(resultLabel)}</span>
+          <span>Catalog updated ${escapeHtml(updated)}</span>
+        </div>
+        ${data.items.length > 0 ? `<section class="grid">${cards}</section>` : emptyState}
+      </main>
+    </div>
+  </body>
+</html>`;
 }
 
 function renderAdminPage(initialAuthenticated: boolean): string {
