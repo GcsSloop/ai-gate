@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${BASE_URL:-https://aigate-skill-metrics.gcssloop.workers.dev}"
+BASE_URL="${BASE_URL:-https://skills.ai-gate.work}"
 TOKEN="${TRACKED_REPOS_ADMIN_TOKEN:-}"
 
 usage() {

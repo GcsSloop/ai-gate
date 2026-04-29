@@ -437,6 +437,25 @@ func TestSkillMetricsBaseURLUsesConfigNotEnv(t *testing.T) {
 	}
 }
 
+func TestToolingConfigMigratesLegacySkillMetricsURL(t *testing.T) {
+	home := t.TempDir()
+	cfg := loadToolingConfig(home)
+	cfg.SkillMetricsBaseURL = legacySkillMetricsBaseURL
+	cfg.SkillRepoRegistryURL = defaultToolingRepoRegistryURL(legacySkillMetricsBaseURL)
+	if err := saveToolingConfig(home, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	got := loadToolingConfig(home)
+	if got.SkillMetricsBaseURL != defaultSkillMetricsBaseURL {
+		t.Fatalf("SkillMetricsBaseURL = %q, want %q", got.SkillMetricsBaseURL, defaultSkillMetricsBaseURL)
+	}
+	wantRegistry := defaultToolingRepoRegistryURL(defaultSkillMetricsBaseURL)
+	if got.SkillRepoRegistryURL != wantRegistry {
+		t.Fatalf("SkillRepoRegistryURL = %q, want %q", got.SkillRepoRegistryURL, wantRegistry)
+	}
+}
+
 func TestParseDiscoveredSkillIDSupportsLegacyCentralFormat(t *testing.T) {
 	platform, repo, branch, sourcePath, err := parseDiscoveredSkillID("github:openai/skills:collections/demo")
 	if err != nil {

@@ -41,7 +41,8 @@ const (
 	skillMetricsHeartbeatName          = "__client_active__"
 	skillMetricsHeartbeatSource        = "__aigate_client__"
 	skillMetricsActiveReportInterval   = time.Hour
-	defaultSkillMetricsBaseURL         = "https://aigate-skill-metrics.gcssloop.workers.dev"
+	legacySkillMetricsBaseURL         = "https://" + "aigate-skill-metrics" + ".gcssloop.workers.dev"
+	defaultSkillMetricsBaseURL         = "https://skills.ai-gate.work"
 )
 
 var toolingSupportedApps = []string{"codex"}
@@ -1476,6 +1477,9 @@ func normalizeToolingConfig(cfg toolingConfig) (toolingConfig, bool) {
 	changed := false
 	cfg.SkillSyncMethod = normalizeSkillSyncMethod(cfg.SkillSyncMethod)
 	baseURL := normalizeBaseURL(cfg.SkillMetricsBaseURL)
+	if baseURL == legacySkillMetricsBaseURL {
+		baseURL = defaultToolingSkillMetricsBaseURL
+	}
 	if baseURL == "" {
 		baseURL = defaultToolingSkillMetricsBaseURL
 	}
@@ -1484,6 +1488,9 @@ func normalizeToolingConfig(cfg toolingConfig) (toolingConfig, bool) {
 	}
 	cfg.SkillMetricsBaseURL = baseURL
 	registryURL := normalizeBaseURL(cfg.SkillRepoRegistryURL)
+	if registryURL == defaultToolingRepoRegistryURL(legacySkillMetricsBaseURL) {
+		registryURL = defaultToolingRepoRegistryURL(baseURL)
+	}
 	if registryURL == "" {
 		registryURL = defaultToolingRepoRegistryURL(baseURL)
 	}
