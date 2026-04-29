@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${1:-https://aigate-skill-metrics.gcssloop.workers.dev}"
+BASE_URL="${1:-https://skills.ai-gate.work}"
 DAY="${2:-$(date -u +%F)}"
 
 echo "[1/3] health"

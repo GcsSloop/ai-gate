@@ -73,7 +73,7 @@ npx wrangler deploy --config services/skill-metrics-worker/wrangler.jsonc
 
 Current endpoint:
 
-- `https://aigate-skill-metrics.gcssloop.workers.dev`
+- `https://skills.ai-gate.work`
 
 Current version ID (latest in this setup): `3e082831-03fa-4419-b01b-558e79bbdc24`
 
@@ -86,13 +86,13 @@ After central tracked-repos rollout update:
 Health check:
 
 ```bash
-curl -sS https://aigate-skill-metrics.gcssloop.workers.dev/health
+curl -sS https://skills.ai-gate.work/health
 ```
 
 Ingest sample event:
 
 ```bash
-curl -sS -X POST https://aigate-skill-metrics.gcssloop.workers.dev/events/install \
+curl -sS -X POST https://skills.ai-gate.work/events/install \
   -H 'Content-Type: application/json' \
   -d '{"user_hash":"u_demo_003","skill_name":"frontend-design","source_repo":"anthropics/skills","client_version":"1.2.12"}'
 ```
@@ -100,7 +100,7 @@ curl -sS -X POST https://aigate-skill-metrics.gcssloop.workers.dev/events/instal
 Read ranking:
 
 ```bash
-curl -sS 'https://aigate-skill-metrics.gcssloop.workers.dev/rankings/skills?day=2026-04-10&limit=50'
+curl -sS 'https://skills.ai-gate.work/rankings/skills?day=2026-04-10&limit=50'
 ```
 
 ## Security Notes
@@ -137,7 +137,7 @@ Apply seed list command:
 
 ```bash
 TOKEN='<admin token>'
-BASE_URL='https://aigate-skill-metrics.gcssloop.workers.dev' \
+BASE_URL='https://skills.ai-gate.work' \
 TRACKED_REPOS_ADMIN_TOKEN="$TOKEN" \
 /Users/gcssloop/WorkSpace/AIGC/codex-router/services/skill-metrics-worker/scripts/tracked-repos.sh \
 replace \
@@ -159,7 +159,7 @@ Verification snapshot:
 Set environment variables for backend process:
 
 ```bash
-export AIGATE_SKILL_REPO_REGISTRY_URL='https://aigate-skill-metrics.gcssloop.workers.dev/tracked-repos'
+export AIGATE_SKILL_REPO_REGISTRY_URL='https://skills.ai-gate.work/tracked-repos'
 # Optional only when GET /tracked-repos is protected by auth:
 export AIGATE_SKILL_REPO_REGISTRY_TOKEN=''
 ```

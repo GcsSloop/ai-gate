@@ -72,7 +72,7 @@ Bootstrap command:
 ```bash
 cd services/skill-metrics-worker
 TRACKED_REPOS_ADMIN_TOKEN='<admin token>' \
-BASE_URL='https://aigate-skill-metrics.gcssloop.workers.dev' \
+BASE_URL='https://skills.ai-gate.work' \
 ./scripts/tracked-repos.sh replace ./config/tracked-repos.seed.json
 ```
 
@@ -81,7 +81,7 @@ Import and dedupe repositories from skills.sh/cc-ai source pages:
 ```bash
 cd services/skill-metrics-worker
 TRACKED_REPOS_ADMIN_TOKEN='<admin token>' \
-BASE_URL='https://aigate-skill-metrics.gcssloop.workers.dev' \
+BASE_URL='https://skills.ai-gate.work' \
 ./scripts/import-ccai-repos.sh
 ```
 
@@ -187,7 +187,7 @@ Pagination query params:
 
 Open:
 
-- `https://aigate-skill-metrics.gcssloop.workers.dev/admin`
+- `https://skills.ai-gate.work/admin`
 
 Login with `ADMIN_UI_PASSWORD`.
 
@@ -227,7 +227,7 @@ Response:
 
 Set these env vars in AI Gate backend runtime:
 
-- `AIGATE_SKILL_REPO_REGISTRY_URL` (example: `https://aigate-skill-metrics.gcssloop.workers.dev/tracked-repos`)
+- `AIGATE_SKILL_REPO_REGISTRY_URL` (example: `https://skills.ai-gate.work/tracked-repos`)
 - `AIGATE_SKILL_REPO_REGISTRY_TOKEN` (required if `/tracked-repos` is protected)
 
 When set, skill discovery refresh will pull centralized tracked repos and merge missing entries into local scanning list.
