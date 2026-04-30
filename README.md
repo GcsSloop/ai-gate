@@ -116,6 +116,45 @@ npm --prefix desktop run dev
 
 前端开发服务器会将本地 API 请求代理到 `http://127.0.0.1:6789`。
 
+## 常见问题 Q&A
+
+### **Q: 设备码无法登录怎么办？**
+
+优先检查 AI Gate 是否已经开启设备登录配置。如果没有开启，Codex 仍会走原有登录路径，设备码登录可能无法通过 AI Gate 正常接入。
+
+![AI Gate 设备登录配置](assets/screenshot-device-login-setting.png)
+
+-----
+
+### **Q: 遇到无法访问或请求报错怎么办？**
+
+先检查代理模式和上游地址是否正确。使用 Clash 等代理工具时，建议优先使用规则模式；全局模式可能让本地路由、上游访问或回环地址解析出现异常。
+
+![Clash 全局模式提醒](assets/screenshot-device-clash.png)
+
+如果代理模式和上游地址看起来都正常，再通过网页直接测试上游路由是否通畅，确认问题发生在上游、代理链路还是 AI Gate 本地入口。
+
+-----
+
+### **Q: 开启代理后对话记录丢失怎么办？**
+
+复制下面内容，粘贴到 Codex 中执行会话记录迁移：
+
+```text
+请下载并使用 AI Gate 的 migrating-codex-history Skill，帮我把本机 Codex 会话记录迁移到 AI Gate 使用的 provider 下。
+
+Skill 地址：
+https://raw.githubusercontent.com/GcsSloop/ai-gate/main/skills/migrating-codex-history/SKILL.md
+
+执行要求：
+1. 先读取这个 Skill，并严格按照 Skill 里的 Workflow 操作。
+2. 如果当前目录存在 AI Gate 仓库，优先使用仓库内的 scripts/migrate_openai_history_to_aigate.sh。
+3. 如果当前目录没有 AI Gate 仓库，请按 Skill 说明下载迁移脚本到临时文件，不要使用 curl | bash。
+4. 先执行 dry-run，并把迁移摘要展示给我确认。
+5. 确认后再执行真实迁移。
+6. 迁移完成后告诉我实际执行的命令，以及 summary 里的 copied、patched_existing、patched_db、patched_index 数量。
+```
+
 ## 架构与安全边界
 
 ```mermaid
