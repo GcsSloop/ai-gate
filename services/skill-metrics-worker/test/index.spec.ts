@@ -472,4 +472,67 @@ describe("skill metrics worker", () => {
 		expect(payload.ranking_skills_total).toBe(9);
 		expect(payload.total_install_events).toBe(28);
 	});
+
+	it("GET /admin/api/skills/final falls back to latest catalog cache without external refresh", async () => {
+		const originalFetch = globalThis.fetch;
+		const fetchMock = vi.fn(async () => {
+			throw new Error("external fetch should not run");
+		});
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+		try {
+			const mockDb = {
+				prepare: () => ({
+					bind: () => ({
+						all: async () => ({ results: [] }),
+					}),
+					all: async () => ({ results: [] }),
+				}),
+			} as unknown as D1Database;
+			const mockKv = {
+				get: async (key: string) => {
+					if (key === "catalog:skills:v1") return null;
+					if (key === "catalog:skills:latest:v1") {
+						return JSON.stringify({
+							fetched_at: "2026-05-08T00:00:00Z",
+							repos: [],
+							items: [
+								{
+									id: "github:openai/skills:main:alpha",
+									name: "Alpha Skill",
+									platform: "github",
+									repo_owner: "openai",
+									repo_name: "skills",
+									branch: "main",
+									repo_url: "https://github.com/openai/skills",
+									source_path: "alpha",
+									source_url: "https://github.com/openai/skills/tree/main/alpha",
+									managed_name: "skills-alpha",
+								},
+							],
+						});
+					}
+					return null;
+				},
+				put: async () => null,
+			} as unknown as KVNamespace;
+			const request = new Request("https://example.com/admin/api/skills/final?offset=0&limit=300", {
+				headers: { authorization: "Bearer admin-token" },
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(
+				request,
+				{ DB: mockDb, SKILL_METRICS_CACHE: mockKv, TRACKED_REPOS_ADMIN_TOKEN: "admin-token" },
+				ctx,
+			);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const payload = (await response.json()) as { items: Array<{ name: string }>; total_items: number };
+			expect(payload.total_items).toBe(1);
+			expect(payload.items.map((item) => item.name)).toEqual(["Alpha Skill"]);
+			expect(fetchMock).not.toHaveBeenCalled();
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
 });

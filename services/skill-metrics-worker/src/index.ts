@@ -262,6 +262,8 @@ const MAX_LIMIT = 200;
 const SESSION_COOKIE_NAME = "aigate_admin_session";
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 const SKILL_CATALOG_CACHE_KEY = "catalog:skills:v1";
+const SKILL_CATALOG_LATEST_CACHE_KEY = "catalog:skills:latest:v1";
+const SKILL_CATALOG_REFRESH_LOCK_CACHE_KEY = "catalog:skills:refresh-lock:v1";
 const SKILL_CATALOG_TTL_SECONDS = 12 * 60 * 60;
 const SCAN_STATUS_CACHE_KEY = "scan:skills:status:v1";
 const SCAN_WORKING_CACHE_KEY = "scan:skills:working:v1";
@@ -302,7 +304,7 @@ export default {
     try {
       if (request.method === "GET" && url.pathname === "/") {
         const query = (url.searchParams.get("q") ?? "").trim();
-        const catalog = await getSkillCatalog(env, false);
+        const catalog = await getSkillCatalog(env, false, ctx);
         const ranking = await getSkillRanking(env, utcDay(), 24);
         const recommended = ranking.items.map((item) => item.skill_name);
         const skills = filterAndSliceCatalog(catalog, query, 0, 24, recommended);
@@ -347,7 +349,7 @@ export default {
         const force = url.searchParams.get("refresh") === "1";
         const limit = normalizeCatalogLimit(url.searchParams.get("limit"));
         const offset = normalizeCatalogOffset(url.searchParams.get("offset"));
-        const catalog = await getSkillCatalog(env, force);
+        const catalog = await getSkillCatalog(env, force, ctx);
         const sliced = sliceCatalog(catalog, offset, limit);
         return json(sliced);
       }
@@ -356,7 +358,7 @@ export default {
         const offset = normalizeCatalogOffset(url.searchParams.get("offset"));
         const query = (url.searchParams.get("q") ?? "").trim();
         const day = normalizeDay(url.searchParams.get("day")) ?? utcDay();
-        const catalog = await getSkillCatalog(env, false);
+        const catalog = await getSkillCatalog(env, false, ctx);
         const ranking = await getSkillRanking(env, day, 10);
         const { items, total, indexedTotal } = filterAndSliceCatalog(catalog, query, offset, limit, ranking.items.map((item) => item.skill_name));
         return json({
@@ -419,7 +421,7 @@ export default {
         const windowDays = normalizeActiveWindowDays(url.searchParams.get("window"));
         const rankingDay = normalizeDay(url.searchParams.get("day")) ?? utcDay();
         const curveDays = normalizeCurveDays(url.searchParams.get("curve_days"));
-        const stats = await getOverviewStats(env, windowDays, rankingDay, curveDays);
+        const stats = await getOverviewStats(env, windowDays, rankingDay, curveDays, ctx);
         return json(stats);
       }
       if (request.method === "GET" && url.pathname === "/admin/api/users") {
@@ -469,7 +471,7 @@ export default {
         const limit = normalizeCatalogLimit(url.searchParams.get("limit"));
         const offset = normalizeCatalogOffset(url.searchParams.get("offset"));
         const query = trim(url.searchParams.get("q") ?? "", 160);
-        const catalog = await getSkillCatalog(env, force);
+        const catalog = await getSkillCatalog(env, force, ctx);
         if (query) {
           const filtered = filterAndSliceCatalog(catalog, query, offset, limit, []);
           return json({
@@ -694,13 +696,13 @@ async function getUserStats(env: Env, windowDays: number): Promise<UserStats> {
   };
 }
 
-async function getOverviewStats(env: Env, windowDays: number, rankingDay: string, curveDays: number): Promise<OverviewStats> {
+async function getOverviewStats(env: Env, windowDays: number, rankingDay: string, curveDays: number, ctx?: ExecutionContext): Promise<OverviewStats> {
   const userStats = await getUserStats(env, windowDays);
   const active7d = await getUserStats(env, 7);
   const active30d = await getUserStats(env, 30);
   const userCurve = await getUserCurve(env, curveDays);
   const repos = await listTrackedRepos(env);
-  const catalog = await getSkillCatalog(env, false);
+  const catalog = await getSkillCatalog(env, false, ctx);
   const history = await getScanHistory(env);
   const durationRows = history.runs.filter((item) => item.duration_ms > 0);
   const avgDuration = durationRows.length
@@ -1060,12 +1062,20 @@ async function deleteTrackedRepo(env: Env, platform: "github" | "gitlab", owner:
   await env.DB.prepare("DELETE FROM tracked_repos WHERE repo_key = ?1").bind(repoKey(platform, owner, name)).run();
 }
 
-async function getSkillCatalog(env: Env, forceRefresh: boolean): Promise<SkillCatalog> {
+async function getSkillCatalog(env: Env, forceRefresh: boolean, ctx?: ExecutionContext): Promise<SkillCatalog> {
   if (!forceRefresh) {
     const raw = await env.SKILL_METRICS_CACHE.get(SKILL_CATALOG_CACHE_KEY);
     if (raw) {
       return JSON.parse(raw) as SkillCatalog;
     }
+    const latestRaw = await env.SKILL_METRICS_CACHE.get(SKILL_CATALOG_LATEST_CACHE_KEY);
+    if (latestRaw) {
+      const latest = JSON.parse(latestRaw) as SkillCatalog;
+      ctx?.waitUntil(env.SKILL_METRICS_CACHE.put(SKILL_CATALOG_CACHE_KEY, latestRaw, { expirationTtl: SKILL_CATALOG_TTL_SECONDS }));
+      return latest;
+    }
+    ctx?.waitUntil(refreshSkillCatalogCache(env));
+    return emptySkillCatalog();
   }
   if (forceRefresh) {
     try {
@@ -1077,8 +1087,39 @@ async function getSkillCatalog(env: Env, forceRefresh: boolean): Promise<SkillCa
   const repos = await listTrackedRepos(env);
   const repoStars = await readCachedRepoStars(env);
   const catalog = await buildCatalogFromSkillsSource(env, repos, undefined, repoStars, undefined);
-  await env.SKILL_METRICS_CACHE.put(SKILL_CATALOG_CACHE_KEY, JSON.stringify(catalog), { expirationTtl: SKILL_CATALOG_TTL_SECONDS });
+  await writeSkillCatalogCache(env, catalog);
   return catalog;
+}
+
+async function refreshSkillCatalogCache(env: Env): Promise<void> {
+  const locked = await env.SKILL_METRICS_CACHE.get(SKILL_CATALOG_REFRESH_LOCK_CACHE_KEY);
+  if (locked) {
+    return;
+  }
+  await env.SKILL_METRICS_CACHE.put(SKILL_CATALOG_REFRESH_LOCK_CACHE_KEY, new Date().toISOString(), { expirationTtl: 10 * 60 });
+  try {
+    await getSkillCatalog(env, true);
+  } catch {
+    // Read endpoints must stay responsive even if the external catalog source is slow or unavailable.
+  } finally {
+    await env.SKILL_METRICS_CACHE.delete(SKILL_CATALOG_REFRESH_LOCK_CACHE_KEY);
+  }
+}
+
+async function writeSkillCatalogCache(env: Env, catalog: SkillCatalog): Promise<void> {
+  const raw = JSON.stringify(catalog);
+  await Promise.all([
+    env.SKILL_METRICS_CACHE.put(SKILL_CATALOG_CACHE_KEY, raw, { expirationTtl: SKILL_CATALOG_TTL_SECONDS }),
+    env.SKILL_METRICS_CACHE.put(SKILL_CATALOG_LATEST_CACHE_KEY, raw),
+  ]);
+}
+
+function emptySkillCatalog(): SkillCatalog {
+  return {
+    fetched_at: "",
+    repos: [],
+    items: [],
+  };
 }
 
 async function readCachedRepoStars(env: Env): Promise<Record<string, number>> {
@@ -1250,7 +1291,7 @@ async function stepCatalogScan(env: Env, batchSize: number): Promise<ScanStatus>
 
   if (status.current_index >= working.repos.length) {
     const catalog = await buildCatalogFromSkillsSource(env, working.repos, working.repo_skill_counts, working.repo_stars, working.repo_errors);
-    await env.SKILL_METRICS_CACHE.put(SKILL_CATALOG_CACHE_KEY, JSON.stringify(catalog), { expirationTtl: SKILL_CATALOG_TTL_SECONDS });
+    await writeSkillCatalogCache(env, catalog);
     status.running = false;
     status.finished_at = new Date().toISOString();
     status.last_scan_at = status.finished_at;
