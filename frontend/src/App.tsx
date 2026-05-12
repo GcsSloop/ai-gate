@@ -20,6 +20,7 @@ const appSettingsBootstrapRetryDelays = [0, 150, 300, 600, 1_000];
 const homeUpdateCheckIntervalMs = 60 * 60 * 1_000;
 const defaultStatusRefreshIntervalSeconds = 60;
 const immediateUsageRefreshDebounceMs = 400;
+const immediateUsageRefreshFailureBackoffMs = 60_000;
 const resumeGapWatchIntervalMs = 5_000;
 const resumeGapThresholdMs = 30_000;
 const hiddenResumeThresholdMs = 15_000;
@@ -30,6 +31,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function isMainPageVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState === "visible";
 }
 
 export function App() {
@@ -50,6 +55,7 @@ export function App() {
   const immediateUsageRefreshInFlightRef = useRef(false);
   const immediateUsageRefreshPendingRef = useRef(false);
   const immediateUsageRefreshTimerRef = useRef<number | null>(null);
+  const immediateUsageRefreshLastFailedAtRef = useRef(0);
   const hiddenSinceRef = useRef<number | null>(null);
   const language = normalizeLanguage(appSettings?.language);
   const t = createTranslator(language);
@@ -106,8 +112,11 @@ export function App() {
         immediateUsageRefreshPendingRef.current = false;
         try {
           await refreshAccountUsage();
+          immediateUsageRefreshLastFailedAtRef.current = 0;
         } catch {
           // Network and wake-up recovery should stay silent and retry on the next trigger.
+          immediateUsageRefreshLastFailedAtRef.current = Date.now();
+          immediateUsageRefreshPendingRef.current = false;
         }
         setAccountsSyncToken((value) => value + 1);
         void refreshDesktopTrayState();
@@ -122,7 +131,14 @@ export function App() {
       if (!shellReady || typeof window === "undefined") {
         return;
       }
+      if (!isMainPageVisible()) {
+        return;
+      }
       if (trigger === "online" && typeof navigator !== "undefined" && navigator.onLine === false) {
+        return;
+      }
+      const lastFailureAt = immediateUsageRefreshLastFailedAtRef.current;
+      if (lastFailureAt > 0 && Date.now() - lastFailureAt < immediateUsageRefreshFailureBackoffMs) {
         return;
       }
       if (immediateUsageRefreshTimerRef.current !== null) {
@@ -206,6 +222,9 @@ export function App() {
     let disposed = false;
     let unlisten: undefined | (() => void);
     const handleBackendStateChanged = () => {
+      if (!isMainPageVisible()) {
+        return;
+      }
       void refreshProxyState();
       void refreshDesktopTrayState();
       setAccountsSyncToken((value) => value + 1);
@@ -241,6 +260,9 @@ export function App() {
       }
       const hiddenSince = hiddenSinceRef.current;
       hiddenSinceRef.current = null;
+      void refreshProxyState();
+      void refreshDesktopTrayState();
+      setAccountsSyncToken((value) => value + 1);
       if (hiddenSince !== null && Date.now() - hiddenSince >= hiddenResumeThresholdMs) {
         queueImmediateUsageRefresh("visibility_resume");
       }
@@ -249,7 +271,7 @@ export function App() {
       const now = Date.now();
       const elapsed = now - lastTickAt;
       lastTickAt = now;
-      if (elapsed >= resumeGapThresholdMs) {
+      if (isMainPageVisible() && elapsed >= resumeGapThresholdMs) {
         queueImmediateUsageRefresh("resume_gap");
       }
     }, resumeGapWatchIntervalMs);
@@ -275,6 +297,9 @@ export function App() {
 
     const refreshIntervalSeconds = Math.min(Math.max(appSettings.status_refresh_interval_seconds ?? defaultStatusRefreshIntervalSeconds, 5), 3600);
     const timer = window.setInterval(() => {
+      if (!isMainPageVisible()) {
+        return;
+      }
       void refreshProxyState();
       void refreshDesktopTrayState();
       setAccountsSyncToken((value) => value + 1);

@@ -91,6 +91,10 @@ describe("App", () => {
   });
 
   afterEach(() => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
@@ -389,7 +393,6 @@ describe("App", () => {
     await act(async () => {
       await Promise.resolve();
     });
-
     expect(screen.getByText(/accounts-sync:0/)).toBeInTheDocument();
     expect(mockedUpdateService.check).toHaveBeenCalledTimes(1);
 
@@ -605,7 +608,6 @@ describe("App", () => {
     await act(async () => {
       await Promise.resolve();
     });
-
     expect(screen.getByText(/accounts-sync:0/)).toBeInTheDocument();
     expect(vi.mocked(refreshDesktopTrayState)).toHaveBeenCalledTimes(1);
 
@@ -617,6 +619,69 @@ describe("App", () => {
     expect(screen.getByText(/accounts-sync:1/)).toBeInTheDocument();
     expect(vi.mocked(refreshDesktopTrayState)).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:6789/ai-router/api/settings/proxy/status");
+  });
+
+  it("skips periodic status refresh while the main page is hidden", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+        return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              launch_at_login: false,
+              silent_start: false,
+              close_to_tray: true,
+              show_proxy_switch_on_home: true,
+              show_home_update_indicator: false,
+              status_refresh_interval_seconds: 5,
+              proxy_host: "127.0.0.1",
+              proxy_port: 6789,
+              auto_failover_enabled: false,
+              auto_backup_interval_hours: 24,
+              backup_retention_count: 10,
+              audit_limit_message: 200,
+              audit_limit_function_call: 100,
+              audit_limit_function_call_output: 100,
+              audit_limit_reasoning: 40,
+              audit_limit_custom_tool_call: 100,
+              audit_limit_custom_tool_call_output: 100,
+              language: "zh-CN",
+              theme_mode: "system",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/accounts-sync:0/)).toBeInTheDocument();
+    expect(vi.mocked(refreshDesktopTrayState)).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/accounts-sync:0/)).toBeInTheDocument();
+    expect(vi.mocked(refreshDesktopTrayState)).toHaveBeenCalledTimes(1);
   });
 
   it("opens an update modal when the home update indicator is clicked", async () => {
@@ -1228,6 +1293,9 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(subscribeDesktopBackendStateChanged).toHaveBeenCalled();
+    });
 
     await act(async () => {
       window.dispatchEvent(new Event("online"));
@@ -1242,9 +1310,84 @@ describe("App", () => {
     });
   });
 
+  it("backs off immediate usage refresh after a failed online recovery", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "http://127.0.0.1:6789/ai-router/api/settings/proxy/status") {
+        return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "http://127.0.0.1:6789/ai-router/api/settings/app") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              launch_at_login: false,
+              silent_start: false,
+              close_to_tray: true,
+              show_proxy_switch_on_home: true,
+              show_home_update_indicator: false,
+              status_refresh_interval_seconds: 3600,
+              usage_request_timeout_seconds: 15,
+              proxy_host: "127.0.0.1",
+              proxy_port: 6789,
+              auto_failover_enabled: true,
+              auto_backup_interval_hours: 24,
+              backup_retention_count: 10,
+              audit_limit_message: 200,
+              audit_limit_function_call: 100,
+              audit_limit_function_call_output: 100,
+              audit_limit_reasoning: 40,
+              audit_limit_custom_tool_call: 100,
+              audit_limit_custom_tool_call_output: 100,
+              language: "zh-CN",
+              theme_mode: "system",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url === "http://127.0.0.1:6789/ai-router/api/accounts/usage/refresh") {
+        return Promise.resolve(new Response("vpn unavailable", { status: 500 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    vi.useFakeTimers();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:6789/ai-router/api/accounts/usage/refresh",
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    const refreshCallsAfterFailure = fetchMock.mock.calls.filter(
+      ([input]) => String(input) === "http://127.0.0.1:6789/ai-router/api/accounts/usage/refresh",
+    ).length;
+
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(
+      fetchMock.mock.calls.filter(
+        ([input]) => String(input) === "http://127.0.0.1:6789/ai-router/api/accounts/usage/refresh",
+      ),
+    ).toHaveLength(refreshCallsAfterFailure);
+  });
+
   it("triggers an immediate usage refresh when the page becomes visible after a long hidden period", async () => {
     let currentTime = new Date("2026-03-20T09:00:00Z").getTime();
     vi.spyOn(Date, "now").mockImplementation(() => currentTime);
+    const addDocumentEventListenerSpy = vi.spyOn(document, "addEventListener");
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -1295,19 +1438,26 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(addDocumentEventListenerSpy).toHaveBeenCalledWith("visibilitychange", expect.any(Function));
+    });
+    const visibilityChangeHandler = addDocumentEventListenerSpy.mock.calls.toReversed().find(([eventName]) => eventName === "visibilitychange")?.[1] as
+      | EventListener
+      | undefined;
+    expect(visibilityChangeHandler).toEqual(expect.any(Function));
 
     await act(async () => {
       Object.defineProperty(document, "visibilityState", {
         configurable: true,
         value: "hidden",
       });
-      document.dispatchEvent(new Event("visibilitychange"));
+      visibilityChangeHandler?.(new Event("visibilitychange"));
       currentTime += 16_000;
       Object.defineProperty(document, "visibilityState", {
         configurable: true,
         value: "visible",
       });
-      document.dispatchEvent(new Event("visibilitychange"));
+      visibilityChangeHandler?.(new Event("visibilitychange"));
     });
 
     await waitFor(() => {
@@ -1315,7 +1465,7 @@ describe("App", () => {
         "http://127.0.0.1:6789/ai-router/api/accounts/usage/refresh",
         expect.objectContaining({ method: "POST" }),
       );
-      expect(screen.getByText(/accounts-sync:1/)).toBeInTheDocument();
+      expect(screen.getByText(/accounts-sync:[1-9]/)).toBeInTheDocument();
     });
   });
 
