@@ -8,7 +8,50 @@ func builtInManagedScript(key string) (string, bool) {
   auth = "bearer",
   remaining = pick("remaining", "quota.remaining", "balance"),
   unit = pick("unit", "quota.unit", default("USD")),
-  valid = pick("is_active", "isValid", default(true))
+  valid = pick("is_active", "isValid", default(true)),
+  display = {
+    summary = {
+      label = "余额",
+      value = function(payload)
+        local remaining = payload.remaining or payload.balance
+        if remaining == nil and type(payload.quota) == "table" then
+          remaining = payload.quota.remaining
+        end
+        if type(remaining) == "number" then
+          return "$" .. string.format("%.2f", remaining)
+        end
+        return "--"
+      end
+    },
+    detail_stats = {
+      {
+        label = "余额",
+        value = function(payload)
+          local remaining = payload.remaining or payload.balance
+          if remaining == nil and type(payload.quota) == "table" then
+            remaining = payload.quota.remaining
+          end
+          if type(remaining) == "number" then
+            return "$" .. string.format("%.2f", remaining)
+          end
+          return "--"
+        end
+      },
+      { label = "状态", value = function(payload)
+        local valid = payload.is_active
+        if valid == nil then
+          valid = payload.isValid
+        end
+        if valid == false then
+          return "不可用"
+        end
+        return "可用"
+      end }
+    },
+    detail_items = {
+      { label = "计费单位", value = pick("unit", "quota.unit", default("USD")) }
+    }
+  }
 })
 `, true
 	case "ppchat.vip", "code.ppchat.vip":
@@ -23,6 +66,45 @@ func builtInManagedScript(key string) (string, bool) {
     today_used_quota = pick("data.token_info.today_used_quota"),
     today_added_quota = pick("data.token_info.today_added_quota"),
     unit = "quota"
+  },
+
+  display = {
+    summary = {
+      label = "余额",
+      value = function(payload)
+        local token = payload.data and payload.data.token_info or {}
+        local remain = token.remain_quota_display
+        if type(remain) == "number" then
+          return string.format("%.0f", remain)
+        end
+        return "--"
+      end
+    },
+    detail_stats = {
+      { label = "剩余配额", value = function(payload)
+        local token = payload.data and payload.data.token_info or {}
+        if type(token.remain_quota_display) == "number" then
+          return string.format("%.0f", token.remain_quota_display)
+        end
+        return "--"
+      end },
+      { label = "当天已用", value = function(payload)
+        local token = payload.data and payload.data.token_info or {}
+        if type(token.today_used_quota) == "number" then
+          return string.format("%.0f", token.today_used_quota)
+        end
+        return "--"
+      end }
+    },
+    detail_items = {
+      { label = "当天增加配额", value = function(payload)
+        local token = payload.data and payload.data.token_info or {}
+        if type(token.today_added_quota) == "number" then
+          return string.format("%.0f", token.today_added_quota)
+        end
+        return "--"
+      end }
+    }
   }
 })
 `, true
@@ -131,6 +213,20 @@ local function aigate_resolve_map(spec, payload)
   return result
 end
 
+local function aigate_resolve_any(spec, payload)
+  if type(spec) ~= "table" then
+    return aigate_resolve(spec, payload)
+  end
+  if spec.__aigate_pick == true then
+    return aigate_resolve(spec, payload)
+  end
+  local result = {}
+  for key, value in pairs(spec) do
+    result[key] = aigate_resolve_any(value, payload)
+  end
+  return result
+end
+
 local function aigate_fetch_json(adapter, ctx)
   local request = adapter.request or {}
   local raw_url = adapter.get or request.url
@@ -196,6 +292,7 @@ local function aigate_execute_simple_usage(adapter, ctx, payload)
       unit = unit,
       is_valid = is_valid
     },
+    display = aigate_resolve_any(adapter.display, payload),
     payload = payload
   }
 end
@@ -220,6 +317,7 @@ local function aigate_execute_usage_adapter(adapter, ctx)
     confidence = adapter.confidence or "high",
     limits = aigate_resolve_map(adapter.limits, payload),
     meta = aigate_resolve_map(adapter.meta, payload),
+    display = aigate_resolve_any(adapter.display, payload),
     payload = payload
   }
 end

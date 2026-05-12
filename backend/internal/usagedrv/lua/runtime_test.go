@@ -131,6 +131,57 @@ simple_usage({
 	}
 }
 
+func TestRuntimeExecuteSimpleUsageDSLReturnsDisplayHints(t *testing.T) {
+	t.Parallel()
+
+	scriptPath := writeTempScript(t, `
+simple_usage({
+  get = "/v1/usage",
+  auth = "bearer",
+  remaining = pick("remaining"),
+  display = {
+    summary = {
+      label = "余额",
+      value = function(payload)
+        return "$" .. string.format("%.2f", payload.remaining)
+      end
+    },
+    detail_stats = {
+      { label = "余额", value = function(payload) return "$" .. string.format("%.2f", payload.remaining) end },
+      { label = "状态", value = "可用" }
+    },
+    detail_items = {
+      { label = "计费单位", value = "美元" }
+    }
+  }
+})
+`)
+	runtime := luadrv.NewRuntime(&http.Client{Transport: roundTripFunc(func(req *http.Request) *http.Response {
+		return jsonResponse(`{"remaining":61.96}`)
+	})}, filepath.Dir(scriptPath))
+	result, err := runtime.Execute(
+		context.Background(),
+		filepath.Base(scriptPath),
+		accounts.Account{BaseURL: "https://ai.nodeseek.in"},
+		accountdrv.ResolvedCredential{APIKey: "sk-test"},
+		map[string]any{},
+	)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	summary, ok := result.Display["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("display.summary = %#v, want object", result.Display["summary"])
+	}
+	if summary["label"] != "余额" || summary["value"] != "$61.96" {
+		t.Fatalf("display.summary = %#v, want balance label/value", summary)
+	}
+	stats, ok := result.Display["detail_stats"].([]any)
+	if !ok || len(stats) != 2 {
+		t.Fatalf("display.detail_stats = %#v, want two items", result.Display["detail_stats"])
+	}
+}
+
 func TestRuntimeExecuteSimpleUsageDSLDeduplicatesVersionedBaseURL(t *testing.T) {
 	t.Parallel()
 

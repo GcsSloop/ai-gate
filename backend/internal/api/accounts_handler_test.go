@@ -1204,6 +1204,69 @@ func TestAccountsHandlerListUsageIncludesPPChatDailySummaryFromCachedSnapshot(t 
 	}
 }
 
+func TestAccountsHandlerListUsageIncludesCustomDisplayHints(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, usageRepo, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "nodeseek",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       "https://ai.nodeseek.in",
+		CredentialRef: "sk-nodeseek",
+		Status:        accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if err := usageRepo.Save(usage.Snapshot{
+		AccountID:   1,
+		Balance:     61.96,
+		HealthScore: 1,
+		CheckedAt:   time.Now().UTC(),
+		Source:      "remote",
+		Confidence:  "high",
+		ProviderSnapshotJSON: `{
+			"capacity_model":"balance_only",
+			"display":{
+				"summary":{"label":"余额","value":"$61.96"},
+				"detail_stats":[{"label":"余额","value":"$61.96"}],
+				"detail_items":[{"label":"计费单位","value":"美元"}]
+			}
+		}`,
+	}); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/accounts/usage", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts/usage status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var listed []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	display, ok := listed[0]["usage_display"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage_display = %#v, want object", listed[0]["usage_display"])
+	}
+	summary := display["summary"].(map[string]any)
+	if summary["label"] != "余额" || summary["value"] != "$61.96" {
+		t.Fatalf("usage_display.summary = %#v, want balance label/value", summary)
+	}
+}
+
 func TestAccountsHandlerListUsageDerivesPPChatAddedQuotaWhenMissing(t *testing.T) {
 	t.Parallel()
 

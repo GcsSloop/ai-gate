@@ -195,7 +195,38 @@ function getKnownLuaDSLTemplate(account: Pick<AccountRecord, "base_url" | "sourc
   auth = "bearer",
   remaining = pick("remaining", "quota.remaining", "balance"),
   unit = pick("unit", "quota.unit", default("USD")),
-  valid = pick("is_active", "isValid", default(true))
+  valid = pick("is_active", "isValid", default(true)),
+  display = {
+    summary = {
+      label = "余额",
+      value = function(payload)
+        local remaining = payload.remaining or payload.balance
+        if remaining == nil and type(payload.quota) == "table" then
+          remaining = payload.quota.remaining
+        end
+        if type(remaining) == "number" then
+          return "$" .. string.format("%.2f", remaining)
+        end
+        return "--"
+      end
+    },
+    detail_stats = {
+      { label = "余额", value = function(payload)
+        local remaining = payload.remaining or payload.balance
+        if remaining == nil and type(payload.quota) == "table" then
+          remaining = payload.quota.remaining
+        end
+        if type(remaining) == "number" then
+          return "$" .. string.format("%.2f", remaining)
+        end
+        return "--"
+      end },
+      { label = "状态", value = "可用" }
+    },
+    detail_items = {
+      { label = "计费单位", value = pick("unit", "quota.unit", default("USD")) }
+    }
+  }
 })
 `;
   }
@@ -211,6 +242,44 @@ function getKnownLuaDSLTemplate(account: Pick<AccountRecord, "base_url" | "sourc
     today_used_quota = pick("data.token_info.today_used_quota"),
     today_added_quota = pick("data.token_info.today_added_quota"),
     unit = "quota"
+  },
+
+  display = {
+    summary = {
+      label = "余额",
+      value = function(payload)
+        local token = payload.data and payload.data.token_info or {}
+        if type(token.remain_quota_display) == "number" then
+          return string.format("%.0f", token.remain_quota_display)
+        end
+        return "--"
+      end
+    },
+    detail_stats = {
+      { label = "剩余配额", value = function(payload)
+        local token = payload.data and payload.data.token_info or {}
+        if type(token.remain_quota_display) == "number" then
+          return string.format("%.0f", token.remain_quota_display)
+        end
+        return "--"
+      end },
+      { label = "当天已用", value = function(payload)
+        local token = payload.data and payload.data.token_info or {}
+        if type(token.today_used_quota) == "number" then
+          return string.format("%.0f", token.today_used_quota)
+        end
+        return "--"
+      end }
+    },
+    detail_items = {
+      { label = "当天增加配额", value = function(payload)
+        local token = payload.data and payload.data.token_info or {}
+        if type(token.today_added_quota) == "number" then
+          return string.format("%.0f", token.today_added_quota)
+        end
+        return "--"
+      end }
+    }
   }
 })
 `;
@@ -220,7 +289,19 @@ function getKnownLuaDSLTemplate(account: Pick<AccountRecord, "base_url" | "sourc
   auth = "bearer",
   remaining = pick("remaining", "quota.remaining", "balance"),
   unit = pick("unit", "quota.unit", default("USD")),
-  valid = pick("is_active", "isValid", default(true))
+  valid = pick("is_active", "isValid", default(true)),
+  display = {
+    summary = { label = "余额", value = function(payload)
+      local remaining = payload.remaining or payload.balance
+      if remaining == nil and type(payload.quota) == "table" then
+        remaining = payload.quota.remaining
+      end
+      if type(remaining) == "number" then
+        return "$" .. string.format("%.2f", remaining)
+      end
+      return "--"
+    end }
+  }
 })
 `;
 }
@@ -271,7 +352,34 @@ simple_usage({
   auth = "bearer",
   remaining = pick("remaining", "quota.remaining", "balance"),
   unit = pick("unit", "quota.unit", default("USD")),
-  valid = pick("is_active", "isValid", default(true))
+  valid = pick("is_active", "isValid", default(true)),
+  display = {
+    summary = { label = "余额", value = function(payload)
+      local remaining = payload.remaining or payload.balance
+      if remaining == nil and type(payload.quota) == "table" then
+        remaining = payload.quota.remaining
+      end
+      if type(remaining) == "number" then
+        return "$" .. string.format("%.2f", remaining)
+      end
+      return "--"
+    end },
+    detail_stats = {
+      { label = "余额", value = function(payload)
+        local remaining = payload.remaining or payload.balance
+        if remaining == nil and type(payload.quota) == "table" then
+          remaining = payload.quota.remaining
+        end
+        if type(remaining) == "number" then
+          return "$" .. string.format("%.2f", remaining)
+        end
+        return "--"
+      end }
+    },
+    detail_items = {
+      { label = "计费单位", value = pick("unit", "quota.unit", default("USD")) }
+    }
+  }
 })
 \`\`\`
 - 需要自定义映射时使用 \`usage_adapter({...})\`：
@@ -292,12 +400,22 @@ usage_adapter({
       source = "remote",
       confidence = "high",
       limits = { balance = v.remaining },
-      meta = { unit = v.unit }
+      meta = { unit = v.unit },
+      display = {
+        summary = { label = "余额", value = "$" .. string.format("%.2f", v.remaining) },
+        detail_stats = {
+          { label = "余额", value = "$" .. string.format("%.2f", v.remaining) }
+        },
+        detail_items = {
+          { label = "计费单位", value = v.unit }
+        }
+      }
     }
   end
 })
 \`\`\`
 - \`pick("a.b", "c", default(x))\` 会按顺序读取 JSON 字段路径。
+- \`display.summary\` 控制账户列表右侧摘要；\`display.detail_stats\` 控制详情页上方卡片；\`display.detail_items\` 控制详情页用量条目。它们只影响显示，不影响路由判断。
 - \`get = "/path"\` 会自动拼接 \`ctx.account.base_url\`；也可以直接写完整 URL。
 - \`auth = "bearer"\` 会自动使用当前账户 API key/access token。
 
@@ -322,6 +440,15 @@ return {
     secondary_resets_at = nil
   },
   meta = {},
+  display = {
+    summary = { label = "余额", value = "$61.96" },
+    detail_stats = {
+      { label = "余额", value = "$61.96" }
+    },
+    detail_items = {
+      { label = "计费单位", value = "USD" }
+    }
+  },
   payload = {}
 }
 \`\`\`
@@ -450,6 +577,7 @@ function mergeDisplayUsage(
     ppchat_today_used_quota: previous.ppchat_today_used_quota,
     ppchat_today_added_quota: previous.ppchat_today_added_quota,
     ppchat_today_remaining_quota: previous.ppchat_today_remaining_quota,
+    usage_display: previous.usage_display,
   };
 }
 
@@ -702,6 +830,13 @@ function buildGenericUsageWindows(
 }
 
 function buildUsageAmount(record: AccountRecord, language: AppLanguage) {
+  const summary = record.usage_display?.summary;
+  if (summary?.label || summary?.value) {
+    return {
+      label: summary.label || (language === "en-US" ? "Usage" : "用量"),
+      value: summary.value || "--",
+    };
+  }
   if (record.balance > 0) {
     return {
       label: language === "en-US" ? "Balance" : "余额",
@@ -715,6 +850,77 @@ function buildUsageAmount(record: AccountRecord, language: AppLanguage) {
     };
   }
   return null;
+}
+
+function buildDetailStats(record: AccountRecord, language: AppLanguage) {
+  const customStats = record.usage_display?.detail_stats?.filter(
+    (item) => item.label || item.value,
+  );
+  if (customStats?.length) {
+    return customStats.map((item) => ({
+      title: item.label || (language === "en-US" ? "Usage" : "用量"),
+      value: item.value || "--",
+    }));
+  }
+  return [
+    {
+      title: language === "en-US" ? "Quota balance" : "额度余额",
+      value: formatInteger(
+        language,
+        Math.round(
+          isPPChatAccount(record) && (record.ppchat_today_added_quota ?? 0) > 0
+            ? (record.ppchat_today_remaining_quota ?? 0)
+            : record.quota_remaining,
+        ),
+      ),
+    },
+    {
+      title: language === "en-US" ? "Health score" : "健康分",
+      value: record.health_score.toFixed(2),
+    },
+    {
+      title: language === "en-US" ? "Recent tokens" : "最近 Token",
+      value: formatInteger(language, Math.round(record.last_total_tokens)),
+    },
+    {
+      title: language === "en-US" ? "Error rate" : "错误率",
+      value: `${(record.recent_error_rate * 100).toFixed(1)}%`,
+    },
+  ];
+}
+
+function buildDetailUsageItems(record: AccountRecord, language: AppLanguage) {
+  const customItems = record.usage_display?.detail_items?.filter(
+    (item) => item.label || item.value,
+  );
+  if (customItems?.length) {
+    return customItems.map((item) => ({
+      label: item.label || (language === "en-US" ? "Usage" : "用量"),
+      value: item.value || "--",
+    }));
+  }
+  if (isPPChatAccount(record)) {
+    return [
+      {
+        label: language === "en-US" ? "Remaining quota" : "剩余配额",
+        value: `${formatInteger(language, record.ppchat_today_remaining_quota ?? 0)} · ${formatTomorrowMidnight(language)}`,
+      },
+      {
+        label: language === "en-US" ? "Used today" : "当天已用配额",
+        value: `${formatInteger(language, record.ppchat_today_used_quota ?? 0)} / ${language === "en-US" ? "Added today" : "当天增加配额"} ${formatInteger(language, record.ppchat_today_added_quota ?? 0)}`,
+      },
+    ];
+  }
+  return [
+    {
+      label: language === "en-US" ? "5-hour remaining" : "5 小时剩余",
+      value: `${(100 - record.primary_used_percent).toFixed(0)}% · ${formatResetTime(record.primary_resets_at, language)}`,
+    },
+    {
+      label: language === "en-US" ? "1-week remaining" : "1 周剩余",
+      value: `${(100 - record.secondary_used_percent).toFixed(0)}% · ${formatResetTime(record.secondary_resets_at, language)}`,
+    },
+  ];
 }
 
 type AccountsPageProps = {
@@ -1602,7 +1808,9 @@ export function AccountsPage({
     const actionsVisible = visibleActionAccountID === record.id;
     const sourceIcon = sourceIconMap[normalizeSourceIcon(record.source_icon)];
     const usageHealthState = getUsageHealthState(record);
-    const usageWindows = isOfficialAccount(record)
+    const usageWindows = record.usage_display?.summary
+      ? []
+      : isOfficialAccount(record)
       ? [
           {
             label: "5H",
@@ -1902,36 +2110,11 @@ export function AccountsPage({
         {detailAccount ? (
           <div className="account-detail-layout">
               <div className="account-detail-stats">
-                <Card variant="borderless">
-                  <Statistic
-                    title={t("额度余额")}
-                    value={Math.round(
-                      isPPChatAccount(detailAccount) &&
-                        (detailAccount.ppchat_today_added_quota ?? 0) > 0
-                        ? (detailAccount.ppchat_today_remaining_quota ?? 0)
-                        : detailAccount.quota_remaining,
-                    )}
-                  />
-                </Card>
-                <Card variant="borderless">
-                  <Statistic
-                    title={t("健康分")}
-                    value={detailAccount.health_score.toFixed(2)}
-                  />
-                </Card>
-                <Card variant="borderless">
-                  <Statistic
-                    title={t("最近 Token")}
-                    value={Math.round(detailAccount.last_total_tokens)}
-                  />
-                </Card>
-                <Card variant="borderless">
-                  <Statistic
-                    title={t("错误率")}
-                    value={(detailAccount.recent_error_rate * 100).toFixed(1)}
-                    suffix="%"
-                  />
-                </Card>
+                {buildDetailStats(detailAccount, language).map((item) => (
+                  <Card variant="borderless" key={item.title}>
+                    <Statistic title={t(item.title)} value={item.value} />
+                  </Card>
+                ))}
               </div>
               <Card variant="borderless" className="account-detail-meta">
                 <Descriptions column={2} size="small">
@@ -1968,47 +2151,11 @@ export function AccountsPage({
                   <Descriptions.Item label={t("接口地址")}>
                     {detailAccount.base_url || t("OpenAI 官方")}
                   </Descriptions.Item>
-                  {isPPChatAccount(detailAccount) ? (
-                    <>
-                      <Descriptions.Item label={t("剩余配额")}>
-                        {formatInteger(
-                          language,
-                          detailAccount.ppchat_today_remaining_quota ?? 0,
-                        )}{" "}
-                        · {formatTomorrowMidnight(language)}
-                      </Descriptions.Item>
-                      <Descriptions.Item label={t("当天已用配额")}>
-                        {formatInteger(
-                          language,
-                          detailAccount.ppchat_today_used_quota ?? 0,
-                        )}{" "}
-                        / {t("当天增加配额")}{" "}
-                        {formatInteger(
-                          language,
-                          detailAccount.ppchat_today_added_quota ?? 0,
-                        )}
-                      </Descriptions.Item>
-                    </>
-                  ) : (
-                    <>
-                      <Descriptions.Item label={t("5 小时剩余")}>
-                        {(100 - detailAccount.primary_used_percent).toFixed(0)}
-                        % ·{" "}
-                        {formatResetTime(
-                          detailAccount.primary_resets_at,
-                          language,
-                        )}
-                      </Descriptions.Item>
-                      <Descriptions.Item label={t("1 周剩余")}>
-                        {(100 - detailAccount.secondary_used_percent).toFixed(0)}
-                        % ·{" "}
-                        {formatResetTime(
-                          detailAccount.secondary_resets_at,
-                          language,
-                        )}
-                      </Descriptions.Item>
-                    </>
-                  )}
+                  {buildDetailUsageItems(detailAccount, language).map((item) => (
+                    <Descriptions.Item label={t(item.label)} key={item.label}>
+                      {item.value}
+                    </Descriptions.Item>
+                  ))}
                 </Descriptions>
               </Card>
             </div>
