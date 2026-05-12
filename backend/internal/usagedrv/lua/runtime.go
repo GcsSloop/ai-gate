@@ -48,9 +48,13 @@ func (r *Runtime) ExecuteSource(ctx context.Context, source string, sourceName s
 	})
 	defer L.Close()
 	L.SetContext(ctx)
+	openSafeLuaLibs(L)
 
 	if err := r.registerHostAPI(L, ctx); err != nil {
 		return usagedrv.RawUsageResult{}, err
+	}
+	if err := L.DoString(luaDSLPrelude); err != nil {
+		return usagedrv.RawUsageResult{}, fmt.Errorf("lua load dsl prelude: %w", err)
 	}
 
 	if strings.TrimSpace(sourceName) == "" {
@@ -86,6 +90,16 @@ func (r *Runtime) ExecuteSource(ctx context.Context, source string, sourceName s
 	result := L.Get(-1)
 	L.Pop(1)
 	return decodeScriptResult(result)
+}
+
+func openSafeLuaLibs(L *golua.LState) {
+	golua.OpenBase(L)
+	golua.OpenString(L)
+	golua.OpenTable(L)
+	L.SetGlobal("dofile", golua.LNil)
+	L.SetGlobal("load", golua.LNil)
+	L.SetGlobal("loadfile", golua.LNil)
+	L.SetGlobal("collectgarbage", golua.LNil)
 }
 
 func (r *Runtime) registerHostAPI(L *golua.LState, ctx context.Context) error {

@@ -2316,6 +2316,29 @@ html[data-theme-mode="dark"] .stats-chart-shell {
   transform: translateY(-3px);
 }
 
+.account-usage-amount {
+  display: grid;
+  justify-items: end;
+  align-content: center;
+  min-height: 52px;
+  gap: 5px;
+}
+
+.account-usage-amount-label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.account-usage-amount-value {
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
 .account-usage-mini-row {
   display: grid;
   gap: 4px;

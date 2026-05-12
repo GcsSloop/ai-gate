@@ -895,6 +895,11 @@ func applyBuiltInDriverDefaults(account accounts.Account) accounts.Account {
 			account.UsageDriver = "builtin_openai_official"
 		case strings.Contains(strings.ToLower(strings.TrimSpace(account.BaseURL)), "ppchat.vip"):
 			account.UsageDriver = "builtin_ppchat"
+		case strings.Contains(strings.ToLower(strings.TrimSpace(account.BaseURL)), "nodeseek.in"):
+			account.UsageDriver = "lua"
+			if strings.TrimSpace(account.UsageConfigJSON) == "" {
+				account.UsageConfigJSON = `{"script":"managed:ai.nodeseek.in"}`
+			}
 		}
 	}
 	return account
@@ -1747,7 +1752,23 @@ func resolveAccountBaseURL(account accounts.Account) string {
 		return baseURL
 	}
 	if strings.TrimSpace(account.BaseURL) != "" {
-		return account.BaseURL
+		return normalizeCompatibleAccountBaseURL(account)
 	}
 	return account.BaseURL
+}
+
+func normalizeCompatibleAccountBaseURL(account accounts.Account) string {
+	baseURL := strings.TrimSpace(account.BaseURL)
+	if account.ProviderType != accounts.ProviderOpenAICompatible {
+		return baseURL
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return baseURL
+	}
+	if strings.Trim(parsed.Path, "/") != "" {
+		return baseURL
+	}
+	parsed.Path = "/v1"
+	return strings.TrimRight(parsed.String(), "/")
 }

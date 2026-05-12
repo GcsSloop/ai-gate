@@ -96,7 +96,11 @@ func (d *Driver) Fetch(ctx context.Context, account accounts.Account, credential
 		}
 		source, err := d.managedStore.Load(key)
 		if err != nil {
-			return usagedrv.RawUsageResult{}, err
+			if builtInSource, ok := builtInManagedScript(key); ok {
+				source = builtInSource
+			} else {
+				return usagedrv.RawUsageResult{}, err
+			}
 		}
 		return d.runtime.ExecuteSource(callCtx, source, "managed:"+key, account, credential, config.Raw)
 	}

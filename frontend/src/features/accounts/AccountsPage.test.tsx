@@ -589,15 +589,16 @@ describe("AccountsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "详情-mirror-east" }));
     const detailModal = await screen.findByRole("dialog", { name: "账户详情" });
+    expect(await within(detailModal).findByText("额度余额")).toBeInTheDocument();
+    expect(within(detailModal).getByText("5,000")).toBeInTheDocument();
+    expect(within(detailModal).getByText("健康分")).toBeInTheDocument();
+    expect(within(detailModal).getByText("最近 Token")).toBeInTheDocument();
+    expect(within(detailModal).getByText("错误率")).toBeInTheDocument();
+    expect(within(detailModal).getByText("剩余配额")).toBeInTheDocument();
     expect(
-      await within(detailModal).findByText("今日配额进度"),
+      within(detailModal).getByText("0 / 当天增加配额 0"),
     ).toBeInTheDocument();
-    expect(within(detailModal).getByText("当天增加配额")).toBeInTheDocument();
-    expect(within(detailModal).getByText("今日已用次数")).toBeInTheDocument();
-    expect(within(detailModal).getByText("剩余 13,931")).toBeInTheDocument();
-    expect(
-      within(detailModal).getByText("已用 1,068 / 新增 14,999"),
-    ).toBeInTheDocument();
+    expect(within(detailModal).queryByText("今日配额进度")).not.toBeInTheDocument();
     expect(
       within(detailModal).queryByText("TOKEN 名称"),
     ).not.toBeInTheDocument();
@@ -610,8 +611,8 @@ describe("AccountsPage", () => {
       within(detailModal).queryByText("今日大TOKEN请求数"),
     ).not.toBeInTheDocument();
     expect(
-      await within(detailModal).findByText("PPChat Token 日志"),
-    ).toBeInTheDocument();
+      within(detailModal).queryByText("PPChat Token 日志"),
+    ).not.toBeInTheDocument();
     fireEvent.click(within(detailModal).getByRole("button", { name: "Close" }));
 
     expect(
@@ -1419,6 +1420,118 @@ describe("AccountsPage", () => {
     });
   });
 
+  it("prefills known provider lua dsl templates and copies the dsl spec", async () => {
+    const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: { writeText: clipboardWriteText },
+      configurable: true,
+    });
+
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "nodeseek",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://ai.nodeseek.in",
+        account_driver: "builtin_api_key",
+        usage_driver: "lua",
+        usage_config_json: "{}",
+        status: "active",
+        is_active: false,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage-scripts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ items: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage-scripts/ai.nodeseek.in" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(new Response("not found", { status: 404 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("nodeseek")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "编辑-nodeseek" }));
+
+    const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
+    expect(
+      await within(editModal).findByText("当前脚本标识: ai.nodeseek.in"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        (within(editModal).getByLabelText("Lua 脚本") as HTMLTextAreaElement)
+          .value,
+      ).toContain("simple_usage");
+    });
+    expect(
+      (within(editModal).getByLabelText("Lua 脚本") as HTMLTextAreaElement)
+        .value,
+    ).toContain("quota.remaining");
+
+    fireEvent.click(
+      await within(editModal).findByRole("button", { name: "复制 AI Skill" }),
+    );
+    await waitFor(() => {
+      expect(clipboardWriteText).toHaveBeenCalledTimes(1);
+    });
+    expect(clipboardWriteText.mock.calls[0][0]).toContain("simple_usage");
+    expect(clipboardWriteText.mock.calls[0][0]).toContain("兼容旧入口");
+  });
+
   it("imports shared payload and keeps the modal open on validation failure", async () => {
     const validPayload = '{"kind":"aigate-account-share","schema_version":1}';
 
@@ -2103,6 +2216,89 @@ describe("AccountsPage", () => {
     expect(screen.getByText("P2")).toBeInTheDocument();
     expect(screen.getByText("77%")).toBeInTheDocument();
     expect(screen.getByText("33%")).toBeInTheDocument();
+  });
+
+  it("renders balance-only lua usage as a compact amount instead of a meter", async () => {
+    const accountList = [
+      {
+        id: 36,
+        provider_type: "openai-compatible",
+        account_name: "nodeseek-main",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://ai.nodeseek.in",
+        status: "active",
+        is_active: false,
+        priority: 1,
+        account_driver: "builtin_api_key",
+        usage_driver: "lua",
+        usage_config_json: '{"script":"managed:ai.nodeseek.in"}',
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                account_id: 36,
+                balance: 42.5,
+                quota_remaining: 0,
+                rpm_remaining: 0,
+                tpm_remaining: 0,
+                health_score: 1,
+                recent_error_rate: 0,
+                last_total_tokens: 0,
+                last_input_tokens: 0,
+                last_output_tokens: 0,
+                model_context_window: 0,
+                primary_used_percent: 0,
+                secondary_used_percent: 0,
+              },
+            ]),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("nodeseek-main")).toBeInTheDocument();
+    expect(await screen.findByText("余额")).toBeInTheDocument();
+    expect(screen.getByText("42.5")).toBeInTheDocument();
+    expect(document.querySelector(".account-usage-mini-track")).toBeNull();
   });
 
   it("keeps previous usage visible while a refresh is pending", async () => {

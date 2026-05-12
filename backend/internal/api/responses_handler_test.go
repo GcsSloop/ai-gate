@@ -71,6 +71,39 @@ func TestResponsesHandlerThinModeThirdPartyResponsesPassthrough(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerThinModeThirdPartyResponsesAddsV1WhenBaseURLHasNoPath(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("path = %q, want /v1/responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_tp_1","object":"response","status":"completed","output_text":"tp-pong"}`)
+	}))
+	defer upstream.Close()
+
+	handler := newResponsesHandlerTestHandler(t, accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AccountName:       "nodeseek",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL,
+		CredentialRef:     "sk-third-party",
+		Status:            accounts.StatusActive,
+		Priority:          100,
+		SupportsResponses: true,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
 func TestResponsesHandlerThinModeRecordsUsageEventWithoutAuditRows(t *testing.T) {
 	t.Parallel()
 
