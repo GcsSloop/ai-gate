@@ -3,6 +3,8 @@ package lua_test
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,20 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	luadrv "github.com/gcssloop/codex-router/backend/internal/usagedrv/lua"
 )
+
+type roundTripFunc func(*http.Request) *http.Response
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req), nil
+}
+
+func jsonResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
 
 func TestRuntimeExecuteValidScript(t *testing.T) {
 	t.Parallel()
@@ -70,6 +86,76 @@ func TestRuntimeExecuteRequiresFetchUsageFunction(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "missing fetch_usage") {
 		t.Fatalf("error = %q, want missing fetch_usage", err.Error())
+	}
+}
+
+func TestRuntimeExecuteSimpleUsageDSL(t *testing.T) {
+	t.Parallel()
+
+	scriptPath := writeTempScript(t, `
+simple_usage({
+  get = "{{base_url}}/v1/usage",
+  auth = "bearer",
+  remaining = pick("remaining", "quota.remaining", "balance"),
+  unit = pick("unit", "quota.unit", default("USD")),
+  valid = pick("is_active", "isValid", default(true))
+})
+`)
+	runtime := luadrv.NewRuntime(&http.Client{Transport: roundTripFunc(func(req *http.Request) *http.Response {
+		if req.URL.String() != "https://ai.nodeseek.in/v1/usage" {
+			t.Fatalf("request url = %q, want nodeseek usage endpoint", req.URL.String())
+		}
+		if req.Header.Get("Authorization") != "Bearer sk-test" {
+			t.Fatalf("Authorization = %q, want bearer token", req.Header.Get("Authorization"))
+		}
+		return jsonResponse(`{"quota":{"remaining":42.5}}`)
+	})}, filepath.Dir(scriptPath))
+	result, err := runtime.Execute(
+		context.Background(),
+		filepath.Base(scriptPath),
+		accounts.Account{BaseURL: "https://ai.nodeseek.in"},
+		accountdrv.ResolvedCredential{APIKey: "sk-test"},
+		map[string]any{},
+	)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result.Limits.Balance == nil || *result.Limits.Balance != 42.5 {
+		t.Fatalf("Balance = %#v, want 42.5", result.Limits.Balance)
+	}
+	if result.Meta["unit"] != "USD" {
+		t.Fatalf("unit meta = %#v, want USD", result.Meta["unit"])
+	}
+	if result.Meta["is_valid"] != true {
+		t.Fatalf("is_valid meta = %#v, want true", result.Meta["is_valid"])
+	}
+}
+
+func TestRuntimeExecuteSimpleUsageDSLDeduplicatesVersionedBaseURL(t *testing.T) {
+	t.Parallel()
+
+	scriptPath := writeTempScript(t, `
+simple_usage({
+  get = "/v1/usage",
+  auth = "bearer",
+  remaining = pick("remaining")
+})
+`)
+	runtime := luadrv.NewRuntime(&http.Client{Transport: roundTripFunc(func(req *http.Request) *http.Response {
+		if req.URL.String() != "https://ai.nodeseek.in/v1/usage" {
+			t.Fatalf("request url = %q, want single /v1 usage endpoint", req.URL.String())
+		}
+		return jsonResponse(`{"remaining":1}`)
+	})}, filepath.Dir(scriptPath))
+	_, err := runtime.Execute(
+		context.Background(),
+		filepath.Base(scriptPath),
+		accounts.Account{BaseURL: "https://ai.nodeseek.in/v1"},
+		accountdrv.ResolvedCredential{APIKey: "sk-test"},
+		map[string]any{},
+	)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
 	}
 }
 

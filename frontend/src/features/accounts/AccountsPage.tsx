@@ -1,6 +1,5 @@
 import {
   ApiOutlined,
-  BarChartOutlined,
   CheckCircleOutlined,
   DeleteOutlined,
   EditOutlined,
@@ -22,7 +21,6 @@ import {
   Input,
   Modal,
   Select,
-  Skeleton,
   Statistic,
   Tag,
   Tooltip,
@@ -64,7 +62,6 @@ import {
   createAccount,
   completeOfficialAuthDevice,
   deleteAccount,
-  fetchPPChatTokenLogs,
   startOfficialAuth,
   getLuaUsageScript,
   importCurrentCodexAuth,
@@ -79,7 +76,6 @@ import {
   testLuaUsage,
   updateAccount,
   type AccountRecord,
-  type PPChatTokenLogsPayload,
   type AccountTestResult,
   type OfficialAuthSession,
 } from "../../lib/api";
@@ -191,6 +187,44 @@ function inferLuaScriptKeyFromBaseURL(baseURL: string): string {
   }
 }
 
+function getKnownLuaDSLTemplate(account: Pick<AccountRecord, "base_url" | "source_icon">): string {
+  const baseURL = account.base_url.trim().toLowerCase();
+  if (/nodeseek\.in/i.test(baseURL)) {
+    return `simple_usage({
+  get = "/v1/usage",
+  auth = "bearer",
+  remaining = pick("remaining", "quota.remaining", "balance"),
+  unit = pick("unit", "quota.unit", default("USD")),
+  valid = pick("is_active", "isValid", default(true))
+})
+`;
+  }
+  if (normalizeSourceIcon(account.source_icon) === "ppchat" || /ppchat\.vip/i.test(baseURL)) {
+    return `usage_adapter({
+  get = "https://his.ppchat.vip/api/token-logs?page=1&page_size=1&token_key={{api_key}}",
+
+  limits = {
+    quota_remaining = pick("data.token_info.remain_quota_display")
+  },
+
+  meta = {
+    today_used_quota = pick("data.token_info.today_used_quota"),
+    today_added_quota = pick("data.token_info.today_added_quota"),
+    unit = "quota"
+  }
+})
+`;
+  }
+  return `simple_usage({
+  get = "/v1/usage",
+  auth = "bearer",
+  remaining = pick("remaining", "quota.remaining", "balance"),
+  unit = pick("unit", "quota.unit", default("USD")),
+  valid = pick("is_active", "isValid", default(true))
+})
+`;
+}
+
 function stringifyLuaConfigDraft(raw: string, scriptKey: string): string {
   const parsed = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
   if (scriptKey.trim() !== "") {
@@ -229,8 +263,46 @@ ${JSON.stringify(accountContext, null, 2)}
 3. 优先复用共享脚本键 \`${scriptKey || "请先填写共享脚本标识"}\`。
 4. 若第三方 usage 接口需要额外字段，请直接写入 \`usage_config_json\`。
 
-## Lua 入口规范
-- 必须实现：\`function fetch_usage(ctx)\`
+## Lua DSL 规范（优先使用）
+- 简单余额接口优先使用 \`simple_usage({...})\`：
+\`\`\`lua
+simple_usage({
+  get = "/v1/usage",
+  auth = "bearer",
+  remaining = pick("remaining", "quota.remaining", "balance"),
+  unit = pick("unit", "quota.unit", default("USD")),
+  valid = pick("is_active", "isValid", default(true))
+})
+\`\`\`
+- 需要自定义映射时使用 \`usage_adapter({...})\`：
+\`\`\`lua
+usage_adapter({
+  request = {
+    url = "{{base_url}}/v1/usage",
+    method = "GET",
+    headers = { Authorization = "Bearer {{api_key}}" }
+  },
+  extract = {
+    remaining = pick("remaining", "quota.remaining", "balance"),
+    unit = pick("unit", "quota.unit", default("USD"))
+  },
+  result = function(v)
+    return {
+      ok = true,
+      source = "remote",
+      confidence = "high",
+      limits = { balance = v.remaining },
+      meta = { unit = v.unit }
+    }
+  end
+})
+\`\`\`
+- \`pick("a.b", "c", default(x))\` 会按顺序读取 JSON 字段路径。
+- \`get = "/path"\` 会自动拼接 \`ctx.account.base_url\`；也可以直接写完整 URL。
+- \`auth = "bearer"\` 会自动使用当前账户 API key/access token。
+
+## 兼容旧入口
+- 旧脚本仍然兼容：\`function fetch_usage(ctx)\`
 - 成功返回：
 \`\`\`lua
 return {
@@ -521,6 +593,12 @@ function formatInteger(language: AppLanguage, value: number): string {
   );
 }
 
+function formatUsageAmount(language: AppLanguage, value: number): string {
+  return new Intl.NumberFormat(language, {
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
 function formatDeletedAccountMessage(
   language: AppLanguage,
   accountName: string,
@@ -621,6 +699,22 @@ function buildGenericUsageWindows(
   }
 
   return windows;
+}
+
+function buildUsageAmount(record: AccountRecord, language: AppLanguage) {
+  if (record.balance > 0) {
+    return {
+      label: language === "en-US" ? "Balance" : "余额",
+      value: formatUsageAmount(language, record.balance),
+    };
+  }
+  if (record.quota_remaining > 0) {
+    return {
+      label: language === "en-US" ? "Remaining quota" : "剩余配额",
+      value: formatUsageAmount(language, record.quota_remaining),
+    };
+  }
+  return null;
 }
 
 type AccountsPageProps = {
@@ -724,10 +818,6 @@ export function AccountsPage({
   const [showAdvancedLuaConfig, setShowAdvancedLuaConfig] = useState(false);
   const [luaScriptLoading, setLuaScriptLoading] = useState(false);
   const [luaTesting, setLuaTesting] = useState(false);
-  const [detailLogsLoading, setDetailLogsLoading] = useState(false);
-  const [detailLogs, setDetailLogs] = useState<
-    PPChatTokenLogsPayload["data"] | null
-  >(null);
   const [draggingAccountID, setDraggingAccountID] = useState<number | null>(
     null,
   );
@@ -787,41 +877,6 @@ export function AccountsPage({
   }, [internalAddModalMode]);
 
   useEffect(() => {
-    if (!detailAccount) {
-      setDetailLogs(null);
-      setDetailLogsLoading(false);
-      return;
-    }
-    if (normalizeSourceIcon(detailAccount.source_icon) !== "ppchat") {
-      setDetailLogs(null);
-      setDetailLogsLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setDetailLogsLoading(true);
-    void fetchPPChatTokenLogs(detailAccount.id)
-      .then((payload) => {
-        if (cancelled) {
-          return;
-        }
-        setDetailLogs(payload.data);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDetailLogs(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setDetailLogsLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [detailAccount]);
-
-  useEffect(() => {
     if (!editingAccount) {
       setLuaScriptKey("");
       setLuaScriptContent("");
@@ -876,7 +931,7 @@ export function AccountsPage({
       })
       .catch(() => {
         if (!cancelled) {
-          setLuaScriptContent("");
+          setLuaScriptContent(getKnownLuaDSLTemplate(editingAccount));
         }
       })
       .finally(() => {
@@ -1531,41 +1586,6 @@ export function AccountsPage({
     }
   }
 
-  const detailLogMaxTokens = useMemo(() => {
-    if (!detailLogs?.logs?.length) {
-      return 0;
-    }
-    return Math.max(
-      ...detailLogs.logs.map(
-        (log) => log.prompt_tokens + log.completion_tokens,
-      ),
-      1,
-    );
-  }, [detailLogs]);
-
-  const ppchatQuotaSummary = useMemo(() => {
-    const info = detailLogs?.token_info;
-    if (!info) {
-      return null;
-    }
-    const added = Math.max(info.today_added_quota ?? 0, 0);
-    const used = Math.max(info.today_used_quota ?? 0, 0);
-    const remain = info.remain_quota_display ?? 0;
-    const remainingVisible = Math.max(remain, 0);
-    const total = Math.max(added, used + remainingVisible, 1);
-    const overflow = remain < 0 ? Math.abs(remain) : Math.max(used - total, 0);
-
-    return {
-      added,
-      used,
-      remain,
-      total,
-      overflow,
-      usageCount: info.today_usage_count ?? 0,
-      progressPercent: Math.min((used / total) * 100, 100),
-    };
-  }, [detailLogs]);
-
   const draggingAccount =
     draggingAccountID === null
       ? null
@@ -1608,6 +1628,8 @@ export function AccountsPage({
             },
           ]
         : buildGenericUsageWindows(record, language);
+    const usageAmount =
+      usageWindows.length === 0 ? buildUsageAmount(record, language) : null;
 
     return (
       <div
@@ -1685,6 +1707,16 @@ export function AccountsPage({
               <div
                 className={`account-usage-mini ${usageWindows.length === 0 ? "account-usage-mini-empty" : ""} ${usageWindows.length === 1 ? "account-usage-mini-single" : ""}`.trim()}
               >
+                {usageAmount ? (
+                  <div className="account-usage-amount">
+                    <span className="account-usage-amount-label">
+                      {usageAmount.label}
+                    </span>
+                    <span className="account-usage-amount-value">
+                      {usageAmount.value}
+                    </span>
+                  </div>
+                ) : null}
                 {usageWindows.map((item) => (
                   <div className="account-usage-mini-row" key={item.label}>
                     <div className="account-usage-mini-head">
@@ -1868,146 +1900,17 @@ export function AccountsPage({
         width={880}
       >
         {detailAccount ? (
-          normalizeSourceIcon(detailAccount.source_icon) === "ppchat" ? (
-            <div className="account-detail-layout">
-              {detailLogsLoading ? (
-                <Card
-                  variant="borderless"
-                  className="account-detail-chart-card"
-                >
-                  <Skeleton active paragraph={{ rows: 8 }} />
-                </Card>
-              ) : (
-                <div className="ppchat-metrics-grid">
-                  <Card variant="borderless" className="ppchat-progress-card">
-                    <div className="ppchat-stat-title">{t("今日配额进度")}</div>
-                    <div className="ppchat-progress-head">
-                      <span
-                        className={`ppchat-progress-primary ${ppchatQuotaSummary?.overflow ? "is-danger" : ""}`}
-                      >
-                        {ppchatQuotaSummary
-                          ? `${ppchatQuotaSummary.overflow ? t("超出") : t("剩余")} ${formatInteger(language, ppchatQuotaSummary.overflow || ppchatQuotaSummary.remain)}`
-                          : "--"}
-                      </span>
-                      <span
-                        className={`ppchat-progress-secondary ${ppchatQuotaSummary?.overflow ? "is-danger" : ""}`}
-                      >
-                        {ppchatQuotaSummary
-                          ? `${t("已用")} ${formatInteger(language, ppchatQuotaSummary.used)} / ${t("新增")} ${formatInteger(language, ppchatQuotaSummary.added)}`
-                          : "--"}
-                      </span>
-                    </div>
-                    <div
-                      className="ppchat-progress-bar-shell"
-                      aria-label={t("今日配额进度")}
-                    >
-                      <div
-                        className={`ppchat-progress-bar ${ppchatQuotaSummary?.overflow ? "is-danger" : ""}`}
-                        style={{
-                          width: `${ppchatQuotaSummary?.progressPercent ?? 0}%`,
-                        }}
-                      />
-                    </div>
-                  </Card>
-                  <Card
-                    variant="borderless"
-                    className="ppchat-metric-card ppchat-metric-card-compact"
-                  >
-                    <Statistic
-                      title={
-                        <span className="ppchat-stat-title">
-                          {t("当天增加配额")}
-                        </span>
-                      }
-                      value={
-                        ppchatQuotaSummary
-                          ? formatInteger(language, ppchatQuotaSummary.added)
-                          : "--"
-                      }
-                      valueRender={(node) => (
-                        <span className="ppchat-stat-value">{node}</span>
-                      )}
-                    />
-                  </Card>
-                  <Card
-                    variant="borderless"
-                    className="ppchat-metric-card ppchat-metric-card-compact"
-                  >
-                    <Statistic
-                      title={
-                        <span className="ppchat-stat-title">
-                          {t("今日已用次数")}
-                        </span>
-                      }
-                      value={
-                        ppchatQuotaSummary
-                          ? formatInteger(
-                              language,
-                              ppchatQuotaSummary.usageCount,
-                            )
-                          : "--"
-                      }
-                      valueRender={(node) => (
-                        <span className="ppchat-stat-value">{node}</span>
-                      )}
-                    />
-                  </Card>
-                </div>
-              )}
-              <Card
-                variant="borderless"
-                className="account-detail-chart-card"
-                title={t("PPChat Token 日志")}
-                extra={<BarChartOutlined />}
-              >
-                {detailLogsLoading ? (
-                  <Skeleton active paragraph={{ rows: 5 }} />
-                ) : detailLogs?.logs?.length ? (
-                  <div className="token-log-list">
-                    {detailLogs.logs.slice(0, 8).map((log, index) => {
-                      const total = log.prompt_tokens + log.completion_tokens;
-                      const width =
-                        detailLogMaxTokens > 0
-                          ? Math.max((total / detailLogMaxTokens) * 100, 6)
-                          : 0;
-                      return (
-                        <div
-                          className="token-log-row"
-                          key={`${log.created_at}-${index}`}
-                        >
-                          <div className="token-log-meta">
-                            <span>{log.model_name}</span>
-                            <span>{log.created_time}</span>
-                          </div>
-                          <div className="token-log-bar-bg">
-                            <div
-                              className="token-log-bar"
-                              style={{ width: `${width}%` }}
-                            />
-                          </div>
-                          <div className="token-log-values">
-                            <span>Prompt {log.prompt_tokens}</span>
-                            <span>Completion {log.completion_tokens}</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <Empty
-                    description={t("暂无 PPChat 日志数据")}
-                    image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  />
-                )}
-              </Card>
-            </div>
-          ) : (
-            <div className="account-detail-layout">
+          <div className="account-detail-layout">
               <div className="account-detail-stats">
                 <Card variant="borderless">
                   <Statistic
                     title={t("额度余额")}
-                    value={Math.round(detailAccount.quota_remaining)}
+                    value={Math.round(
+                      isPPChatAccount(detailAccount) &&
+                        (detailAccount.ppchat_today_added_quota ?? 0) > 0
+                        ? (detailAccount.ppchat_today_remaining_quota ?? 0)
+                        : detailAccount.quota_remaining,
+                    )}
                   />
                 </Card>
                 <Card variant="borderless">
@@ -2062,21 +1965,53 @@ export function AccountsPage({
                         detailAccount.auth_mode,
                     )}
                   </Descriptions.Item>
-                  <Descriptions.Item label={t("接口地址")} span={2}>
+                  <Descriptions.Item label={t("接口地址")}>
                     {detailAccount.base_url || t("OpenAI 官方")}
                   </Descriptions.Item>
-                  <Descriptions.Item label={t("5 小时剩余")}>
-                    {(100 - detailAccount.primary_used_percent).toFixed(0)}% ·{" "}
-                    {formatResetTime(detailAccount.primary_resets_at, language)}
-                  </Descriptions.Item>
-                  <Descriptions.Item label={t("1 周剩余")}>
-                    {(100 - detailAccount.secondary_used_percent).toFixed(0)}% ·{" "}
-                    {formatResetTime(detailAccount.secondary_resets_at, language)}
-                  </Descriptions.Item>
+                  {isPPChatAccount(detailAccount) ? (
+                    <>
+                      <Descriptions.Item label={t("剩余配额")}>
+                        {formatInteger(
+                          language,
+                          detailAccount.ppchat_today_remaining_quota ?? 0,
+                        )}{" "}
+                        · {formatTomorrowMidnight(language)}
+                      </Descriptions.Item>
+                      <Descriptions.Item label={t("当天已用配额")}>
+                        {formatInteger(
+                          language,
+                          detailAccount.ppchat_today_used_quota ?? 0,
+                        )}{" "}
+                        / {t("当天增加配额")}{" "}
+                        {formatInteger(
+                          language,
+                          detailAccount.ppchat_today_added_quota ?? 0,
+                        )}
+                      </Descriptions.Item>
+                    </>
+                  ) : (
+                    <>
+                      <Descriptions.Item label={t("5 小时剩余")}>
+                        {(100 - detailAccount.primary_used_percent).toFixed(0)}
+                        % ·{" "}
+                        {formatResetTime(
+                          detailAccount.primary_resets_at,
+                          language,
+                        )}
+                      </Descriptions.Item>
+                      <Descriptions.Item label={t("1 周剩余")}>
+                        {(100 - detailAccount.secondary_used_percent).toFixed(0)}
+                        % ·{" "}
+                        {formatResetTime(
+                          detailAccount.secondary_resets_at,
+                          language,
+                        )}
+                      </Descriptions.Item>
+                    </>
+                  )}
                 </Descriptions>
               </Card>
             </div>
-          )
         ) : null}
       </Modal>
 

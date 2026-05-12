@@ -688,6 +688,16 @@ func TestAccountsHandlerListAccountsDefaultsBuiltInDrivers(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Create ppchat returned error: %v", err)
 	}
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "nodeseek",
+		AuthMode:      accounts.AuthModeAPIKey,
+		CredentialRef: "sk-test",
+		BaseURL:       "https://ai.nodeseek.in",
+		Status:        accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create nodeseek returned error: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/accounts", nil)
 	rec := httptest.NewRecorder()
@@ -711,6 +721,15 @@ func TestAccountsHandlerListAccountsDefaultsBuiltInDrivers(t *testing.T) {
 	}
 	if listed[1]["usage_driver"] != "builtin_ppchat" {
 		t.Fatalf("ppchat usage_driver = %v, want builtin_ppchat", listed[1]["usage_driver"])
+	}
+	if listed[2]["account_driver"] != "builtin_api_key" {
+		t.Fatalf("nodeseek account_driver = %v, want builtin_api_key", listed[2]["account_driver"])
+	}
+	if listed[2]["usage_driver"] != "lua" {
+		t.Fatalf("nodeseek usage_driver = %v, want lua", listed[2]["usage_driver"])
+	}
+	if listed[2]["usage_config_json"] != `{"script":"managed:ai.nodeseek.in"}` {
+		t.Fatalf("nodeseek usage_config_json = %v, want managed script config", listed[2]["usage_config_json"])
 	}
 }
 

@@ -58,6 +58,35 @@ end
 	}
 }
 
+func TestLuaDriverUsesBuiltInManagedDSLScript(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage" {
+			t.Fatalf("path = %q, want /v1/usage", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-nodeseek" {
+			t.Fatalf("Authorization = %q, want Bearer sk-nodeseek", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"remaining":88,"unit":"USD"}`))
+	}))
+	defer server.Close()
+
+	driver := luadrv.NewDriver(nil, moduleRoot(t), luadrv.WithManagedScriptRoot(t.TempDir()))
+	result, err := driver.Fetch(context.Background(), accounts.Account{
+		BaseURL:         server.URL,
+		UsageDriver:     "lua",
+		UsageConfigJSON: `{"script":"managed:ai.nodeseek.in"}`,
+	}, accountdrv.ResolvedCredential{APIKey: "sk-nodeseek"})
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+	if result.Limits.Balance == nil || *result.Limits.Balance != 88 {
+		t.Fatalf("Balance = %#v, want 88", result.Limits.Balance)
+	}
+}
+
 func TestManagedScriptStoreRejectsInvalidKey(t *testing.T) {
 	t.Parallel()
 
