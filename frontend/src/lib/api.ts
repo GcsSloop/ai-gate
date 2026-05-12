@@ -38,6 +38,20 @@ export type AccountRecord = {
   ppchat_today_used_quota?: number;
   ppchat_today_added_quota?: number;
   ppchat_today_remaining_quota?: number;
+  usage_display?: AccountUsageDisplay;
+};
+
+export type AccountUsageDisplayMetric = {
+  label?: string;
+  value?: string;
+  hint?: string;
+  tone?: string;
+};
+
+export type AccountUsageDisplay = {
+  summary?: AccountUsageDisplayMetric;
+  detail_stats?: AccountUsageDisplayMetric[];
+  detail_items?: AccountUsageDisplayMetric[];
 };
 
 export type AccountUsageRecord = {
@@ -62,6 +76,7 @@ export type AccountUsageRecord = {
   ppchat_today_used_quota?: number;
   ppchat_today_added_quota?: number;
   ppchat_today_remaining_quota?: number;
+  usage_display?: AccountUsageDisplay;
 };
 
 export type CreateAccountPayload = {

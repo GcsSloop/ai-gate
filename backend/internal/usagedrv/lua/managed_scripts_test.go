@@ -85,6 +85,13 @@ func TestLuaDriverUsesBuiltInManagedDSLScript(t *testing.T) {
 	if result.Limits.Balance == nil || *result.Limits.Balance != 88 {
 		t.Fatalf("Balance = %#v, want 88", result.Limits.Balance)
 	}
+	summary, ok := result.Display["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("display.summary = %#v, want object", result.Display["summary"])
+	}
+	if summary["label"] != "余额" || summary["value"] != "$88.00" {
+		t.Fatalf("display.summary = %#v, want formatted balance", summary)
+	}
 }
 
 func TestManagedScriptStoreRejectsInvalidKey(t *testing.T) {

@@ -640,6 +640,101 @@ describe("AccountsPage", () => {
     expect(within(testModal).getByText("pong")).toBeInTheDocument();
   });
 
+  it("renders lua-controlled usage display in the list and detail modal", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                id: 1,
+                provider_type: "openai-compatible",
+                account_name: "加油包",
+                source_icon: "openai",
+                auth_mode: "api_key",
+                base_url: "https://ai.nodeseek.in",
+                account_driver: "",
+                usage_driver: "lua",
+                usage_config_json: "{\"script\":\"managed:ai.nodeseek.in\"}",
+                status: "active",
+                priority: 1,
+                is_active: true,
+                balance: 0,
+                quota_remaining: 0,
+                rpm_remaining: 0,
+                tpm_remaining: 0,
+                health_score: 0,
+                recent_error_rate: 0,
+                last_total_tokens: 0,
+                last_input_tokens: 0,
+                last_output_tokens: 0,
+                model_context_window: 0,
+                primary_used_percent: 0,
+                secondary_used_percent: 0,
+              },
+            ]),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                account_id: 1,
+                balance: 61.96,
+                quota_remaining: 0,
+                rpm_remaining: 0,
+                tpm_remaining: 0,
+                health_score: 1,
+                recent_error_rate: 0,
+                last_total_tokens: 0,
+                last_input_tokens: 0,
+                last_output_tokens: 0,
+                model_context_window: 0,
+                primary_used_percent: 0,
+                secondary_used_percent: 0,
+                usage_display: {
+                  summary: { label: "余额", value: "$61.96" },
+                  detail_stats: [
+                    { label: "余额", value: "$61.96" },
+                    { label: "状态", value: "可用" },
+                  ],
+                  detail_items: [{ label: "计费单位", value: "美元" }],
+                },
+              },
+            ]),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("加油包")).toBeInTheDocument();
+    expect(await screen.findByText("$61.96")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "详情-加油包" }));
+
+    const detailModal = await screen.findByRole("dialog", { name: "账户详情" });
+    expect(within(detailModal).getByText("余额")).toBeInTheDocument();
+    expect(within(detailModal).getByText("$61.96")).toBeInTheDocument();
+    expect(within(detailModal).getByText("计费单位")).toBeInTheDocument();
+    expect(within(detailModal).getByText("美元")).toBeInTheDocument();
+    expect(within(detailModal).queryByText("5 小时剩余")).not.toBeInTheDocument();
+    expect(within(detailModal).queryByText("1 周剩余")).not.toBeInTheDocument();
+  });
+
   it("confirms before sharing and only copies after explicit approval", async () => {
     const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", {

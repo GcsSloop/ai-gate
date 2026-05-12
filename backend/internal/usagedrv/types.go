@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
+	"github.com/gcssloop/codex-router/backend/internal/accounts"
 )
 
 type UsageLimits struct {
@@ -27,6 +27,7 @@ type RawUsageResult struct {
 	Payload    map[string]any
 	Limits     UsageLimits
 	Meta       map[string]any
+	Display    map[string]any
 }
 
 type UsageDriver interface {

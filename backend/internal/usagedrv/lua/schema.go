@@ -60,6 +60,7 @@ func ensureNoUnknownTopKeys(root *golua.LTable) error {
 		"confidence": {},
 		"limits":     {},
 		"meta":       {},
+		"display":    {},
 		"payload":    {},
 		"error":      {},
 	}
@@ -122,6 +123,12 @@ func decodeSuccessResult(root *golua.LTable) (usagedrv.RawUsageResult, error) {
 		return usagedrv.RawUsageResult{}, fmt.Errorf("schema: meta: %w", err)
 	}
 
+	displayValue := root.RawGetString("display")
+	display, err := decodeOptionalMap(displayValue)
+	if err != nil {
+		return usagedrv.RawUsageResult{}, fmt.Errorf("schema: display: %w", err)
+	}
+
 	payloadValue := root.RawGetString("payload")
 	payload, err := decodeOptionalMap(payloadValue)
 	if err != nil {
@@ -133,6 +140,7 @@ func decodeSuccessResult(root *golua.LTable) (usagedrv.RawUsageResult, error) {
 		Confidence: confidence,
 		Limits:     limits,
 		Meta:       meta,
+		Display:    display,
 		Payload:    payload,
 	}, nil
 }

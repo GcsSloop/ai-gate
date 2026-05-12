@@ -108,6 +108,42 @@ func TestFromRawBalanceOnlyLimits(t *testing.T) {
 	}
 }
 
+func TestFromRawPreservesDisplayHints(t *testing.T) {
+	t.Parallel()
+
+	result := usagedrv.RawUsageResult{
+		Source:     "remote",
+		Confidence: "high",
+		Limits: usagedrv.UsageLimits{
+			Balance: floatPtr(61.96),
+		},
+		Display: map[string]any{
+			"summary": map[string]any{
+				"label": "余额",
+				"value": "$61.96",
+			},
+			"detail_stats": []any{
+				map[string]any{"label": "余额", "value": "$61.96"},
+			},
+		},
+	}
+
+	snapshot := normalize.FromRaw(12, result, time.Now().UTC())
+	var decoded struct {
+		Display map[string]any `json:"display"`
+	}
+	if err := json.Unmarshal([]byte(snapshot.ProviderSnapshotJSON), &decoded); err != nil {
+		t.Fatalf("Unmarshal ProviderSnapshotJSON returned error: %v", err)
+	}
+	summary, ok := decoded.Display["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("display.summary = %#v, want object", decoded.Display["summary"])
+	}
+	if summary["label"] != "余额" || summary["value"] != "$61.96" {
+		t.Fatalf("display.summary = %#v, want balance label/value", summary)
+	}
+}
+
 func TestFromRawStaleLowConfidence(t *testing.T) {
 	t.Parallel()
 

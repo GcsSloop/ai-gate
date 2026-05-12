@@ -86,6 +86,7 @@ func FromRaw(accountID int64, result usagedrv.RawUsageResult, checkedAt time.Tim
 	}
 	snapshot.ProviderSnapshotJSON = marshalProviderSnapshot(
 		result.Payload,
+		result.Display,
 		capacityModelFromRaw(result, snapshot),
 		LimitPresence{
 			HasBalance: result.Limits.Balance != nil,
@@ -103,7 +104,7 @@ func DefaultFallbackSnapshot(accountID int64) usage.Snapshot {
 		AccountID:            accountID,
 		Source:               "inferred",
 		Confidence:           "low",
-		ProviderSnapshotJSON: marshalProviderSnapshot(nil, CapacityModelManual, LimitPresence{}),
+		ProviderSnapshotJSON: marshalProviderSnapshot(nil, nil, CapacityModelManual, LimitPresence{}),
 		Balance:              1,
 		QuotaRemaining:       1_000_000,
 		RPMRemaining:         100,
@@ -163,6 +164,7 @@ func LimitPresenceFromSnapshot(snapshot usage.Snapshot) LimitPresence {
 type providerSnapshot struct {
 	CapacityModel CapacityModel  `json:"capacity_model,omitempty"`
 	Payload       map[string]any `json:"payload,omitempty"`
+	Display       map[string]any `json:"display,omitempty"`
 	HasBalance    bool           `json:"has_balance,omitempty"`
 	HasQuota      bool           `json:"has_quota,omitempty"`
 	HasRPM        bool           `json:"has_rpm,omitempty"`
@@ -218,10 +220,11 @@ func capacityModelFromRaw(result usagedrv.RawUsageResult, snapshot usage.Snapsho
 	return CapacityModelManual
 }
 
-func marshalProviderSnapshot(payload map[string]any, capacityModel CapacityModel, presence LimitPresence) string {
+func marshalProviderSnapshot(payload map[string]any, display map[string]any, capacityModel CapacityModel, presence LimitPresence) string {
 	raw, err := json.Marshal(providerSnapshot{
 		CapacityModel: capacityModel,
 		Payload:       payload,
+		Display:       display,
 		HasBalance:    presence.HasBalance,
 		HasQuota:      presence.HasQuota,
 		HasRPM:        presence.HasRPM,

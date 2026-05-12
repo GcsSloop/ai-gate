@@ -407,27 +407,28 @@ func (h *AccountsHandler) listAccountsUsage(w http.ResponseWriter, _ *http.Reque
 	}
 
 	type responseItem struct {
-		AccountID                 int64      `json:"account_id"`
-		Balance                   float64    `json:"balance"`
-		QuotaRemaining            float64    `json:"quota_remaining"`
-		RPMRemaining              float64    `json:"rpm_remaining"`
-		TPMRemaining              float64    `json:"tpm_remaining"`
-		HealthScore               float64    `json:"health_score"`
-		RecentErrorRate           float64    `json:"recent_error_rate"`
-		LastTotalTokens           float64    `json:"last_total_tokens"`
-		LastInputTokens           float64    `json:"last_input_tokens"`
-		LastOutputTokens          float64    `json:"last_output_tokens"`
-		ModelContextWindow        float64    `json:"model_context_window"`
-		PrimaryUsedPercent        float64    `json:"primary_used_percent"`
-		SecondaryUsedPercent      float64    `json:"secondary_used_percent"`
-		PrimaryResetsAt           *time.Time `json:"primary_resets_at,omitempty"`
-		SecondaryResetsAt         *time.Time `json:"secondary_resets_at,omitempty"`
-		CheckedAt                 *time.Time `json:"checked_at,omitempty"`
-		Stale                     bool       `json:"stale"`
-		LastError                 string     `json:"last_error,omitempty"`
-		PPChatTodayUsedQuota      float64    `json:"ppchat_today_used_quota,omitempty"`
-		PPChatTodayAddedQuota     float64    `json:"ppchat_today_added_quota,omitempty"`
-		PPChatTodayRemainingQuota float64    `json:"ppchat_today_remaining_quota,omitempty"`
+		AccountID                 int64          `json:"account_id"`
+		Balance                   float64        `json:"balance"`
+		QuotaRemaining            float64        `json:"quota_remaining"`
+		RPMRemaining              float64        `json:"rpm_remaining"`
+		TPMRemaining              float64        `json:"tpm_remaining"`
+		HealthScore               float64        `json:"health_score"`
+		RecentErrorRate           float64        `json:"recent_error_rate"`
+		LastTotalTokens           float64        `json:"last_total_tokens"`
+		LastInputTokens           float64        `json:"last_input_tokens"`
+		LastOutputTokens          float64        `json:"last_output_tokens"`
+		ModelContextWindow        float64        `json:"model_context_window"`
+		PrimaryUsedPercent        float64        `json:"primary_used_percent"`
+		SecondaryUsedPercent      float64        `json:"secondary_used_percent"`
+		PrimaryResetsAt           *time.Time     `json:"primary_resets_at,omitempty"`
+		SecondaryResetsAt         *time.Time     `json:"secondary_resets_at,omitempty"`
+		CheckedAt                 *time.Time     `json:"checked_at,omitempty"`
+		Stale                     bool           `json:"stale"`
+		LastError                 string         `json:"last_error,omitempty"`
+		PPChatTodayUsedQuota      float64        `json:"ppchat_today_used_quota,omitempty"`
+		PPChatTodayAddedQuota     float64        `json:"ppchat_today_added_quota,omitempty"`
+		PPChatTodayRemainingQuota float64        `json:"ppchat_today_remaining_quota,omitempty"`
+		UsageDisplay              map[string]any `json:"usage_display,omitempty"`
 	}
 
 	usageByAccount := map[int64]usage.Snapshot{}
@@ -443,6 +444,7 @@ func (h *AccountsHandler) listAccountsUsage(w http.ResponseWriter, _ *http.Reque
 	for _, account := range accountList {
 		snapshot := usageByAccount[account.ID]
 		ppchatSummary := parsePPChatUsageSummary(snapshot.ProviderSnapshotJSON)
+		usageDisplay := parseUsageDisplay(snapshot.ProviderSnapshotJSON)
 		response = append(response, responseItem{
 			AccountID:                 account.ID,
 			Balance:                   snapshot.Balance,
@@ -465,6 +467,7 @@ func (h *AccountsHandler) listAccountsUsage(w http.ResponseWriter, _ *http.Reque
 			PPChatTodayUsedQuota:      ppchatSummary.TodayUsedQuota,
 			PPChatTodayAddedQuota:     ppchatSummary.TodayAddedQuota,
 			PPChatTodayRemainingQuota: ppchatSummary.TodayRemainingQuota,
+			UsageDisplay:              usageDisplay,
 		})
 	}
 
@@ -483,6 +486,22 @@ type ppchatUsageSummary struct {
 	TodayUsedQuota      float64
 	TodayAddedQuota     float64
 	TodayRemainingQuota float64
+}
+
+func parseUsageDisplay(raw string) map[string]any {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var decoded struct {
+		Display map[string]any `json:"display"`
+	}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return nil
+	}
+	if len(decoded.Display) == 0 {
+		return nil
+	}
+	return decoded.Display
 }
 
 func parsePPChatUsageSummary(raw string) ppchatUsageSummary {
