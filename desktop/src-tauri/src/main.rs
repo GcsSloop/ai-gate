@@ -404,7 +404,7 @@ struct DesktopRuntime {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WindowCloseAction {
-    MinimizeWindow,
+    HideWindow,
     ExitApp,
 }
 
@@ -457,13 +457,9 @@ fn main() {
                     match event {
                         tauri::WindowEvent::CloseRequested { api, .. } => {
                             match window_close_action(current_settings_cache().close_to_tray) {
-                                WindowCloseAction::MinimizeWindow => {
+                                WindowCloseAction::HideWindow => {
                                     api.prevent_close();
-                                    if let Some(window) =
-                                        app_handle.get_webview_window(MAIN_WINDOW_LABEL)
-                                    {
-                                        let _ = window.minimize();
-                                    }
+                                    hide_main_window(app_handle);
                                 }
                                 WindowCloseAction::ExitApp => {
                                     api.prevent_close();
@@ -476,6 +472,16 @@ fn main() {
                             }
                         }
                         tauri::WindowEvent::Resized(_) => {
+                            if should_hide_minimized_window(
+                                current_settings_cache().close_to_tray,
+                                app_handle
+                                    .get_webview_window(MAIN_WINDOW_LABEL)
+                                    .and_then(|window| window.is_minimized().ok())
+                                    .unwrap_or(false),
+                            ) {
+                                hide_main_window(app_handle);
+                                return;
+                            }
                             let _ = persist_main_window_size_from_window(&app_handle);
                         }
                         _ => {}
@@ -499,10 +505,14 @@ fn main() {
 
 fn window_close_action(close_to_tray: bool) -> WindowCloseAction {
     if close_to_tray {
-        WindowCloseAction::MinimizeWindow
+        WindowCloseAction::HideWindow
     } else {
         WindowCloseAction::ExitApp
     }
+}
+
+fn should_hide_minimized_window(close_to_tray: bool, is_minimized: bool) -> bool {
+    close_to_tray && is_minimized
 }
 
 #[tauri::command]
@@ -1717,6 +1727,13 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+fn hide_main_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = window.unminimize();
+        let _ = window.hide();
+    }
+}
+
 fn parse_proxy_status_response(resp: &HttpResponse) -> Result<ProxyStatusSnapshot, String> {
     if resp.status != 200 {
         return Err(format!("unexpected proxy status code {}", resp.status));
@@ -2366,16 +2383,16 @@ mod tests {
         proxy_menu_enabled_states, request_backend, resolve_main_window_size,
         resolve_system_proxy_url_from_scutil_output, resolve_update_future_with_timeout,
         restart_sidecar_and_wait_ready, sanitize_main_window_size, should_attempt_sidecar_recovery,
-        should_dispatch_resume_recovery, should_refresh_tray_after_action,
-        should_restart_sidecar_after_exit, should_retry_sidecar_request,
-        should_trigger_resume_recovery, shutdown_sidecar_with_reason, sidecar_candidate_paths,
-        sidecar_creation_flags, sidecar_request_with_recovery, sidecar_request_with_recovery_hooks,
-        sidecar_resource_name, spawn_sidecar, tray_icon_bytes_for_platform,
-        tray_icon_is_template_for_platform, update_download_progress, wait_for_backend_ready,
-        wait_for_backend_ready_with_probe, window_close_action, AppSettingsPayload,
-        DesktopLogEntry, DesktopRuntime, DesktopSettingsCache, HttpResponse, UpdateInfoPayload,
-        UpdateManagerState, UpdateProgressPayload, UpdateStatePayload, UpdateStatus,
-        UpstreamProxyMode, WindowCloseAction, WindowSizeCache, DESKTOP_RUNTIME,
+        should_dispatch_resume_recovery, should_hide_minimized_window,
+        should_refresh_tray_after_action, should_restart_sidecar_after_exit,
+        should_retry_sidecar_request, should_trigger_resume_recovery, shutdown_sidecar_with_reason,
+        sidecar_candidate_paths, sidecar_creation_flags, sidecar_request_with_recovery,
+        sidecar_request_with_recovery_hooks, sidecar_resource_name, spawn_sidecar,
+        tray_icon_bytes_for_platform, tray_icon_is_template_for_platform, update_download_progress,
+        wait_for_backend_ready, wait_for_backend_ready_with_probe, window_close_action,
+        AppSettingsPayload, DesktopLogEntry, DesktopRuntime, DesktopSettingsCache, HttpResponse,
+        UpdateInfoPayload, UpdateManagerState, UpdateProgressPayload, UpdateStatePayload,
+        UpdateStatus, UpstreamProxyMode, WindowCloseAction, WindowSizeCache, DESKTOP_RUNTIME,
         MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH, SIDECAR_CHILD, SIDECAR_MACOS_NAME,
         SIDECAR_WINDOWS_NAME, TRAY_ICON_COLOR_BYTES, TRAY_ICON_TEMPLATE_BYTES, UPDATE_MANAGER,
     };
@@ -2435,8 +2452,15 @@ mod tests {
     }
 
     #[test]
-    fn window_close_minimizes_when_close_to_tray_is_enabled() {
-        assert_eq!(window_close_action(true), WindowCloseAction::MinimizeWindow);
+    fn window_close_hides_when_close_to_tray_is_enabled() {
+        assert_eq!(window_close_action(true), WindowCloseAction::HideWindow);
+    }
+
+    #[test]
+    fn minimized_window_hides_when_close_to_tray_is_enabled() {
+        assert!(should_hide_minimized_window(true, true));
+        assert!(!should_hide_minimized_window(false, true));
+        assert!(!should_hide_minimized_window(true, false));
     }
 
     #[test]
