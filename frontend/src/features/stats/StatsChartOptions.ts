@@ -76,7 +76,7 @@ export function buildTokenTrendChartOption(data: UsageTrendPoint[], language: Ap
     animationDuration: 420,
     animationDurationUpdate: 420,
     animationEasingUpdate: "cubicOut",
-    color: ["#3b82f6", "#14b8a6", "#f59e0b"],
+    color: ["#3b82f6", "#14b8a6", "#8b5cf6"],
     grid: {
       top: 34,
       right: 46,
@@ -180,7 +180,7 @@ export function buildTokenTrendChartOption(data: UsageTrendPoint[], language: Ap
         type: "line",
         smooth: true,
         symbol: "none",
-        lineStyle: { width: 3 },
+        lineStyle: { width: 2 },
         areaStyle: {
           color: "rgba(59, 130, 246, 0.10)",
         },
@@ -191,7 +191,7 @@ export function buildTokenTrendChartOption(data: UsageTrendPoint[], language: Ap
         type: "line",
         smooth: true,
         symbol: "none",
-        lineStyle: { width: 3 },
+        lineStyle: { width: 2 },
         areaStyle: {
           color: "rgba(20, 184, 166, 0.10)",
         },
@@ -203,12 +203,14 @@ export function buildTokenTrendChartOption(data: UsageTrendPoint[], language: Ap
         yAxisIndex: 1,
         barMaxWidth: 16,
         itemStyle: {
+          color: "#8b5cf6",
           borderRadius: [4, 4, 0, 0],
-          opacity: 0.28,
+          opacity: 0.18,
         },
         emphasis: {
           itemStyle: {
-            opacity: 0.55,
+            color: "#7c3aed",
+            opacity: 0.32,
           },
         },
         data: sortedData.map((point) => point.request_count),

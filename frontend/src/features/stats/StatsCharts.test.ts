@@ -73,4 +73,46 @@ describe("StatsCharts", () => {
       ]),
     );
   });
+
+  it("uses a purple request count color and thinner token lines", () => {
+    const option = buildTokenTrendChartOption(
+      [
+        { bucket: "2026-04-11T08:00:00Z", request_count: 7, input_tokens: 20, output_tokens: 2, total_tokens: 22, estimated_cost: 0.03, balance_delta: 0, quota_delta: 0 },
+      ],
+      "zh-CN",
+      {
+        textPrimary: "#111827",
+        textSecondary: "#6a7c73",
+        border: "#e5e7eb",
+        panelSurface: "#f8fbff",
+      },
+    );
+
+    expect(option.color).toEqual(["#3b82f6", "#14b8a6", "#8b5cf6"]);
+    expect(option.series).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "输入",
+          lineStyle: expect.objectContaining({ width: 2 }),
+        }),
+        expect.objectContaining({
+          name: "输出",
+          lineStyle: expect.objectContaining({ width: 2 }),
+        }),
+        expect.objectContaining({
+          name: "请求数",
+          itemStyle: expect.objectContaining({
+            color: "#8b5cf6",
+            opacity: 0.18,
+          }),
+          emphasis: expect.objectContaining({
+            itemStyle: expect.objectContaining({
+              color: "#7c3aed",
+              opacity: 0.32,
+            }),
+          }),
+        }),
+      ]),
+    );
+  });
 });
