@@ -41,6 +41,7 @@ type Account struct {
 	Status            Status
 	Priority          int
 	IsActive          bool
+	IsLocked          bool
 	SupportsResponses bool
 	CooldownUntil     *time.Time
 	CooldownReason    string

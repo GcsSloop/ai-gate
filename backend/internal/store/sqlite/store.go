@@ -116,6 +116,7 @@ func (s *Store) migrate() error {
 		{table: "account_usage_snapshots", name: "primary_resets_at", definition: "DATETIME"},
 		{table: "account_usage_snapshots", name: "secondary_resets_at", definition: "DATETIME"},
 		{table: "accounts", name: "is_active", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "accounts", name: "is_locked", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "accounts", name: "supports_responses", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "accounts", name: "source_icon", definition: "TEXT NOT NULL DEFAULT 'openai'"},
 		{table: "accounts", name: "account_driver", definition: "TEXT NOT NULL DEFAULT ''"},

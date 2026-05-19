@@ -289,6 +289,53 @@ func TestSQLiteRepositorySetActiveKeepsSingleActiveAccount(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryPersistsAccountLockState(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "locked",
+		AuthMode:      accounts.AuthModeAPIKey,
+		CredentialRef: "sk-locked",
+		Status:        accounts.StatusActive,
+		IsLocked:      true,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	got, err := repo.GetByID(1)
+	if err != nil {
+		t.Fatalf("GetByID returned error: %v", err)
+	}
+	if !got.IsLocked {
+		t.Fatal("GetByID IsLocked = false, want true")
+	}
+
+	got.IsLocked = false
+	if err := repo.Update(got); err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+	items, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("List returned %d items, want 1", len(items))
+	}
+	if items[0].IsLocked {
+		t.Fatal("List IsLocked = true, want false after update")
+	}
+}
+
 func TestSQLiteRepositoryPersistsSupportsResponses(t *testing.T) {
 	t.Parallel()
 

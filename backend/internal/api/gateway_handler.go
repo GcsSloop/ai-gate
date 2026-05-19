@@ -222,6 +222,9 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 	var lastErr error
 
 	for _, candidate := range orderedCandidates {
+		if !routing.CanAttemptCandidate(candidate) {
+			continue
+		}
 		if !routing.IsFeasible(routing.TokenBudget{
 			ProjectedInputTokens:  float64(len(req.Messages) * 500),
 			ProjectedOutputTokens: 1500,
