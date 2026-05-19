@@ -14,6 +14,7 @@ export type AccountRecord = {
   status: string;
   priority: number;
   is_active: boolean;
+  is_locked?: boolean;
   supports_responses?: boolean;
   cooldown_remaining_seconds?: number;
   routing_cooldown_remaining_seconds?: number;
@@ -509,6 +510,7 @@ export async function updateAccount(
     status?: string;
     priority?: number;
     is_active?: boolean;
+    is_locked?: boolean;
     supports_responses?: boolean;
   },
 ): Promise<void> {
