@@ -20,6 +20,7 @@ var schemaStatements = []string{
 		status TEXT NOT NULL DEFAULT 'active',
 		priority INTEGER NOT NULL DEFAULT 0,
 		is_active INTEGER NOT NULL DEFAULT 0,
+		is_locked INTEGER NOT NULL DEFAULT 0,
 		supports_responses INTEGER NOT NULL DEFAULT 0,
 		cooldown_until DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP

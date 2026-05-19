@@ -486,6 +486,10 @@ func (h *ResponsesHandler) selectThinGatewayAccount() (accounts.Account, error) 
 			return accounts.Account{}, err
 		}
 		for _, candidate := range ordered {
+			if !routing.CanAttemptCandidate(candidate) {
+				logThinGatewayCandidate(candidate.Account, "skip", "account_locked")
+				continue
+			}
 			if candidate.Account.NativeResponsesCapable() {
 				logThinGatewayCandidate(candidate.Account, "select", "explicit_queue")
 				return candidate.Account, nil
@@ -506,6 +510,10 @@ func (h *ResponsesHandler) selectThinGatewayAccount() (accounts.Account, error) 
 		return account, nil
 	}
 	for _, candidate := range routing.ScoreCandidates(h.buildCandidates(accountList)) {
+		if !routing.CanAttemptCandidate(candidate) {
+			logThinGatewayCandidate(candidate.Account, "skip", "account_locked")
+			continue
+		}
 		if candidate.Account.NativeResponsesCapable() {
 			logThinGatewayCandidate(candidate.Account, "select", "scored_candidate")
 			return candidate.Account, nil
@@ -551,6 +559,9 @@ func (h *ResponsesHandler) orderedThinGatewayCandidates() ([]routing.Candidate, 
 func (h *ResponsesHandler) nextThinFailoverTarget(candidates []routing.Candidate, currentIndex int) (routing.Candidate, bool) {
 	for i := currentIndex + 1; i < len(candidates); i++ {
 		candidate := candidates[i]
+		if !routing.CanAttemptCandidate(candidate) {
+			continue
+		}
 		if !candidate.Account.NativeResponsesCapable() {
 			continue
 		}
@@ -811,6 +822,9 @@ func (h *ResponsesHandler) skipReasonForThinCandidate(candidate routing.Candidat
 		return "status=disabled", true
 	case accounts.StatusInvalid:
 		return "status=invalid", true
+	}
+	if !routing.CanAttemptCandidate(candidate) {
+		return "account_locked", true
 	}
 	if candidate.Account.RoutingCooldownActive(now) && !candidate.Account.IsActive {
 		return "routing_cooldown", true

@@ -3,6 +3,7 @@ package routing_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
@@ -133,6 +134,65 @@ func TestExecuteNonStreamAllowsActiveAccountWhenSnapshotIsInfeasible(t *testing.
 	}
 	if len(recorder.runs) != 1 || recorder.runs[0].Status != "completed" {
 		t.Fatalf("runs = %+v, want one completed run", recorder.runs)
+	}
+}
+
+func TestExecuteNonStreamSkipsLockedAutomaticCandidates(t *testing.T) {
+	t.Parallel()
+
+	var attempted []int64
+	recorder := &runRecorder{}
+	executor := routing.NewExecutor(recorder, func(_ context.Context, candidate routing.Candidate) error {
+		attempted = append(attempted, candidate.Account.ID)
+		return nil
+	})
+
+	err := executor.ExecuteNonStream(context.Background(), 102, "gpt-5.4", []routing.Candidate{
+		{
+			Account:  accounts.Account{ID: 1, AccountName: "locked-auto", Status: accounts.StatusActive, Priority: 100, IsLocked: true},
+			Snapshot: usage.Snapshot{HealthScore: 0.99, RPMRemaining: 10, TPMRemaining: 10000, Balance: 10, QuotaRemaining: 10000},
+		},
+		{
+			Account:  accounts.Account{ID: 2, AccountName: "open-auto", Status: accounts.StatusActive, Priority: 90},
+			Snapshot: usage.Snapshot{HealthScore: 0.9, RPMRemaining: 10, TPMRemaining: 10000, Balance: 10, QuotaRemaining: 10000},
+		},
+	}, routing.TokenBudget{ProjectedInputTokens: 100, ProjectedOutputTokens: 100, SafetyFactor: 1.2, EstimatedCost: 1})
+	if err != nil {
+		t.Fatalf("ExecuteNonStream returned error: %v", err)
+	}
+	if got := fmt.Sprint(attempted); got != "[2]" {
+		t.Fatalf("attempted accounts = %s, want [2]", got)
+	}
+}
+
+func TestExecuteNonStreamAllowsLockedActiveCandidate(t *testing.T) {
+	t.Parallel()
+
+	var attempted []int64
+	recorder := &runRecorder{}
+	executor := routing.NewExecutor(recorder, func(_ context.Context, candidate routing.Candidate) error {
+		attempted = append(attempted, candidate.Account.ID)
+		return nil
+	})
+
+	err := executor.ExecuteNonStream(context.Background(), 103, "gpt-5.4", []routing.Candidate{
+		{
+			Account: accounts.Account{
+				ID:          1,
+				AccountName: "locked-active",
+				Status:      accounts.StatusActive,
+				Priority:    100,
+				IsActive:    true,
+				IsLocked:    true,
+			},
+			Snapshot: usage.Snapshot{HealthScore: 0.99, RPMRemaining: 10, TPMRemaining: 10000, Balance: 10, QuotaRemaining: 10000},
+		},
+	}, routing.TokenBudget{ProjectedInputTokens: 100, ProjectedOutputTokens: 100, SafetyFactor: 1.2, EstimatedCost: 1})
+	if err != nil {
+		t.Fatalf("ExecuteNonStream returned error: %v", err)
+	}
+	if got := fmt.Sprint(attempted); got != "[1]" {
+		t.Fatalf("attempted accounts = %s, want [1]", got)
 	}
 }
 

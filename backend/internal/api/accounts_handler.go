@@ -239,6 +239,7 @@ type updateAccountRequest struct {
 	Status            accounts.Status `json:"status"`
 	Priority          *int            `json:"priority"`
 	IsActive          *bool           `json:"is_active"`
+	IsLocked          *bool           `json:"is_locked"`
 	SupportsResponses *bool           `json:"supports_responses"`
 }
 
@@ -350,6 +351,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 		UsageConfigJSON                 string                `json:"usage_config_json"`
 		Priority                        int                   `json:"priority"`
 		IsActive                        bool                  `json:"is_active"`
+		IsLocked                        bool                  `json:"is_locked"`
 		SupportsResponses               bool                  `json:"supports_responses"`
 	}
 
@@ -367,6 +369,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 			Status:               account.Status,
 			Priority:             account.Priority,
 			IsActive:             account.IsActive,
+			IsLocked:             account.IsLocked,
 			SupportsResponses:    account.SupportsResponses,
 			Balance:              0,
 			QuotaRemaining:       0,
@@ -879,6 +882,9 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 			log.Printf("accounts: active account updated account_id=%d account_name=%q", current.ID, current.AccountName)
 			h.publishAccountRoutingStateChanged()
 		}
+	}
+	if req.IsLocked != nil {
+		current.IsLocked = *req.IsLocked
 	}
 	if req.SupportsResponses != nil {
 		current.SupportsResponses = *req.SupportsResponses

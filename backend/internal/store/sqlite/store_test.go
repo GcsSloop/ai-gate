@@ -59,7 +59,7 @@ func TestOpenAddsUsageDriverColumnsToAccounts(t *testing.T) {
 		_ = store.Close()
 	})
 
-	for _, column := range []string{"account_driver", "usage_driver", "usage_config_json"} {
+	for _, column := range []string{"account_driver", "usage_driver", "usage_config_json", "is_locked"} {
 		var count int
 		if err := store.DB().QueryRow(`SELECT COUNT(*) FROM pragma_table_info('accounts') WHERE name = ?`, column).Scan(&count); err != nil {
 			t.Fatalf("QueryRow(%q) returned error: %v", column, err)

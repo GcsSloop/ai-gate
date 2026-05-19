@@ -589,6 +589,7 @@ func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 		"status":"cooldown",
 		"priority":7,
 		"is_active":true,
+		"is_locked":true,
 		"supports_responses":true
 	}`))
 	updateReq.Header.Set("Content-Type", "application/json")
@@ -613,6 +614,9 @@ func TestAccountsHandlerUpdateAndTestAccount(t *testing.T) {
 	}
 	if !listed[0].IsActive {
 		t.Fatal("IsActive = false, want true")
+	}
+	if !listed[0].IsLocked {
+		t.Fatal("IsLocked = false, want true")
 	}
 	if !listed[0].SupportsResponses {
 		t.Fatal("SupportsResponses = false, want true")
