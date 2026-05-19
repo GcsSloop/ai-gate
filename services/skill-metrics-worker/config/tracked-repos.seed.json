@@ -28,6 +28,7 @@
     { "platform": "github", "owner": "openai", "name": "skills", "branch": "main", "enabled": true, "sort_order": 25 },
     { "platform": "github", "owner": "xixu-me", "name": "skills", "branch": "main", "enabled": true, "sort_order": 26 },
     { "platform": "github", "owner": "roin-orca", "name": "skills", "branch": "main", "enabled": true, "sort_order": 27 },
-    { "platform": "github", "owner": "soultrace-ai", "name": "soultrace-skill", "branch": "main", "enabled": true, "sort_order": 28 }
+    { "platform": "github", "owner": "soultrace-ai", "name": "soultrace-skill", "branch": "main", "enabled": true, "sort_order": 28 },
+    { "platform": "github", "owner": "KKKKhazix", "name": "khazix-skills", "branch": "main", "enabled": true, "sort_order": 29 }
   ]
 }
