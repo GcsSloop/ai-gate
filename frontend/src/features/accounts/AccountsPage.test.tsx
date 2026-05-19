@@ -1927,6 +1927,112 @@ describe("AccountsPage", () => {
     });
   });
 
+  it("toggles account lock state and only shows lock marker for locked accounts", async () => {
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "account-a",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://a.example.test/v1",
+        status: "active",
+        is_active: false,
+        is_locked: false,
+        priority: 2,
+        supports_responses: true,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+      {
+        id: 2,
+        provider_type: "openai-compatible",
+        account_name: "account-b",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://b.example.test/v1",
+        status: "active",
+        is_active: false,
+        is_locked: true,
+        priority: 1,
+        supports_responses: true,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url === "/ai-router/api/accounts/1" && init?.method === "PUT") {
+        return Promise.resolve(new Response(null, { status: 200 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("account-a")).toBeInTheDocument();
+    expect(screen.queryByLabelText("account-a-locked")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("account-b-locked")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "锁定-account-a" }));
+
+    expect(await screen.findByLabelText("account-a-locked")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ is_locked: true }),
+        }),
+      );
+    });
+  });
+
   it("renders cards in descending priority order from the homepage list", async () => {
     const accountList = [
       {

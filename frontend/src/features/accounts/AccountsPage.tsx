@@ -6,6 +6,8 @@ import {
   ExportOutlined,
   HolderOutlined,
   InfoCircleOutlined,
+  LockOutlined,
+  UnlockOutlined,
   PlusOutlined,
 } from "@ant-design/icons";
 import {
@@ -753,6 +755,25 @@ function formatActiveAccountMessage(
   return language === "en-US"
     ? `Current account switched to ${accountName}`
     : `已切换当前使用中账户为 ${accountName}`;
+}
+
+function formatAccountLockMessage(
+  language: AppLanguage,
+  accountName: string,
+  locked: boolean,
+): string {
+  if (language === "en-US") {
+    return locked
+      ? `Locked account ${accountName}`
+      : `Unlocked account ${accountName}`;
+  }
+  return locked ? `已锁定账户 ${accountName}` : `已解除锁定账户 ${accountName}`;
+}
+
+function renderAccountLockTooltip(language: AppLanguage) {
+  return language === "en-US"
+    ? "Locked account: automatic routing will not select it, but you can still enable it manually."
+    : "账户已锁定：自动路由不会选择该账户，但仍可手动启用。";
 }
 
 function formatDeleteAccountTitle(
@@ -1647,6 +1668,29 @@ export function AccountsPage({
     }
   }
 
+  async function handleToggleAccountLock(account: AccountRecord) {
+    const nextLocked = !account.is_locked;
+    const previous = [...accounts];
+    setAccountsState(
+      (items) =>
+        items.map((item) =>
+          item.id === account.id ? { ...item, is_locked: nextLocked } : item,
+        ),
+      { preserveOrder: true },
+    );
+    void messageApi.success(
+      formatAccountLockMessage(language, account.account_name, nextLocked),
+    );
+    try {
+      await updateAccount(account.id, { is_locked: nextLocked });
+    } catch (error) {
+      setAccountsState(previous, { preserveOrder: true });
+      void messageApi.error(
+        error instanceof Error ? t(error.message) : t("更新账户锁定状态失败"),
+      );
+    }
+  }
+
   async function handleShareAccount(record: AccountRecord) {
     await modal.confirm({
       title: t("分享账户"),
@@ -1886,6 +1930,18 @@ export function AccountsPage({
               <div className="account-main-text">
                 <div className="account-title-row">
                   <Text strong>{record.account_name}</Text>
+                  {record.is_locked ? (
+                    <Tooltip
+                      title={renderAccountLockTooltip(language)}
+                      placement="top"
+                      getPopupContainer={() => document.body}
+                    >
+                      <LockOutlined
+                        className="account-lock-status"
+                        aria-label={`${record.account_name}-locked`}
+                      />
+                    </Tooltip>
+                  ) : null}
                   {record.is_active ? (
                     <Tag color="green">{t("当前使用中")}</Tag>
                   ) : null}
@@ -1986,6 +2042,14 @@ export function AccountsPage({
                   icon={<ExportOutlined />}
                   disabled={options.actionsDisabled}
                   onClick={() => void handleShareAccount(record)}
+                />
+                <Button
+                  type="text"
+                  className="account-action-button"
+                  aria-label={`${record.is_locked ? t("解除锁定") : t("锁定")}-${record.account_name}`}
+                  icon={record.is_locked ? <UnlockOutlined /> : <LockOutlined />}
+                  disabled={options.actionsDisabled}
+                  onClick={() => void handleToggleAccountLock(record)}
                 />
                 <Button
                   type="text"

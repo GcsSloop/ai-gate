@@ -2247,6 +2247,12 @@ html[data-theme-mode="dark"] .stats-chart-shell {
   gap: 6px;
 }
 
+.account-lock-status {
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1;
+}
+
 .account-base-url {
   display: inline-flex;
   align-items: center;
