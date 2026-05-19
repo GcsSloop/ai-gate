@@ -1805,7 +1805,19 @@ fn format_tray_title(proxy_enabled: bool, active_account_name: Option<&str>) -> 
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .unwrap_or("无账户");
-    format!("{indicator} {account_name}")
+    format!("{indicator} {}", format_tray_account_name(account_name))
+}
+
+fn format_tray_account_name(name: &str) -> String {
+    const MAX_TRAY_ACCOUNT_NAME_CHARS: usize = 6;
+
+    let mut chars = name.chars();
+    let prefix: String = chars.by_ref().take(MAX_TRAY_ACCOUNT_NAME_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{prefix}...")
+    } else {
+        prefix
+    }
 }
 
 fn emit_backend_state_changed<R: Runtime>(app: &AppHandle<R>) {
@@ -2476,6 +2488,22 @@ mod tests {
     #[test]
     fn tray_title_formats_proxy_disabled_with_account() {
         assert_eq!(format_tray_title(false, Some("team")), "· team");
+    }
+
+    #[test]
+    fn tray_title_truncates_long_account_name() {
+        assert_eq!(
+            format_tray_title(true, Some("SYX-dssdsdsds")),
+            "§ SYX-ds..."
+        );
+    }
+
+    #[test]
+    fn tray_title_keeps_six_character_account_name() {
+        assert_eq!(
+            format_tray_title(true, Some("一二三四五六")),
+            "§ 一二三四五六"
+        );
     }
 
     #[test]
