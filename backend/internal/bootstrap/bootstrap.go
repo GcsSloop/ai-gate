@@ -199,7 +199,9 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/v1/responses", api.RequireProxyEnabled(responsesHandler))
 	apiMux.Handle("/v1/responses/", api.RequireProxyEnabled(responsesHandler))
 	apiMux.Handle("/models", api.RequireProxyEnabled(responsesHandler))
+	apiMux.Handle("/models/", api.RequireProxyEnabled(responsesHandler))
 	apiMux.Handle("/v1/models", api.RequireProxyEnabled(responsesHandler))
+	apiMux.Handle("/v1/models/", api.RequireProxyEnabled(responsesHandler))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

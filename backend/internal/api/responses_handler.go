@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -471,6 +472,21 @@ func (h *ResponsesHandler) buildThinResponsesProxySubpathRequest(ctx context.Con
 	})
 }
 
+func (h *ResponsesHandler) buildThinModelsProxyRequest(ctx context.Context, account accounts.Account, credential string, endpointPath string) (*http.Request, error) {
+	if usesOfficialCodexAdapter(account) {
+		accountID, err := resolveLocalAccountID(account)
+		if err != nil {
+			return nil, err
+		}
+		return providercodex.NewAdapter(resolveAccountBaseURL(account)).BuildModelsRequest(ctx, credential, accountID, endpointPath)
+	}
+	return provideropenai.NewAdapter(resolveAccountBaseURL(account)).BuildRequest(ctx, providers.Request{
+		Path:   endpointPath,
+		Method: http.MethodGet,
+		APIKey: credential,
+	})
+}
+
 func shouldRetryOfficialResponsesTransportError(account accounts.Account, err error) bool {
 	return usesOfficialCodexAdapter(account) && errors.Is(err, io.EOF)
 }
@@ -673,6 +689,17 @@ func normalizedResponsesSubpath(path string) string {
 	return path
 }
 
+func normalizedModelsPath(value *url.URL) string {
+	path := value.Path
+	if strings.HasPrefix(path, "/v1/") {
+		path = strings.TrimPrefix(path, "/v1")
+	}
+	if value.RawQuery != "" {
+		return path + "?" + value.RawQuery
+	}
+	return path
+}
+
 func (h *ResponsesHandler) startThinAudit(r *http.Request, req gatewayopenai.ResponsesRequest, accountID int64, inputItems []gatewayopenai.ResponsesInputItem) (int64, int) {
 	conversationID, err := h.conversations.CreateConversation(conversations.Conversation{
 		ClientID:             r.RemoteAddr,
@@ -745,22 +772,50 @@ func (h *ResponsesHandler) recordThinAuditRun(conversationID, accountID int64, m
 	})
 }
 
-func (h *ResponsesHandler) handleModels(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"object": "list",
-		"data":   listModels(),
-	})
+func (h *ResponsesHandler) handleModels(w http.ResponseWriter, r *http.Request) {
+	h.handleModelsPassthrough(w, r, normalizedModelsPath(r.URL))
 }
 
 func (h *ResponsesHandler) handleModelDetail(w http.ResponseWriter, r *http.Request) {
-	modelID := pathBase(r.URL.Path)
-	for _, model := range listModels() {
-		if model["id"] == modelID {
-			writeJSON(w, http.StatusOK, model)
+	h.handleModelsPassthrough(w, r, normalizedModelsPath(r.URL))
+}
+
+func (h *ResponsesHandler) handleModelsPassthrough(w http.ResponseWriter, r *http.Request, endpointPath string) {
+	account, err := h.selectThinGatewayAccount()
+	if err != nil {
+		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
+			writeThinGatewayUnsupported(w, err.Error())
 			return
 		}
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
 	}
-	http.NotFound(w, r)
+
+	if err := ensureOfficialAccountSession(r.Context(), h.client, h.accounts, &account); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	credential, err := resolveCredential(account)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	upstreamReq, err := h.buildThinModelsProxyRequest(r.Context(), account, credential, endpointPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	resp, err := h.client.Do(upstreamReq)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func writeThinGatewayFailure(w http.ResponseWriter, stream bool, statusCode int, err error) {
@@ -1337,31 +1392,6 @@ func parseResponsesJSONResponse(raw []byte, accountID int64) responsesExecutionR
 	}
 }
 
-func listModels() []map[string]any {
-	return []map[string]any{
-		buildModel("gpt-5.4", 272000, 32000),
-		buildModel("gpt-5.2-codex", 272000, 32000),
-		buildModel("gpt-5.1-codex-max", 272000, 32000),
-		buildModel("gpt-4.1", 128000, 16000),
-	}
-}
-
-func buildModel(id string, contextWindow int, maxOutputTokens int) map[string]any {
-	return map[string]any{
-		"id":                 id,
-		"object":             "model",
-		"owned_by":           "codex-router",
-		"context_window":     contextWindow,
-		"max_output_tokens":  maxOutputTokens,
-		"supports_responses": true,
-		"supports_streaming": true,
-		"supports_tools":     true,
-		"supports_reasoning": true,
-		"supports_vision":    false,
-		"default_endpoint":   "/v1/responses",
-	}
-}
-
 func decodeRawJSON(raw json.RawMessage) (any, bool) {
 	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "" || strings.TrimSpace(string(raw)) == "null" {
 		return nil, false
@@ -1375,14 +1405,6 @@ func decodeRawJSON(raw json.RawMessage) (any, bool) {
 
 func isModelDetailPath(path string) bool {
 	return strings.HasPrefix(path, "/v1/models/") || strings.HasPrefix(path, "/models/")
-}
-
-func pathBase(path string) string {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) == 0 {
-		return ""
-	}
-	return parts[len(parts)-1]
 }
 
 func responseInputItemType(raw map[string]any) string {
