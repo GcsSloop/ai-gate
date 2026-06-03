@@ -29,6 +29,20 @@ func (a *Adapter) BuildResponsesRequest(ctx context.Context, credential string, 
 	return a.BuildResponsesEndpointRequest(ctx, credential, accountID, "/responses", body, stream)
 }
 
+func (a *Adapter) BuildModelsRequest(ctx context.Context, credential string, accountID string, endpointPath string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.baseURL+endpointPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+credential)
+	req.Header.Set("ChatGPT-Account-Id", accountID)
+	req.Header.Set("originator", codexOriginator)
+	req.Header.Set("User-Agent", codexUserAgent)
+	req.Header.Set("session_id", "codex-router-"+strconvTimeID())
+	return req, nil
+}
+
 func (a *Adapter) BuildResponsesEndpointRequest(ctx context.Context, credential string, accountID string, endpointPath string, body []byte, stream bool) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+endpointPath, bytes.NewReader(body))
 	if err != nil {

@@ -104,6 +104,92 @@ func TestResponsesHandlerThinModeThirdPartyResponsesAddsV1WhenBaseURLHasNoPath(t
 	}
 }
 
+func TestResponsesHandlerThinModeModelsPassthrough(t *testing.T) {
+	t.Parallel()
+
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-models" {
+			t.Fatalf("authorization = %q, want Bearer sk-models", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Upstream-Models", "direct")
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"upstream-model","object":"model","owned_by":"upstream"}]}`)
+	}))
+	defer upstream.Close()
+
+	handler := newResponsesHandlerTestHandler(t, accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AccountName:       "models-provider",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL,
+		CredentialRef:     "sk-models",
+		Status:            accounts.StatusActive,
+		Priority:          100,
+		SupportsResponses: true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstreamCalls = %d, want 1", upstreamCalls)
+	}
+	if got := rec.Header().Get("X-Upstream-Models"); got != "direct" {
+		t.Fatalf("X-Upstream-Models = %q, want direct", got)
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"upstream-model"`) {
+		t.Fatalf("body = %s, want upstream model", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"owned_by":"codex-router"`) {
+		t.Fatalf("body = %s, want upstream payload without local model metadata", rec.Body.String())
+	}
+}
+
+func TestResponsesHandlerThinModeModelsPassthroughUpstreamError(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %q, want /v1/models", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"model listing limited"}}`)
+	}))
+	defer upstream.Close()
+
+	handler := newResponsesHandlerTestHandler(t, accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AccountName:       "models-provider",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL,
+		CredentialRef:     "sk-models",
+		Status:            accounts.StatusActive,
+		Priority:          100,
+		SupportsResponses: true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"model listing limited"`) {
+		t.Fatalf("body = %s, want upstream error", rec.Body.String())
+	}
+}
+
 func TestResponsesHandlerThinModeRecordsUsageEventWithoutAuditRows(t *testing.T) {
 	t.Parallel()
 
