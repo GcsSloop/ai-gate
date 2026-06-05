@@ -157,6 +157,7 @@ func dashboardEventFilter(r *http.Request) usage.EventFilter {
 	filter.From = &from
 	filter.To = &to
 	filter.BucketSize = bucketSize
+	filter.BucketLocation = time.Local
 	filter.IncludeZeroes = true
 
 	if raw := query.Get("account_id"); raw != "" {

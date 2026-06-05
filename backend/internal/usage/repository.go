@@ -214,7 +214,7 @@ func (r *SQLiteRepository) CompactEvents(now time.Time) error {
 	}()
 
 	hourlyCutoff := now.UTC().AddDate(0, 0, -7).Truncate(time.Hour)
-	dailyCutoff := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -30)
+	dailyCutoff := addLocalDays(localDayStartUTC(now.UTC(), time.Local), time.Local, -30)
 
 	if err = compactRawEventsToHourly(tx, dailyCutoff, hourlyCutoff); err != nil {
 		return err
@@ -309,13 +309,14 @@ func (r *SQLiteRepository) TrendEventsByHour(filter EventFilter) ([]TrendPoint, 
 		bucketSize = time.Hour
 	}
 
+	location := trendBucketLocation(filter)
 	points, indexByBucket := initializeTrendBuckets(filter, bucketSize)
 	for _, row := range rows {
 		bucket := row.BucketStart.UTC()
 		if bucketSize == time.Hour {
 			bucket = bucket.Truncate(time.Hour)
 		} else {
-			bucket = time.Date(bucket.Year(), bucket.Month(), bucket.Day(), 0, 0, 0, 0, time.UTC)
+			bucket = localDayStartUTC(bucket, location)
 		}
 		idx, ok := indexByBucket[bucket]
 		if !ok {
@@ -358,13 +359,32 @@ func initializeTrendBuckets(filter EventFilter, bucketSize time.Duration) ([]Tre
 	}
 	points := make([]TrendPoint, 0)
 	indexByBucket := make(map[time.Time]int)
-	for cursor := filter.From.UTC(); cursor.Before(filter.To.UTC()); cursor = cursor.Add(bucketSize) {
-		bucket := cursor
-		if bucketSize == time.Hour {
-			bucket = bucket.Truncate(time.Hour)
-		} else {
-			bucket = time.Date(bucket.Year(), bucket.Month(), bucket.Day(), 0, 0, 0, 0, time.UTC)
+	if bucketSize == time.Hour {
+		for cursor := filter.From.UTC(); cursor.Before(filter.To.UTC()); cursor = cursor.Add(bucketSize) {
+			bucket := cursor.Truncate(time.Hour)
+			if _, exists := indexByBucket[bucket]; exists {
+				continue
+			}
+			points = append(points, TrendPoint{Bucket: bucket})
+			indexByBucket[bucket] = len(points) - 1
 		}
+		return points, indexByBucket
+	}
+
+	location := trendBucketLocation(filter)
+	if filter.BucketLocation == nil {
+		for cursor := filter.From.UTC(); cursor.Before(filter.To.UTC()); cursor = cursor.Add(bucketSize) {
+			bucket := localDayStartUTC(cursor, location)
+			if _, exists := indexByBucket[bucket]; exists {
+				continue
+			}
+			points = append(points, TrendPoint{Bucket: bucket})
+			indexByBucket[bucket] = len(points) - 1
+		}
+		return points, indexByBucket
+	}
+	for cursor := localDayStartUTC(*filter.From, location); cursor.Before(filter.To.UTC()); cursor = nextLocalDayStartUTC(cursor, location) {
+		bucket := cursor
 		if _, exists := indexByBucket[bucket]; exists {
 			continue
 		}
@@ -372,6 +392,34 @@ func initializeTrendBuckets(filter EventFilter, bucketSize time.Duration) ([]Tre
 		indexByBucket[bucket] = len(points) - 1
 	}
 	return points, indexByBucket
+}
+
+func trendBucketLocation(filter EventFilter) *time.Location {
+	if filter.BucketLocation != nil {
+		return filter.BucketLocation
+	}
+	return time.UTC
+}
+
+func localDayStartUTC(value time.Time, location *time.Location) time.Time {
+	if location == nil {
+		location = time.UTC
+	}
+	local := value.In(location)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location).UTC()
+}
+
+func nextLocalDayStartUTC(value time.Time, location *time.Location) time.Time {
+	return addLocalDays(value, location, 1)
+}
+
+func addLocalDays(value time.Time, location *time.Location, days int) time.Time {
+	if location == nil {
+		location = time.UTC
+	}
+	local := value.In(location)
+	next := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location).AddDate(0, 0, days)
+	return next.UTC()
 }
 
 func calculateCost(filter EventFilter, row RollupPoint) float64 {
@@ -694,7 +742,7 @@ func compactHourlyRollupsToDaily(tx *sql.Tx, cutoff time.Time) error {
 		); err != nil {
 			return fmt.Errorf("scan hourly rollups for compaction: %w", err)
 		}
-		bucket := time.Date(point.BucketStart.UTC().Year(), point.BucketStart.UTC().Month(), point.BucketStart.UTC().Day(), 0, 0, 0, 0, time.UTC)
+		bucket := localDayStartUTC(point.BucketStart, time.Local)
 		key := aggregateKey(bucket, point.AccountID, point.ProviderType, point.RequestKind, point.Model)
 		current := buckets[key]
 		current.BucketStart = bucket

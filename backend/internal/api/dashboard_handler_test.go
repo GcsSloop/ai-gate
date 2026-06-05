@@ -166,6 +166,9 @@ func TestDashboardHandlerBuildsCalendarAlignedFilter(t *testing.T) {
 	if stub.lastFilter.BucketSize != time.Hour {
 		t.Fatalf("BucketSize = %v, want %v", stub.lastFilter.BucketSize, time.Hour)
 	}
+	if stub.lastFilter.BucketLocation != time.Local {
+		t.Fatalf("BucketLocation = %v, want time.Local", stub.lastFilter.BucketLocation)
+	}
 }
 
 func TestDashboardHandlerUsesPricingSettingsForCostCalculation(t *testing.T) {
