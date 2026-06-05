@@ -107,6 +107,10 @@ type AccountsUsage interface {
 	Save(snapshot usage.Snapshot) error
 }
 
+type accountUsageSnapshotCleaner interface {
+	DeleteSnapshotsForAccount(accountID int64) (int64, error)
+}
+
 type AccountsUsageRefresher interface {
 	Run(ctx context.Context, runAt time.Time) error
 }
@@ -1532,6 +1536,12 @@ func (h *AccountsHandler) deleteAccount(w http.ResponseWriter, r *http.Request) 
 	if err := h.repo.Delete(id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if cleaner, ok := h.usage.(accountUsageSnapshotCleaner); ok {
+		if _, err := cleaner.DeleteSnapshotsForAccount(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)
