@@ -63,7 +63,12 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
 	if err := cleanupLegacyAuditData(store.DB()); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	if err := cleanupUsageSnapshots(store.DB(), usageRepo, time.Now().UTC()); err != nil {
 		_ = store.Close()
 		return nil, err
 	}
@@ -79,7 +84,6 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 
 	accountRepo := accounts.NewSQLiteRepository(store.DB(), credentialCipher)
 	settingsRepo := settings.NewSQLiteRepository(store.DB())
-	usageRepo := usage.NewSQLiteRepository(store.DB())
 	upstreamHTTPClient := netproxy.NewHTTPClient(settingsRepo)
 	conversationRepo := conversations.NewSQLiteRepository(store.DB())
 	policyRepo := policy.NewMemoryRepository()
@@ -321,6 +325,35 @@ func cleanupLegacyAuditData(db *sql.DB) error {
 		"done",
 	); err != nil {
 		return fmt.Errorf("mark maintenance state: %w", err)
+	}
+	return nil
+}
+
+type usageSnapshotCleaner interface {
+	CleanupSnapshots(now time.Time) (usage.SnapshotCleanupResult, error)
+}
+
+func cleanupUsageSnapshots(db *sql.DB, cleaner usageSnapshotCleaner, now time.Time) error {
+	if cleaner == nil {
+		return nil
+	}
+	result, err := cleaner.CleanupSnapshots(now.UTC())
+	if err != nil {
+		return err
+	}
+	deleted := result.OrphanDeleted + result.CompactedDeleted
+	if deleted > 0 {
+		if _, err := db.Exec(`VACUUM`); err != nil {
+			return fmt.Errorf("vacuum usage snapshot cleanup: %w", err)
+		}
+	}
+	if _, err := db.Exec(
+		`INSERT INTO maintenance_state (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+		"usage_snapshot_cleanup_last_run",
+		now.UTC().Format(time.RFC3339),
+	); err != nil {
+		return fmt.Errorf("mark usage snapshot cleanup: %w", err)
 	}
 	return nil
 }

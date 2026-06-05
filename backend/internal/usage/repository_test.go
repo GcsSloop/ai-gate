@@ -177,6 +177,112 @@ func TestSQLiteRepositoryListLatest(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryDeleteSnapshotsForAccount(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	for _, snapshot := range []usage.Snapshot{
+		{AccountID: 1, CheckedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)},
+		{AccountID: 1, CheckedAt: time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC)},
+		{AccountID: 2, CheckedAt: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)},
+	} {
+		if err := repo.Save(snapshot); err != nil {
+			t.Fatalf("Save returned error: %v", err)
+		}
+	}
+
+	deleted, err := repo.DeleteSnapshotsForAccount(1)
+	if err != nil {
+		t.Fatalf("DeleteSnapshotsForAccount returned error: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
+	}
+
+	var count int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM account_usage_snapshots WHERE account_id = 1`).Scan(&count); err != nil {
+		t.Fatalf("count account 1 returned error: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("account 1 snapshots = %d, want 0", count)
+	}
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM account_usage_snapshots WHERE account_id = 2`).Scan(&count); err != nil {
+		t.Fatalf("count account 2 returned error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("account 2 snapshots = %d, want 1", count)
+	}
+}
+
+func TestSQLiteRepositoryCleanupSnapshotsDeletesOrphansAndCompactsHistory(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if _, err := store.DB().Exec(
+		`INSERT INTO accounts (id, provider_type, account_name, auth_mode, credential_ref, status)
+		 VALUES (1, 'openai-compatible', 'kept', 'api_key', 'sk', 'active')`,
+	); err != nil {
+		t.Fatalf("insert account returned error: %v", err)
+	}
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+	snapshots := []usage.Snapshot{
+		{AccountID: 999, CheckedAt: now.Add(-1 * time.Hour)},
+		{AccountID: 1, CheckedAt: now.Add(-1 * time.Hour)},
+		{AccountID: 1, CheckedAt: now.Add(-2 * time.Hour)},
+		{AccountID: 1, CheckedAt: now.AddDate(0, 0, -10).Add(10 * time.Minute)},
+		{AccountID: 1, CheckedAt: now.AddDate(0, 0, -10).Add(20 * time.Minute)},
+		{AccountID: 1, CheckedAt: now.AddDate(0, 0, -40).Add(1 * time.Hour)},
+		{AccountID: 1, CheckedAt: now.AddDate(0, 0, -40).Add(2 * time.Hour)},
+	}
+	for _, snapshot := range snapshots {
+		if err := repo.Save(snapshot); err != nil {
+			t.Fatalf("Save returned error: %v", err)
+		}
+	}
+
+	result, err := repo.CleanupSnapshots(now)
+	if err != nil {
+		t.Fatalf("CleanupSnapshots returned error: %v", err)
+	}
+	if result.OrphanDeleted != 1 {
+		t.Fatalf("OrphanDeleted = %d, want 1", result.OrphanDeleted)
+	}
+	if result.CompactedDeleted != 2 {
+		t.Fatalf("CompactedDeleted = %d, want 2", result.CompactedDeleted)
+	}
+
+	var count int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM account_usage_snapshots WHERE account_id = 999`).Scan(&count); err != nil {
+		t.Fatalf("count orphan returned error: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("orphan snapshots = %d, want 0", count)
+	}
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM account_usage_snapshots WHERE account_id = 1`).Scan(&count); err != nil {
+		t.Fatalf("count kept returned error: %v", err)
+	}
+	if count != 4 {
+		t.Fatalf("kept account snapshots = %d, want 4", count)
+	}
+}
+
 func TestSQLiteRepositorySaveEventListRecentAndSummarize(t *testing.T) {
 	t.Parallel()
 

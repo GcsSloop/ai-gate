@@ -11,6 +11,8 @@ type Repository interface {
 	Save(snapshot Snapshot) error
 	GetLatest(accountID int64) (Snapshot, error)
 	ListLatest() ([]Snapshot, error)
+	DeleteSnapshotsForAccount(accountID int64) (int64, error)
+	CleanupSnapshots(now time.Time) (SnapshotCleanupResult, error)
 	SaveEvent(event Event) error
 	CompactEvents(now time.Time) error
 	ListRecentEvents(filter EventFilter) ([]Event, error)
@@ -170,6 +172,86 @@ func (r *SQLiteRepository) ListLatest() ([]Snapshot, error) {
 		return nil, fmt.Errorf("iterate latest usage snapshots: %w", err)
 	}
 	return snapshots, nil
+}
+
+func (r *SQLiteRepository) DeleteSnapshotsForAccount(accountID int64) (int64, error) {
+	result, err := r.db.Exec(`DELETE FROM account_usage_snapshots WHERE account_id = ?`, accountID)
+	if err != nil {
+		return 0, fmt.Errorf("delete usage snapshots for account: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read deleted usage snapshot rows: %w", err)
+	}
+	return deleted, nil
+}
+
+func (r *SQLiteRepository) CleanupSnapshots(now time.Time) (SnapshotCleanupResult, error) {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return SnapshotCleanupResult{}, fmt.Errorf("begin usage snapshot cleanup: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var result SnapshotCleanupResult
+	orphanResult, err := tx.Exec(
+		`DELETE FROM account_usage_snapshots
+		 WHERE NOT EXISTS (
+			SELECT 1 FROM accounts WHERE accounts.id = account_usage_snapshots.account_id
+		 )`,
+	)
+	if err != nil {
+		return SnapshotCleanupResult{}, fmt.Errorf("delete orphan usage snapshots: %w", err)
+	}
+	result.OrphanDeleted, err = orphanResult.RowsAffected()
+	if err != nil {
+		return SnapshotCleanupResult{}, fmt.Errorf("read orphan usage snapshot rows: %w", err)
+	}
+
+	recentCutoff := now.UTC().AddDate(0, 0, -7)
+	midCutoff := now.UTC().AddDate(0, 0, -30)
+	compactResult, err := tx.Exec(
+		`DELETE FROM account_usage_snapshots
+		 WHERE id IN (
+			SELECT id FROM (
+				SELECT id,
+					CASE
+						WHEN checked_at >= ? THEN 1
+						WHEN checked_at >= ? THEN ROW_NUMBER() OVER (
+							PARTITION BY account_id, substr(checked_at, 1, 13)
+							ORDER BY checked_at DESC, id DESC
+						)
+						ELSE ROW_NUMBER() OVER (
+							PARTITION BY account_id, substr(checked_at, 1, 10)
+							ORDER BY checked_at DESC, id DESC
+						)
+					END AS keep_rank
+				FROM account_usage_snapshots
+				WHERE EXISTS (
+					SELECT 1 FROM accounts WHERE accounts.id = account_usage_snapshots.account_id
+				)
+			)
+			WHERE keep_rank > 1
+		 )`,
+		recentCutoff,
+		midCutoff,
+	)
+	if err != nil {
+		return SnapshotCleanupResult{}, fmt.Errorf("compact usage snapshots: %w", err)
+	}
+	result.CompactedDeleted, err = compactResult.RowsAffected()
+	if err != nil {
+		return SnapshotCleanupResult{}, fmt.Errorf("read compacted usage snapshot rows: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return SnapshotCleanupResult{}, fmt.Errorf("commit usage snapshot cleanup: %w", err)
+	}
+	return result, nil
 }
 
 func (r *SQLiteRepository) SaveEvent(event Event) error {

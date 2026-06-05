@@ -760,6 +760,14 @@ func TestAccountsHandlerDeleteAccount(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
+	for _, snapshot := range []usage.Snapshot{
+		{AccountID: 1, CheckedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)},
+		{AccountID: 1, CheckedAt: time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC)},
+	} {
+		if err := usageRepo.Save(snapshot); err != nil {
+			t.Fatalf("Save snapshot returned error: %v", err)
+		}
+	}
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/accounts/1", nil)
 	deleteRec := httptest.NewRecorder()
@@ -774,6 +782,13 @@ func TestAccountsHandlerDeleteAccount(t *testing.T) {
 	}
 	if len(listed) != 0 {
 		t.Fatalf("List returned %d accounts, want 0", len(listed))
+	}
+	var snapshotCount int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM account_usage_snapshots WHERE account_id = 1`).Scan(&snapshotCount); err != nil {
+		t.Fatalf("count snapshots returned error: %v", err)
+	}
+	if snapshotCount != 0 {
+		t.Fatalf("snapshots for deleted account = %d, want 0", snapshotCount)
 	}
 }
 

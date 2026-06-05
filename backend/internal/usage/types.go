@@ -60,6 +60,11 @@ type EventFilter struct {
 	CostCalculator func(accountID int64, providerType string, model string, inputTokens int64, outputTokens int64) float64
 }
 
+type SnapshotCleanupResult struct {
+	OrphanDeleted    int64
+	CompactedDeleted int64
+}
+
 type EventSummary struct {
 	RequestCount  int64   `json:"request_count"`
 	SuccessCount  int64   `json:"success_count"`
