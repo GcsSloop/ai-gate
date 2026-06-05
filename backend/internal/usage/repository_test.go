@@ -390,6 +390,65 @@ func TestSQLiteRepositoryTrendEventsByDayIncludesSingleBucketPerDay(t *testing.T
 	}
 }
 
+func TestSQLiteRepositoryTrendEventsByDayUsesBucketLocation(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	for _, event := range []usage.Event{
+		{
+			AccountID:    1,
+			ProviderType: "codex",
+			RequestKind:  "responses",
+			Model:        "gpt-5.4",
+			Status:       "completed",
+			CreatedAt:    time.Date(2026, 6, 3, 17, 0, 0, 0, time.UTC),
+		},
+		{
+			AccountID:    1,
+			ProviderType: "codex",
+			RequestKind:  "responses",
+			Model:        "gpt-5.4",
+			Status:       "completed",
+			CreatedAt:    time.Date(2026, 6, 4, 15, 0, 0, 0, time.UTC),
+		},
+	} {
+		if err := repo.SaveEvent(event); err != nil {
+			t.Fatalf("SaveEvent returned error: %v", err)
+		}
+	}
+
+	location := time.FixedZone("CST", 8*3600)
+	from := time.Date(2026, 6, 4, 0, 0, 0, 0, location).UTC()
+	to := time.Date(2026, 6, 5, 0, 0, 0, 0, location).UTC()
+	points, err := repo.TrendEventsByHour(usage.EventFilter{
+		From:           &from,
+		To:             &to,
+		BucketSize:     24 * time.Hour,
+		BucketLocation: location,
+		IncludeZeroes:  true,
+	})
+	if err != nil {
+		t.Fatalf("TrendEventsByHour returned error: %v", err)
+	}
+	if len(points) != 1 {
+		t.Fatalf("len(points) = %d, want 1 local day bucket", len(points))
+	}
+	if !points[0].Bucket.Equal(from) {
+		t.Fatalf("bucket = %v, want local day start %v", points[0].Bucket, from)
+	}
+	if points[0].RequestCount != 2 {
+		t.Fatalf("request_count = %d, want both requests in the same local day", points[0].RequestCount)
+	}
+}
+
 func TestSQLiteRepositoryModelDistribution(t *testing.T) {
 	t.Parallel()
 
@@ -598,6 +657,70 @@ func TestSQLiteRepositoryCompactsEventsIntoRollups(t *testing.T) {
 	}
 	if len(trends) != 2 {
 		t.Fatalf("len(trends) = %d, want 2", len(trends))
+	}
+}
+
+func TestSQLiteRepositoryCompactsDailyRollupsByLocalDay(t *testing.T) {
+	previousLocal := time.Local
+	time.Local = time.FixedZone("CST", 8*3600)
+	t.Cleanup(func() {
+		time.Local = previousLocal
+	})
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	firstCompaction := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+	secondCompaction := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+	for _, event := range []usage.Event{
+		{
+			AccountID:    1,
+			ProviderType: "codex",
+			RequestKind:  "responses",
+			Model:        "gpt-5.4",
+			Status:       "completed",
+			CreatedAt:    time.Date(2026, 5, 1, 17, 0, 0, 0, time.UTC),
+		},
+		{
+			AccountID:    1,
+			ProviderType: "codex",
+			RequestKind:  "responses",
+			Model:        "gpt-5.4",
+			Status:       "completed",
+			CreatedAt:    time.Date(2026, 5, 2, 15, 0, 0, 0, time.UTC),
+		},
+	} {
+		if err := repo.SaveEvent(event); err != nil {
+			t.Fatalf("SaveEvent returned error: %v", err)
+		}
+	}
+
+	if err := repo.CompactEvents(firstCompaction); err != nil {
+		t.Fatalf("first CompactEvents returned error: %v", err)
+	}
+	if err := repo.CompactEvents(secondCompaction); err != nil {
+		t.Fatalf("second CompactEvents returned error: %v", err)
+	}
+
+	var bucketStart time.Time
+	var requestCount int64
+	if err := store.DB().QueryRow(
+		`SELECT bucket_start, request_count FROM usage_rollups_daily ORDER BY bucket_start LIMIT 1`,
+	).Scan(&bucketStart, &requestCount); err != nil {
+		t.Fatalf("query daily rollup returned error: %v", err)
+	}
+	wantBucket := time.Date(2026, 5, 2, 0, 0, 0, 0, time.Local).UTC()
+	if !bucketStart.Equal(wantBucket) {
+		t.Fatalf("daily bucket_start = %v, want local day start %v", bucketStart, wantBucket)
+	}
+	if requestCount != 2 {
+		t.Fatalf("request_count = %d, want both requests in the same local day", requestCount)
 	}
 }
 
