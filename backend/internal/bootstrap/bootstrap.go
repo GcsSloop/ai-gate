@@ -255,7 +255,8 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	mux.Handle(httpPrefix+"/webui/", webuiHandler)
 	mux.Handle(httpPrefix+"/api/", withCORS(withLANShareAccessControl(settingsRepo, apiHandler)))
 	if cfg.ServerMode {
-		mux.Handle(httpPrefix+"/", withCORS(withLANShareAccessControl(settingsRepo, http.StripPrefix(httpPrefix, gatewayMux))))
+		gatewayHandler := api.WithServerGatewayAuth(serverUserRepo, http.StripPrefix(httpPrefix, gatewayMux))
+		mux.Handle(httpPrefix+"/", withCORS(withLANShareAccessControl(settingsRepo, gatewayHandler)))
 	}
 
 	appCtx, cancel := context.WithCancel(context.Background())

@@ -128,7 +128,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var upstreamResponse []byte
-	orderedCandidates, err := h.orderedCandidates(candidates)
+	orderedCandidates, err := h.orderedCandidates(r.Context(), candidates)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -182,7 +182,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "read_response", startedAt, err)
 		} else {
 			logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, string(upstreamResponse))
-			persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", parseChatCompletionsUsage(upstreamResponse, account.ID), startedAt)
+			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, "completed", parseChatCompletionsUsage(upstreamResponse, account.ID), startedAt)
 			if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
 				h.publishAccountRoutingStateChanged()
 			}
@@ -201,7 +201,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if len(orderedCandidates) > 0 {
-			persistUsageEvent(h.usage, orderedCandidates[0].Account, "chat_completions", req.Model, "failed", usage.Snapshot{AccountID: orderedCandidates[0].Account.ID}, time.Now().UTC())
+			persistUsageEvent(r.Context(), h.usage, orderedCandidates[0].Account, "chat_completions", req.Model, "failed", usage.Snapshot{AccountID: orderedCandidates[0].Account.ID}, time.Now().UTC())
 		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -213,7 +213,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter, req gatewayopenai.ChatCompletionRequest, body []byte, candidates []routing.Candidate, conversationID int64) {
-	orderedCandidates, err := h.orderedCandidates(candidates)
+	orderedCandidates, err := h.orderedCandidates(ctx, candidates)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -239,7 +239,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		logUpstreamSummary("gateway", conversationID, account, "/chat/completions", req.Model)
 		if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "ensure_session", startedAt, err)
-			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 			lastErr = err
 			if shouldFailoverOnGatewayStreamError(err) {
 				continue
@@ -250,7 +250,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		credential, err := resolveCredential(account)
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "resolve_credential", startedAt, err)
-			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 			lastErr = err
 			if shouldFailoverOnGatewayStreamError(err) {
 				continue
@@ -268,7 +268,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		})
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "build_request", startedAt, err)
-			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 			lastErr = err
 			if shouldFailoverOnGatewayStreamError(err) {
 				continue
@@ -280,7 +280,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		resp, err := h.client.Do(upstreamReq)
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
-			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 			lastErr = err
 			if shouldFailoverOnGatewayStreamError(err) {
 				continue
@@ -294,7 +294,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 			_ = resp.Body.Close()
 			if readErr != nil {
 				logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "read_response", startedAt, readErr)
-				persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(readErr)), usage.Snapshot{AccountID: account.ID}, startedAt)
+				persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(readErr)), usage.Snapshot{AccountID: account.ID}, startedAt)
 				lastErr = readErr
 				if shouldFailoverOnGatewayStreamError(readErr) {
 					continue
@@ -303,7 +303,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 				return
 			}
 			err = buildUpstreamStatusError(resp.StatusCode, responseBody)
-			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, err)
 			lastErr = err
 			if shouldFailoverOnGatewayStreamError(err) {
@@ -320,11 +320,11 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		_ = resp.Body.Close()
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "read_stream", startedAt, err)
-			persistUsageEvent(h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 			return
 		}
 		logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, "")
-		persistUsageEvent(h.usage, account, "chat_completions", req.Model, "completed", collector.snapshotOrDefault(), startedAt)
+		persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, "completed", collector.snapshotOrDefault(), startedAt)
 		if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
 			h.publishAccountRoutingStateChanged()
 		}
@@ -351,7 +351,10 @@ func (h *GatewayHandler) publishAccountRoutingStateChanged() {
 	}
 }
 
-func (h *GatewayHandler) orderedCandidates(candidates []routing.Candidate) ([]routing.Candidate, error) {
+func (h *GatewayHandler) orderedCandidates(ctx context.Context, candidates []routing.Candidate) ([]routing.Candidate, error) {
+	if user, ok := ServerUserFromContext(ctx); ok {
+		return routing.RotateCandidatesForUser(orderCandidatesByPriority(candidates), user.ID), nil
+	}
 	if !autoFailoverEnabled(h.settings) {
 		if candidate, ok := activeCandidate(candidates); ok {
 			return expandActiveCandidateRetries([]routing.Candidate{candidate}, activeAccountFailoverRetryAttempts), nil

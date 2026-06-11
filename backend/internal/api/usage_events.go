@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ func latestSnapshotOrEmpty(repo interface {
 	return snapshot
 }
 
-func persistUsageEvent(repo usageEventStore, account accounts.Account, requestKind string, model string, status string, snapshot usage.Snapshot, startedAt time.Time) {
+func persistUsageEvent(ctx context.Context, repo usageEventStore, account accounts.Account, requestKind string, model string, status string, snapshot usage.Snapshot, startedAt time.Time) {
 	if account.ID == 0 {
 		return
 	}
@@ -59,6 +60,9 @@ func persistUsageEvent(repo usageEventStore, account accounts.Account, requestKi
 		EstimatedCost: estimateModelCostUSD(model, after.LastInputTokens, after.LastOutputTokens),
 		LatencyMS:     time.Since(startedAt).Seconds() * 1000,
 		CreatedAt:     time.Now().UTC(),
+	}
+	if user, ok := ServerUserFromContext(ctx); ok {
+		event.ServerUserID = &user.ID
 	}
 	if before.Balance != 0 || after.Balance != 0 {
 		event.BalanceBefore = float64Ptr(before.Balance)

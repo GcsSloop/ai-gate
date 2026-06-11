@@ -185,7 +185,7 @@ func (h *ResponsesHandler) handleResponsesTransparentSubpath(w http.ResponseWrit
 }
 
 func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Request, req gatewayopenai.ResponsesRequest, rawBody []byte) {
-	candidates, err := h.orderedThinGatewayCandidates()
+	candidates, err := h.orderedThinGatewayCandidates(r.Context())
 	if err != nil {
 		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
 			writeThinGatewayUnsupported(w, err.Error())
@@ -233,7 +233,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 
 			if err := ensureOfficialAccountSession(r.Context(), h.client, h.accounts, &account); err != nil {
 				startedAt := time.Now().UTC()
-				persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+				persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "ensure_session", startedAt, err)
 				lastErr = err
 				if shouldFailoverOnThinError(err) && attemptIndex+1 < maxAttempts {
@@ -249,7 +249,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 			credential, err := resolveCredential(account)
 			if err != nil {
 				startedAt := time.Now().UTC()
-				persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+				persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "resolve_credential", startedAt, err)
 				lastErr = err
 				if shouldFailoverOnThinError(err) && attemptIndex+1 < maxAttempts {
@@ -266,7 +266,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 			logUpstreamSummary("responses", conversationID, account, "/responses", req.Model)
 			resp, err := h.executeThinResponsesUpstreamRequest(r.Context(), account, credential, rawBody, req.Stream, conversationID, req.Model, startedAt)
 			if err != nil {
-				persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+				persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
 				lastErr = err
 				if shouldFailoverOnThinError(err) {
@@ -280,7 +280,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 				responseBody, readErr := io.ReadAll(resp.Body)
 				_ = resp.Body.Close()
 				if readErr != nil {
-					persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(readErr)), usage.Snapshot{AccountID: account.ID}, startedAt)
+					persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(readErr)), usage.Snapshot{AccountID: account.ID}, startedAt)
 					logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_response", startedAt, readErr)
 					lastErr = readErr
 					if shouldFailoverOnThinError(readErr) && attemptIndex+1 < maxAttempts {
@@ -296,7 +296,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 				runStatus := classifyThinResponseStatus(account, resp, responseBody)
 				upstreamErr := buildUpstreamStatusError(resp.StatusCode, responseBody)
 				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, upstreamErr)
-				persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
+				persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
 
 				if shouldFailoverOnThinStatus(runStatus) {
 					cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, runStatus)
@@ -343,7 +343,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 				if err := copyResponseStreamWithObserver(w, resp.Body, collector.Observe); err != nil {
 					runStatus = runStatusForErrorClass(classifyRunError(err))
 					logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_stream", startedAt, err)
-					persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
+					persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
 					_ = resp.Body.Close()
 					writeThinGatewayFailure(w, true, http.StatusBadGateway, err)
 					return
@@ -351,7 +351,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 				_ = resp.Body.Close()
 				logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, "")
 				collector.Save(h.usage)
-				persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, collector.snapshotOrDefault(), startedAt)
+				persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatus, collector.snapshotOrDefault(), startedAt)
 				if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
 					h.publishAccountRoutingStateChanged()
 				}
@@ -364,7 +364,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 			responseBody, err := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			if err != nil {
-				persistUsageEvent(h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+				persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_response", startedAt, err)
 				lastErr = err
 				if shouldFailoverOnThinError(err) && attemptIndex+1 < maxAttempts {
@@ -379,7 +379,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 
 			result := parseResponsesJSONResponse(responseBody, account.ID)
 			logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, result.Text)
-			persistUsageEvent(h.usage, account, "responses", req.Model, runStatus, result.Snapshot, startedAt)
+			persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatus, result.Snapshot, startedAt)
 			if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
 				h.publishAccountRoutingStateChanged()
 			}
@@ -543,12 +543,15 @@ func (h *ResponsesHandler) autoFailoverEnabled() bool {
 	return autoFailoverEnabled(h.settings)
 }
 
-func (h *ResponsesHandler) orderedThinGatewayCandidates() ([]routing.Candidate, error) {
+func (h *ResponsesHandler) orderedThinGatewayCandidates(ctx context.Context) ([]routing.Candidate, error) {
 	accountList, err := h.accounts.List()
 	if err != nil {
 		return nil, err
 	}
 	candidates := h.buildCandidates(accountList)
+	if user, ok := ServerUserFromContext(ctx); ok {
+		return routing.RotateCandidatesForUser(orderCandidatesByPriority(candidates), user.ID), nil
+	}
 	if !h.autoFailoverEnabled() {
 		for _, candidate := range candidates {
 			if !candidate.Account.IsActive {
