@@ -103,6 +103,56 @@ func TestNewApp(t *testing.T) {
 	}
 }
 
+func TestNewAppServerModeUsesAIGatePrefixAndGateway(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	app, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
+		ListenAddr:             "127.0.0.1:0",
+		DatabasePath:           filepath.Join(t.TempDir(), "router.sqlite"),
+		ServerMode:             true,
+		HTTPPrefix:             "/ai-gate",
+		ProxyEnabledByDefault:  true,
+		SkipCodexConfigChanges: true,
+	})
+	if err != nil {
+		t.Fatalf("NewApp returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = app.Close()
+	})
+
+	rootReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	rootRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rootRec, rootReq)
+	if rootRec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("GET / status = %d, want %d", rootRec.Code, http.StatusTemporaryRedirect)
+	}
+	if location := rootRec.Header().Get("Location"); location != "/ai-gate/webui/" {
+		t.Fatalf("GET / location = %q, want %q", location, "/ai-gate/webui/")
+	}
+
+	clientAPIReq := httptest.NewRequest(http.MethodGet, "/ai-router/api/accounts", nil)
+	clientAPIRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(clientAPIRec, clientAPIReq)
+	if clientAPIRec.Code != http.StatusNotFound {
+		t.Fatalf("GET /ai-router/api/accounts status = %d, want %d in server mode", clientAPIRec.Code, http.StatusNotFound)
+	}
+
+	serverAPIReq := httptest.NewRequest(http.MethodGet, "/ai-gate/api/accounts", nil)
+	serverAPIRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(serverAPIRec, serverAPIReq)
+	if serverAPIRec.Code != http.StatusOK {
+		t.Fatalf("GET /ai-gate/api/accounts status = %d, want %d; body=%s", serverAPIRec.Code, http.StatusOK, serverAPIRec.Body.String())
+	}
+
+	gatewayReq := httptest.NewRequest(http.MethodPost, "/ai-gate/v1/responses", nil)
+	gatewayRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(gatewayRec, gatewayReq)
+	if gatewayRec.Code == http.StatusServiceUnavailable {
+		t.Fatalf("POST /ai-gate/v1/responses unexpectedly blocked by disabled proxy")
+	}
+}
+
 func TestNewAppSchedulesAutomaticDatabaseBackups(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

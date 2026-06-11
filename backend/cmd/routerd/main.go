@@ -18,7 +18,7 @@ const (
 )
 
 func main() {
-	cfg, err := config.Load()
+	cfg, err := config.Load(os.Args[1:]...)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
@@ -27,10 +27,14 @@ func main() {
 	defer cancel()
 
 	app, err := bootstrap.NewApp(appCtx, bootstrap.Config{
-		ListenAddr:        cfg.ListenAddr,
-		DatabasePath:      cfg.DatabasePath,
-		SchedulerInterval: cfg.SchedulerInterval,
-		EncryptionKey:     cfg.EncryptionKey,
+		ListenAddr:             cfg.ListenAddr,
+		DatabasePath:           cfg.DatabasePath,
+		SchedulerInterval:      cfg.SchedulerInterval,
+		EncryptionKey:          cfg.EncryptionKey,
+		ServerMode:             cfg.ServerMode,
+		HTTPPrefix:             cfg.HTTPPrefix,
+		ProxyEnabledByDefault:  cfg.ProxyEnabledByDefault,
+		SkipCodexConfigChanges: cfg.SkipCodexConfig,
 	})
 	if err != nil {
 		log.Fatalf("create app: %v", err)

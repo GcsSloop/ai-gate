@@ -34,10 +34,14 @@ import (
 )
 
 type Config struct {
-	ListenAddr        string
-	DatabasePath      string
-	SchedulerInterval time.Duration
-	EncryptionKey     string
+	ListenAddr             string
+	DatabasePath           string
+	SchedulerInterval      time.Duration
+	EncryptionKey          string
+	ServerMode             bool
+	HTTPPrefix             string
+	ProxyEnabledByDefault  bool
+	SkipCodexConfigChanges bool
 }
 
 type App struct {
@@ -56,6 +60,10 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	}
 	if cfg.DatabasePath == "" {
 		return nil, errors.New("database path is required")
+	}
+	httpPrefix := normalizeHTTPPrefix(cfg.HTTPPrefix)
+	if httpPrefix == "" {
+		httpPrefix = "/ai-router"
 	}
 	luaScriptRoot := filepath.Join(filepath.Dir(cfg.DatabasePath), "usage-scripts")
 
@@ -196,26 +204,40 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		api.WithResponsesHTTPClient(upstreamHTTPClient),
 		api.WithResponsesStateEvents(stateEvents),
 	)
-	apiMux.Handle("/chat/completions", api.RequireProxyEnabled(gatewayHandler))
-	apiMux.Handle("/v1/chat/completions", api.RequireProxyEnabled(gatewayHandler))
-	apiMux.Handle("/responses", api.RequireProxyEnabled(responsesHandler))
-	apiMux.Handle("/responses/", api.RequireProxyEnabled(responsesHandler))
-	apiMux.Handle("/v1/responses", api.RequireProxyEnabled(responsesHandler))
-	apiMux.Handle("/v1/responses/", api.RequireProxyEnabled(responsesHandler))
-	apiMux.Handle("/models", api.RequireProxyEnabled(responsesHandler))
-	apiMux.Handle("/models/", api.RequireProxyEnabled(responsesHandler))
-	apiMux.Handle("/v1/models", api.RequireProxyEnabled(responsesHandler))
-	apiMux.Handle("/v1/models/", api.RequireProxyEnabled(responsesHandler))
+	gatewayMux := http.NewServeMux()
+	registerGatewayRoutes := func(mux *http.ServeMux, protectProxy bool) {
+		chatHandler := http.Handler(gatewayHandler)
+		respHandler := http.Handler(responsesHandler)
+		if protectProxy {
+			chatHandler = api.RequireProxyEnabled(chatHandler)
+			respHandler = api.RequireProxyEnabled(respHandler)
+		}
+		mux.Handle("/chat/completions", chatHandler)
+		mux.Handle("/v1/chat/completions", chatHandler)
+		mux.Handle("/responses", respHandler)
+		mux.Handle("/responses/", respHandler)
+		mux.Handle("/v1/responses", respHandler)
+		mux.Handle("/v1/responses/", respHandler)
+		mux.Handle("/models", respHandler)
+		mux.Handle("/models/", respHandler)
+		mux.Handle("/v1/models", respHandler)
+		mux.Handle("/v1/models/", respHandler)
+	}
+	registerGatewayRoutes(apiMux, !cfg.ProxyEnabledByDefault)
+	registerGatewayRoutes(gatewayMux, !cfg.ProxyEnabledByDefault)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
-			http.Redirect(w, r, "/ai-router/webui/", http.StatusTemporaryRedirect)
+			http.Redirect(w, r, httpPrefix+"/webui/", http.StatusTemporaryRedirect)
 			return
 		}
 		http.NotFound(w, r)
 	})
-	mux.Handle("/ai-router/api/", withCORS(withLANShareAccessControl(settingsRepo, http.StripPrefix("/ai-router/api", apiMux))))
+	mux.Handle(httpPrefix+"/api/", withCORS(withLANShareAccessControl(settingsRepo, http.StripPrefix(httpPrefix+"/api", apiMux))))
+	if cfg.ServerMode {
+		mux.Handle(httpPrefix+"/", withCORS(withLANShareAccessControl(settingsRepo, http.StripPrefix(httpPrefix, gatewayMux))))
+	}
 
 	appCtx, cancel := context.WithCancel(context.Background())
 	app := &App{listenAddr: cfg.ListenAddr, handler: mux, store: store, cancel: cancel}
@@ -254,6 +276,14 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	}()
 
 	return app, nil
+}
+
+func normalizeHTTPPrefix(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || trimmed == "/" {
+		return ""
+	}
+	return "/" + strings.Trim(trimmed, "/")
 }
 
 func loggedBackgroundTask(name string, task func(context.Context, time.Time) error) backgroundTask {

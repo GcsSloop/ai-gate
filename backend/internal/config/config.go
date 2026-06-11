@@ -12,23 +12,41 @@ import (
 
 const (
 	defaultListenAddr        = "127.0.0.1:6789"
+	defaultServerListenAddr  = "0.0.0.0:6789"
 	defaultSchedulerInterval = 5 * time.Minute
+	defaultHTTPPrefix        = "/ai-router"
+	defaultServerHTTPPrefix  = "/ai-gate"
 )
 
 type Config struct {
-	ListenAddr        string
-	DatabasePath      string
-	SchedulerInterval time.Duration
-	EncryptionKey     string
+	ListenAddr            string
+	DatabasePath          string
+	SchedulerInterval     time.Duration
+	EncryptionKey         string
+	ServerMode            bool
+	HTTPPrefix            string
+	ProxyEnabledByDefault bool
+	SkipCodexConfig       bool
 }
 
-func Load() (Config, error) {
-	defaultDatabasePath := resolveDefaultDatabasePath()
+func Load(args ...string) (Config, error) {
+	serverMode := serverModeRequested(args)
+	defaultDatabasePath := resolveDefaultDatabasePath(serverMode)
+	defaultAddr := defaultListenAddr
+	defaultPrefix := defaultHTTPPrefix
+	if serverMode {
+		defaultAddr = defaultServerListenAddr
+		defaultPrefix = defaultServerHTTPPrefix
+	}
 	cfg := Config{
-		ListenAddr:        readString("CODEX_ROUTER_LISTEN_ADDR", defaultListenAddr),
-		DatabasePath:      readString("CODEX_ROUTER_DATABASE_PATH", defaultDatabasePath),
-		SchedulerInterval: defaultSchedulerInterval,
-		EncryptionKey:     os.Getenv("CODEX_ROUTER_ENCRYPTION_KEY"),
+		ListenAddr:            readString("CODEX_ROUTER_LISTEN_ADDR", defaultAddr),
+		DatabasePath:          readString("CODEX_ROUTER_DATABASE_PATH", defaultDatabasePath),
+		SchedulerInterval:     defaultSchedulerInterval,
+		EncryptionKey:         os.Getenv("CODEX_ROUTER_ENCRYPTION_KEY"),
+		ServerMode:            serverMode,
+		HTTPPrefix:            normalizePrefix(readString("AI_GATE_HTTP_PREFIX", defaultPrefix)),
+		ProxyEnabledByDefault: serverMode,
+		SkipCodexConfig:       serverMode,
 	}
 
 	if value := os.Getenv("CODEX_ROUTER_SCHEDULER_INTERVAL"); value != "" {
@@ -49,12 +67,40 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-func resolveDefaultDatabasePath() string {
+func serverModeRequested(args []string) bool {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AI_GATE_MODE")), "server") {
+		return true
+	}
+	for _, arg := range args {
+		if arg == "--server" || arg == "-server" {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveDefaultDatabasePath(serverMode bool) string {
+	if serverMode {
+		wd, err := os.Getwd()
+		if err != nil || strings.TrimSpace(wd) == "" {
+			return filepath.Join("data", "aigate.sqlite")
+		}
+		return filepath.Join(wd, "data", "aigate.sqlite")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
 		return "data/aigate.sqlite"
 	}
 	return filepath.Join(home, ".aigate", "data", "aigate.sqlite")
+}
+
+func normalizePrefix(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || trimmed == "/" {
+		return ""
+	}
+	trimmed = "/" + strings.Trim(trimmed, "/")
+	return trimmed
 }
 
 func readString(key, fallback string) string {
