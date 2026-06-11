@@ -35,6 +35,7 @@ func main() {
 		HTTPPrefix:             cfg.HTTPPrefix,
 		ProxyEnabledByDefault:  cfg.ProxyEnabledByDefault,
 		SkipCodexConfigChanges: cfg.SkipCodexConfig,
+		ServerPassword:         cfg.ServerPassword,
 	})
 	if err != nil {
 		log.Fatalf("create app: %v", err)
