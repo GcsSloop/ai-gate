@@ -32,6 +32,7 @@ type Snapshot struct {
 type Event struct {
 	ID            int64     `json:"id"`
 	AccountID     int64     `json:"account_id"`
+	ServerUserID  *int64    `json:"server_user_id,omitempty"`
 	ProviderType  string    `json:"provider_type"`
 	RequestKind   string    `json:"request_kind"`
 	Model         string    `json:"model"`
@@ -52,6 +53,7 @@ type EventFilter struct {
 	From           *time.Time
 	To             *time.Time
 	AccountID      *int64
+	ServerUserID   *int64
 	Model          string
 	Limit          int
 	BucketSize     time.Duration

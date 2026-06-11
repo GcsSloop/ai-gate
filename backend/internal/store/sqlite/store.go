@@ -100,6 +100,7 @@ func (s *Store) migrate() error {
 		{table: "messages", name: "tool_call_id", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "messages", name: "summary_json", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "messages", name: "storage_mode", definition: "TEXT NOT NULL DEFAULT 'full'"},
+		{table: "usage_events", name: "server_user_id", definition: "INTEGER"},
 		{table: "account_usage_snapshots", name: "health_score", definition: "REAL"},
 		{table: "account_usage_snapshots", name: "source", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "account_usage_snapshots", name: "confidence", definition: "TEXT NOT NULL DEFAULT ''"},

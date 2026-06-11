@@ -24,6 +24,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/scheduler"
 	"github.com/gcssloop/codex-router/backend/internal/secrets"
 	"github.com/gcssloop/codex-router/backend/internal/serverauth"
+	"github.com/gcssloop/codex-router/backend/internal/serverusers"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
@@ -100,6 +101,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	settingsRepo := settings.NewSQLiteRepository(store.DB())
 	upstreamHTTPClient := netproxy.NewHTTPClient(settingsRepo)
 	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	serverUserRepo := serverusers.NewSQLiteRepository(store.DB())
 	policyRepo := policy.NewMemoryRepository()
 	authConnector := auth.NewOAuthConnector(auth.Config{
 		ClientID:              "app_EMoamEEZ73f0CkXaXp7hrann",
@@ -154,6 +156,9 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/dashboard/state-events", dashboardHandler)
 	apiMux.Handle("/conversations", conversationsHandler)
 	apiMux.Handle("/conversations/", conversationsHandler)
+	serverUsersHandler := api.NewServerUsersHandler(serverUserRepo)
+	apiMux.Handle("/server-users", serverUsersHandler)
+	apiMux.Handle("/server-users/", serverUsersHandler)
 	settingsHandler := api.NewSettingsHandler(
 		settingsRepo,
 		api.WithSettingsDatabase(store.DB(), cfg.DatabasePath),

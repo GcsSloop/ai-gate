@@ -54,6 +54,7 @@ var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS usage_events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		account_id INTEGER NOT NULL,
+		server_user_id INTEGER,
 		provider_type TEXT NOT NULL DEFAULT '',
 		request_kind TEXT NOT NULL DEFAULT '',
 		model TEXT NOT NULL DEFAULT '',
@@ -67,6 +68,14 @@ var schemaStatements = []string{
 		quota_before REAL,
 		quota_after REAL,
 		latency_ms REAL NOT NULL DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`,
+	`CREATE TABLE IF NOT EXISTS server_users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		token_hash TEXT NOT NULL UNIQUE,
+		status TEXT NOT NULL DEFAULT 'active',
+		last_used_at DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,
 	`CREATE TABLE IF NOT EXISTS usage_rollups_hourly (

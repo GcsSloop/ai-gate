@@ -257,12 +257,13 @@ func (r *SQLiteRepository) CleanupSnapshots(now time.Time) (SnapshotCleanupResul
 func (r *SQLiteRepository) SaveEvent(event Event) error {
 	_, err := r.db.Exec(
 		`INSERT INTO usage_events (
-			account_id, provider_type, request_kind, model, status,
+			account_id, server_user_id, provider_type, request_kind, model, status,
 			input_tokens, output_tokens, total_tokens, estimated_cost,
 			balance_before, balance_after, quota_before, quota_after,
 			latency_ms, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.AccountID,
+		nullInt64(event.ServerUserID),
 		event.ProviderType,
 		event.RequestKind,
 		event.Model,
@@ -311,7 +312,7 @@ func (r *SQLiteRepository) CompactEvents(now time.Time) error {
 }
 
 func (r *SQLiteRepository) ListRecentEvents(filter EventFilter) ([]Event, error) {
-	query := `SELECT id, account_id, provider_type, request_kind, model, status,
+	query := `SELECT id, account_id, server_user_id, provider_type, request_kind, model, status,
 		input_tokens, output_tokens, total_tokens, estimated_cost,
 		balance_before, balance_after, quota_before, quota_after,
 		latency_ms, created_at
@@ -336,6 +337,7 @@ func (r *SQLiteRepository) ListRecentEvents(filter EventFilter) ([]Event, error)
 		if err := rows.Scan(
 			&event.ID,
 			&event.AccountID,
+			nullInt64Dest(&event.ServerUserID),
 			&event.ProviderType,
 			&event.RequestKind,
 			&event.Model,
@@ -529,7 +531,7 @@ func (r *SQLiteRepository) loadAggregateRows(filter EventFilter) ([]RollupPoint,
 	}
 	rows = append(rows, rawRows...)
 
-	if filter.From != nil && filter.To != nil {
+	if filter.From != nil && filter.To != nil && filter.ServerUserID == nil {
 		hourlyRows, err := r.queryRollupRows("usage_rollups_hourly", filter)
 		if err != nil {
 			return nil, err
@@ -664,6 +666,10 @@ func eventFilterWhere(filter EventFilter) (string, []any) {
 	if filter.AccountID != nil {
 		clauses = append(clauses, "account_id = ?")
 		args = append(args, *filter.AccountID)
+	}
+	if filter.ServerUserID != nil {
+		clauses = append(clauses, "server_user_id = ?")
+		args = append(args, *filter.ServerUserID)
 	}
 	if filter.Model != "" {
 		clauses = append(clauses, "model = ?")
@@ -945,6 +951,39 @@ func nullFloat64(value *float64) sql.NullFloat64 {
 		return sql.NullFloat64{}
 	}
 	return sql.NullFloat64{Float64: *value, Valid: true}
+}
+
+func nullInt64(value *int64) sql.NullInt64 {
+	if value == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *value, Valid: true}
+}
+
+func nullInt64Dest(dest **int64) any {
+	return &scanInt64{dest: dest}
+}
+
+type scanInt64 struct {
+	dest **int64
+}
+
+func (s *scanInt64) Scan(src any) error {
+	if src == nil {
+		*s.dest = nil
+		return nil
+	}
+	var value sql.NullInt64
+	if err := value.Scan(src); err != nil {
+		return err
+	}
+	if !value.Valid {
+		*s.dest = nil
+		return nil
+	}
+	copied := value.Int64
+	*s.dest = &copied
+	return nil
 }
 
 func nullFloatDest(dest **float64) any {
