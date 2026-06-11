@@ -114,6 +114,7 @@ func TestNewAppServerModeUsesAIGatePrefixAndGateway(t *testing.T) {
 		HTTPPrefix:             "/ai-gate",
 		ProxyEnabledByDefault:  true,
 		SkipCodexConfigChanges: true,
+		ServerPassword:         "server-secret",
 	})
 	if err != nil {
 		t.Fatalf("NewApp returned error: %v", err)
@@ -142,8 +143,28 @@ func TestNewAppServerModeUsesAIGatePrefixAndGateway(t *testing.T) {
 	serverAPIReq := httptest.NewRequest(http.MethodGet, "/ai-gate/api/accounts", nil)
 	serverAPIRec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(serverAPIRec, serverAPIReq)
-	if serverAPIRec.Code != http.StatusOK {
-		t.Fatalf("GET /ai-gate/api/accounts status = %d, want %d; body=%s", serverAPIRec.Code, http.StatusOK, serverAPIRec.Body.String())
+	if serverAPIRec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /ai-gate/api/accounts status = %d, want %d before login; body=%s", serverAPIRec.Code, http.StatusUnauthorized, serverAPIRec.Body.String())
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/ai-gate/auth/login", strings.NewReader(`{"password":"server-secret"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("POST /ai-gate/auth/login status = %d, want %d; body=%s", loginRec.Code, http.StatusOK, loginRec.Body.String())
+	}
+	cookies := loginRec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("POST /ai-gate/auth/login returned no cookies")
+	}
+
+	authedAPIReq := httptest.NewRequest(http.MethodGet, "/ai-gate/api/accounts", nil)
+	authedAPIReq.AddCookie(cookies[0])
+	authedAPIRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(authedAPIRec, authedAPIReq)
+	if authedAPIRec.Code != http.StatusOK {
+		t.Fatalf("GET /ai-gate/api/accounts status = %d, want %d after login; body=%s", authedAPIRec.Code, http.StatusOK, authedAPIRec.Body.String())
 	}
 
 	webReq := httptest.NewRequest(http.MethodGet, "/ai-gate/webui/", nil)
@@ -161,6 +182,21 @@ func TestNewAppServerModeUsesAIGatePrefixAndGateway(t *testing.T) {
 	app.Handler().ServeHTTP(gatewayRec, gatewayReq)
 	if gatewayRec.Code == http.StatusServiceUnavailable {
 		t.Fatalf("POST /ai-gate/v1/responses unexpectedly blocked by disabled proxy")
+	}
+}
+
+func TestNewAppServerModeRequiresPassword(t *testing.T) {
+	_, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
+		ListenAddr:   "127.0.0.1:0",
+		DatabasePath: filepath.Join(t.TempDir(), "router.sqlite"),
+		ServerMode:   true,
+		HTTPPrefix:   "/ai-gate",
+	})
+	if err == nil {
+		t.Fatal("NewApp returned nil error, want missing password error")
+	}
+	if !strings.Contains(err.Error(), "server password") {
+		t.Fatalf("NewApp error = %q, want server password", err.Error())
 	}
 }
 

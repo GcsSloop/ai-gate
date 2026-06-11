@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,7 @@ func TestLoadServerModeDefaults(t *testing.T) {
 	t.Chdir(root)
 	t.Setenv("AI_GATE_MODE", "server")
 	t.Setenv("CODEX_ROUTER_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("AI_GATE_SERVER_PASSWORD", "server-secret")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -111,12 +113,16 @@ func TestLoadServerModeDefaults(t *testing.T) {
 	if !cfg.SkipCodexConfig {
 		t.Fatal("SkipCodexConfig = false, want true")
 	}
+	if cfg.ServerPassword != "server-secret" {
+		t.Fatalf("ServerPassword = %q, want configured value", cfg.ServerPassword)
+	}
 }
 
 func TestLoadServerModeFromArgs(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
 	t.Setenv("CODEX_ROUTER_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("AI_GATE_SERVER_PASSWORD", "server-secret")
 
 	cfg, err := config.Load("--server")
 	if err != nil {
@@ -124,5 +130,17 @@ func TestLoadServerModeFromArgs(t *testing.T) {
 	}
 	if !cfg.ServerMode {
 		t.Fatal("ServerMode = false, want true")
+	}
+}
+
+func TestLoadServerModeRejectsMissingPassword(t *testing.T) {
+	t.Setenv("AI_GATE_MODE", "server")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load returned nil error, want missing server password error")
+	}
+	if !strings.Contains(err.Error(), "AI_GATE_SERVER_PASSWORD") {
+		t.Fatalf("Load error = %q, want AI_GATE_SERVER_PASSWORD", err.Error())
 	}
 }

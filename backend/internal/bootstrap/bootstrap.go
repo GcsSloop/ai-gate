@@ -23,6 +23,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/policy"
 	"github.com/gcssloop/codex-router/backend/internal/scheduler"
 	"github.com/gcssloop/codex-router/backend/internal/secrets"
+	"github.com/gcssloop/codex-router/backend/internal/serverauth"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
@@ -43,6 +44,7 @@ type Config struct {
 	HTTPPrefix             string
 	ProxyEnabledByDefault  bool
 	SkipCodexConfigChanges bool
+	ServerPassword         string
 }
 
 type App struct {
@@ -61,6 +63,9 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	}
 	if cfg.DatabasePath == "" {
 		return nil, errors.New("database path is required")
+	}
+	if cfg.ServerMode && strings.TrimSpace(cfg.ServerPassword) == "" {
+		return nil, errors.New("server password is required in server mode")
 	}
 	httpPrefix := normalizeHTTPPrefix(cfg.HTTPPrefix)
 	if httpPrefix == "" {
@@ -235,8 +240,15 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		}
 		http.NotFound(w, r)
 	})
-	mux.Handle(httpPrefix+"/webui/", webui.Handler(httpPrefix))
-	mux.Handle(httpPrefix+"/api/", withCORS(withLANShareAccessControl(settingsRepo, http.StripPrefix(httpPrefix+"/api", apiMux))))
+	webuiHandler := webui.Handler(httpPrefix)
+	apiHandler := http.Handler(http.StripPrefix(httpPrefix+"/api", apiMux))
+	if cfg.ServerMode {
+		authManager := serverauth.NewManager(cfg.ServerPassword, 12*time.Hour)
+		mux.Handle(httpPrefix+"/auth/", withCORS(http.StripPrefix(httpPrefix+"/auth", authManager)))
+		apiHandler = authManager.RequireSession(apiHandler)
+	}
+	mux.Handle(httpPrefix+"/webui/", webuiHandler)
+	mux.Handle(httpPrefix+"/api/", withCORS(withLANShareAccessControl(settingsRepo, apiHandler)))
 	if cfg.ServerMode {
 		mux.Handle(httpPrefix+"/", withCORS(withLANShareAccessControl(settingsRepo, http.StripPrefix(httpPrefix, gatewayMux))))
 	}

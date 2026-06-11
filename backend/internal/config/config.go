@@ -27,6 +27,7 @@ type Config struct {
 	HTTPPrefix            string
 	ProxyEnabledByDefault bool
 	SkipCodexConfig       bool
+	ServerPassword        string
 }
 
 func Load(args ...string) (Config, error) {
@@ -47,6 +48,7 @@ func Load(args ...string) (Config, error) {
 		HTTPPrefix:            normalizePrefix(readString("AI_GATE_HTTP_PREFIX", defaultPrefix)),
 		ProxyEnabledByDefault: serverMode,
 		SkipCodexConfig:       serverMode,
+		ServerPassword:        os.Getenv("AI_GATE_SERVER_PASSWORD"),
 	}
 
 	if value := os.Getenv("CODEX_ROUTER_SCHEDULER_INTERVAL"); value != "" {
@@ -59,6 +61,9 @@ func Load(args ...string) (Config, error) {
 
 	if cfg.EncryptionKey != "" && len(cfg.EncryptionKey) < 32 {
 		return Config{}, errors.New("encryption key must be at least 32 characters")
+	}
+	if cfg.ServerMode && strings.TrimSpace(cfg.ServerPassword) == "" {
+		return Config{}, errors.New("AI_GATE_SERVER_PASSWORD is required in server mode")
 	}
 	if err := validateLocalListenAddr(cfg.ListenAddr); err != nil {
 		return Config{}, err
