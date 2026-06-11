@@ -3,9 +3,12 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig(({ mode }) => {
   const isDesktopBuild = mode === "desktop" || process.env.DESKTOP_BUILD === "1";
+  const isServerBuild = mode === "server" || process.env.AI_GATE_SERVER_BUILD === "1";
+  const webuiBase = isDesktopBuild ? "./" : isServerBuild ? "/ai-gate/webui/" : "/ai-router/webui/";
+  const apiPrefix = isServerBuild ? "/ai-gate/api" : "/ai-router/api";
 
   return {
-    base: isDesktopBuild ? "./" : "/ai-router/webui/",
+    base: webuiBase,
     plugins: [
       react(),
       {
@@ -14,7 +17,7 @@ export default defineConfig(({ mode }) => {
           server.middlewares.use((req, res, next) => {
             if (req.url === "/") {
               res.statusCode = 302;
-              res.setHeader("Location", "/ai-router/webui/");
+              res.setHeader("Location", webuiBase);
               res.end();
               return;
             }
@@ -25,7 +28,7 @@ export default defineConfig(({ mode }) => {
     ],
     server: {
       proxy: {
-        "/ai-router/api": "http://127.0.0.1:6789",
+        [apiPrefix]: "http://127.0.0.1:6789",
       },
     },
     build: {

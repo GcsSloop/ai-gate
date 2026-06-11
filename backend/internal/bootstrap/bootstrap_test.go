@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,6 +144,16 @@ func TestNewAppServerModeUsesAIGatePrefixAndGateway(t *testing.T) {
 	app.Handler().ServeHTTP(serverAPIRec, serverAPIReq)
 	if serverAPIRec.Code != http.StatusOK {
 		t.Fatalf("GET /ai-gate/api/accounts status = %d, want %d; body=%s", serverAPIRec.Code, http.StatusOK, serverAPIRec.Body.String())
+	}
+
+	webReq := httptest.NewRequest(http.MethodGet, "/ai-gate/webui/", nil)
+	webRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(webRec, webReq)
+	if webRec.Code != http.StatusOK {
+		t.Fatalf("GET /ai-gate/webui/ status = %d, want %d; body=%s", webRec.Code, http.StatusOK, webRec.Body.String())
+	}
+	if !strings.Contains(webRec.Body.String(), `<div id="root"></div>`) {
+		t.Fatalf("GET /ai-gate/webui/ body = %q, want embedded web ui index", webRec.Body.String())
 	}
 
 	gatewayReq := httptest.NewRequest(http.MethodPost, "/ai-gate/v1/responses", nil)
