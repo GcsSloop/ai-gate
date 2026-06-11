@@ -1,5 +1,5 @@
-import { BarChartOutlined, CloudDownloadOutlined, DeploymentUnitOutlined, PlusOutlined, ReadOutlined, SettingOutlined, UserOutlined } from "@ant-design/icons";
-import { App as AntApp, Button, ConfigProvider, Dropdown, Modal, Spin, Switch, Tooltip, message, theme as antdTheme } from "antd";
+import { BarChartOutlined, CloudDownloadOutlined, DeploymentUnitOutlined, LogoutOutlined, PlusOutlined, ReadOutlined, SettingOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
+import { App as AntApp, Button, ConfigProvider, Dropdown, Input, Modal, Spin, Switch, Tooltip, message, theme as antdTheme } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -7,13 +7,14 @@ import { AccountsPage } from "./features/accounts/AccountsPage";
 import { ToolingPage } from "./features/tooling/ToolingPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import { StatsPage } from "./features/stats/StatsPage";
+import { ServerUsersPage } from "./features/server-users/ServerUsersPage";
 import { HomeUpdatePanel } from "./features/updates/HomeUpdatePanel";
 import { createDesktopUpdateService, type DesktopUpdateInfo } from "./features/updates/updateService";
 import appLogo from "./assets/aigate_1024_1024.png";
-import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus, refreshAccountUsage, subscribeAccountRoutingStateChanged } from "./lib/api";
+import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus, getServerSession, loginServer, logoutServer, refreshAccountUsage, subscribeAccountRoutingStateChanged } from "./lib/api";
 import { loadDesktopShellContext, refreshDesktopTrayState, subscribeDesktopBackendStateChanged } from "./lib/desktop-shell";
 import { createTranslator, getAntdLocale, normalizeLanguage } from "./lib/i18n";
-import { setAPIBase } from "./lib/paths";
+import { isServerWebUI, setAPIBase } from "./lib/paths";
 import "./styles.css";
 
 const appSettingsBootstrapRetryDelays = [0, 150, 300, 600, 1_000];
@@ -25,7 +26,7 @@ const resumeGapWatchIntervalMs = 5_000;
 const resumeGapThresholdMs = 30_000;
 const hiddenResumeThresholdMs = 15_000;
 
-type AppView = "accounts" | "stats" | "skills" | "mcp" | "settings";
+type AppView = "accounts" | "stats" | "skills" | "mcp" | "settings" | "server-users";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -50,6 +51,10 @@ export function App() {
   const [systemPrefersDark, setSystemPrefersDark] = useState(false);
   const [homeUpdate, setHomeUpdate] = useState<DesktopUpdateInfo | null>(null);
   const [homeUpdateModalOpen, setHomeUpdateModalOpen] = useState(false);
+  const [serverAuthenticated, setServerAuthenticated] = useState(!isServerWebUI());
+  const [serverPassword, setServerPassword] = useState("");
+  const [serverLoginLoading, setServerLoginLoading] = useState(false);
+  const serverMode = isServerWebUI();
   const updateService = useMemo(() => createDesktopUpdateService(), []);
   const previousViewRef = useRef<AppView>("accounts");
   const immediateUsageRefreshInFlightRef = useRef(false);
@@ -166,6 +171,19 @@ export function App() {
       }
 
       try {
+        if (serverMode) {
+          const session = await getServerSession();
+          if (!session.authenticated) {
+            if (!disposed) {
+              setServerAuthenticated(false);
+              setShellReady(true);
+            }
+            return;
+          }
+          if (!disposed) {
+            setServerAuthenticated(true);
+          }
+        }
         await Promise.all([refreshProxyState(), bootstrapAppSettingsState()]);
         void refreshDesktopTrayState();
       } catch (error) {
@@ -183,7 +201,29 @@ export function App() {
     return () => {
       disposed = true;
     };
-  }, [messageApi]);
+  }, [messageApi, serverMode]);
+
+  async function handleServerLogin() {
+    if (!serverPassword.trim()) {
+      return;
+    }
+    setServerLoginLoading(true);
+    try {
+      await loginServer(serverPassword);
+      setServerAuthenticated(true);
+      await Promise.all([refreshProxyState(), bootstrapAppSettingsState()]);
+    } catch (error) {
+      void messageApi.error(error instanceof Error ? t(error.message) : t("登录失败"));
+    } finally {
+      setServerLoginLoading(false);
+    }
+  }
+
+  async function handleServerLogout() {
+    await logoutServer();
+    setServerAuthenticated(false);
+    setAppSettings(null);
+  }
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
@@ -444,10 +484,26 @@ export function App() {
       <AntApp>
         <div className="app-theme-shell" data-theme-mode={resolvedThemeMode} data-theme-preference={themeMode}>
           {contextHolder}
-          {!shellReady || !appSettings ? (
+          {!shellReady || (serverAuthenticated && !appSettings) ? (
             <div className="app-loading">
               <Spin size="large" />
               <span>{t("正在载入设置中心…")}</span>
+            </div>
+          ) : !serverAuthenticated ? (
+            <div className="server-login-shell">
+              <div className="server-login-panel">
+                <img src={appLogo} alt="AI Gate" className="server-login-logo" />
+                <div className="server-login-title">AI Gate</div>
+                <Input.Password
+                  value={serverPassword}
+                  onChange={(event) => setServerPassword(event.target.value)}
+                  onPressEnter={() => void handleServerLogin()}
+                  placeholder={t("访问密码")}
+                />
+                <Button type="primary" block loading={serverLoginLoading} onClick={() => void handleServerLogin()}>
+                  {t("登录")}
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="app-shell">
@@ -521,6 +577,20 @@ export function App() {
                         <SettingOutlined />
                       </button>
                     </Tooltip>
+                    {serverMode ? (
+                      <Tooltip title={t("服务用户")} placement="bottom">
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-label={t("服务用户")}
+                          aria-selected={view === "server-users"}
+                          className={view === "server-users" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
+                          onClick={() => setView("server-users")}
+                        >
+                          <TeamOutlined />
+                        </button>
+                      </Tooltip>
+                    ) : null}
                   </div>
                 </div>
 
@@ -539,7 +609,10 @@ export function App() {
                       onClick={() => setHomeUpdateModalOpen(true)}
                     />
                   ) : null}
-                  {showProxySwitch ? (
+                  {serverMode ? (
+                    <Button type="text" icon={<LogoutOutlined />} aria-label={t("退出登录")} onClick={() => void handleServerLogout()} />
+                  ) : null}
+                  {showProxySwitch && !serverMode ? (
                     <div className="proxy-panel">
                       <span className="proxy-label">{t("开启代理")}</span>
                       <Switch checked={proxyEnabled} loading={proxyLoading} onChange={(checked) => void handleToggleProxy(checked)} />
@@ -564,6 +637,8 @@ export function App() {
               <div className="app-content-scroll">
                 {view === "stats" ? (
                   <StatsPage language={language} t={t} />
+                ) : view === "server-users" ? (
+                  <ServerUsersPage t={t} />
                 ) : view === "skills" ? (
                   <ToolingPage mode="skills" t={t} />
                 ) : view === "mcp" ? (
