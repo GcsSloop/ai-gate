@@ -1,5 +1,5 @@
 import { runtimeTranslate } from "./i18n";
-import { apiPath } from "./paths";
+import { apiPath, authPath } from "./paths";
 
 export type AccountRecord = {
   id: number;
@@ -107,6 +107,25 @@ export type UsageDashboardSummary = {
   estimated_cost: number;
   balance_delta: number;
   quota_delta: number;
+};
+
+export type ServerSession = {
+  authenticated: boolean;
+};
+
+export type ServerUser = {
+  id: number;
+  name: string;
+  status: string;
+  created_at: string;
+  last_used_at?: string;
+  request_count?: number;
+  total_tokens?: number;
+};
+
+export type CreatedServerUser = {
+  user: ServerUser;
+  token: string;
 };
 
 export type UsageTrendPoint = {
@@ -1021,6 +1040,77 @@ export async function deleteDatabaseBackup(backupID: string): Promise<void> {
     const details = await response.text();
     throw new Error(details || "failed to delete database backup");
   }
+}
+
+export async function getServerSession(): Promise<ServerSession> {
+  const response = await fetch(authPath("/session"), { credentials: "include" });
+  if (!response.ok) {
+    return { authenticated: false };
+  }
+  return response.json();
+}
+
+export async function loginServer(password: string): Promise<void> {
+  const response = await fetch(authPath("/login"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ password }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "login failed");
+  }
+}
+
+export async function logoutServer(): Promise<void> {
+  await fetch(authPath("/logout"), {
+    method: "POST",
+    credentials: "include",
+  });
+}
+
+export async function listServerUsers(): Promise<ServerUser[]> {
+  const response = await fetch(apiPath("/server-users"), { credentials: "include" });
+  if (!response.ok) {
+    throw new Error("failed to list server users");
+  }
+  return response.json();
+}
+
+export async function createServerUser(name: string): Promise<CreatedServerUser> {
+  const response = await fetch(apiPath("/server-users"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to create server user");
+  }
+  return response.json();
+}
+
+export async function disableServerUser(id: number): Promise<void> {
+  const response = await fetch(apiPath(`/server-users/${id}/disable`), {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    throw new Error("failed to disable server user");
+  }
+}
+
+export async function rotateServerUserToken(id: number): Promise<CreatedServerUser> {
+  const response = await fetch(apiPath(`/server-users/${id}/rotate-token`), {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    throw new Error("failed to rotate server user token");
+  }
+  return response.json();
 }
 
 export async function enableProxy(): Promise<ProxyStatus> {
