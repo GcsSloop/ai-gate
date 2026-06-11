@@ -222,6 +222,62 @@ func TestSQLiteRepositoryDeleteSnapshotsForAccount(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryUsageEventsTrackServerUser(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	userID := int64(42)
+	if err := repo.SaveEvent(usage.Event{
+		AccountID:    7,
+		ServerUserID: &userID,
+		ProviderType: "openai_compatible",
+		RequestKind:  "responses",
+		Model:        "gpt-test",
+		Status:       "completed",
+		TotalTokens:  99,
+		CreatedAt:    time.Date(2026, 6, 12, 1, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("SaveEvent returned error: %v", err)
+	}
+	otherUserID := int64(99)
+	if err := repo.SaveEvent(usage.Event{
+		AccountID:    7,
+		ServerUserID: &otherUserID,
+		ProviderType: "openai_compatible",
+		RequestKind:  "responses",
+		Model:        "gpt-test",
+		Status:       "completed",
+		TotalTokens:  1,
+		CreatedAt:    time.Date(2026, 6, 12, 1, 1, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("SaveEvent(other user) returned error: %v", err)
+	}
+
+	events, err := repo.ListRecentEvents(usage.EventFilter{ServerUserID: &userID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRecentEvents returned error: %v", err)
+	}
+	if len(events) != 1 || events[0].ServerUserID == nil || *events[0].ServerUserID != userID || events[0].TotalTokens != 99 {
+		t.Fatalf("events = %+v, want only user 42 event", events)
+	}
+
+	summary, err := repo.SummarizeEvents(usage.EventFilter{ServerUserID: &userID})
+	if err != nil {
+		t.Fatalf("SummarizeEvents returned error: %v", err)
+	}
+	if summary.RequestCount != 1 || summary.TotalTokens != 99 {
+		t.Fatalf("summary = %+v, want user 42 totals", summary)
+	}
+}
+
 func TestSQLiteRepositoryCleanupSnapshotsDeletesOrphansAndCompactsHistory(t *testing.T) {
 	t.Parallel()
 
