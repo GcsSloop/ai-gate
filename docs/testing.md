@@ -12,6 +12,29 @@ cd backend && go test ./...
 npm --prefix frontend test
 ```
 
+## Server mode
+
+Start server mode with a repo-local database and development password:
+
+```bash
+make server-dev
+```
+
+Minimal checks:
+
+1. Open `http://127.0.0.1:6789/ai-gate/webui/`.
+2. Log in with `dev-password`, unless `AI_GATE_SERVER_PASSWORD` is set.
+3. Create a server user under the service users page and copy the issued token.
+4. Verify requests without a token are rejected: `curl -i http://127.0.0.1:6789/ai-gate/v1/models`.
+5. Verify requests with a token pass gateway authentication: `curl -i -H "Authorization: Bearer <token>" http://127.0.0.1:6789/ai-gate/v1/models`.
+
+Build the Linux amd64 `.msvc` daemon plugin:
+
+```bash
+bash scripts/release/build_ai_gate_msvc.sh --target linux/amd64 --version 0.0.0-dev
+bash scripts/test/build_ai_gate_msvc_test.sh
+```
+
 ## Codex CLI smoke
 
 Start the router backend, then point local Codex CLI to the router:
