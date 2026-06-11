@@ -26,6 +26,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.SchedulerInterval != 5*time.Minute {
 		t.Fatalf("SchedulerInterval = %s, want %s", cfg.SchedulerInterval, 5*time.Minute)
 	}
+	if cfg.ServerMode {
+		t.Fatal("ServerMode = true, want false by default")
+	}
+	if cfg.HTTPPrefix != "/ai-router" {
+		t.Fatalf("HTTPPrefix = %q, want %q", cfg.HTTPPrefix, "/ai-router")
+	}
 }
 
 func TestLoadRejectsShortEncryptionKey(t *testing.T) {
@@ -72,5 +78,51 @@ func TestLoadAllowsLANShareListenAddr(t *testing.T) {
 	}
 	if cfg.ListenAddr != "0.0.0.0:6789" {
 		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, "0.0.0.0:6789")
+	}
+}
+
+func TestLoadServerModeDefaults(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("AI_GATE_MODE", "server")
+	t.Setenv("CODEX_ROUTER_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if !cfg.ServerMode {
+		t.Fatal("ServerMode = false, want true")
+	}
+	if cfg.ListenAddr != "0.0.0.0:6789" {
+		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, "0.0.0.0:6789")
+	}
+	expectedDB := filepath.Join(root, "data", "aigate.sqlite")
+	if cfg.DatabasePath != expectedDB {
+		t.Fatalf("DatabasePath = %q, want %q", cfg.DatabasePath, expectedDB)
+	}
+	if cfg.HTTPPrefix != "/ai-gate" {
+		t.Fatalf("HTTPPrefix = %q, want %q", cfg.HTTPPrefix, "/ai-gate")
+	}
+	if !cfg.ProxyEnabledByDefault {
+		t.Fatal("ProxyEnabledByDefault = false, want true")
+	}
+	if !cfg.SkipCodexConfig {
+		t.Fatal("SkipCodexConfig = false, want true")
+	}
+}
+
+func TestLoadServerModeFromArgs(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("CODEX_ROUTER_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
+
+	cfg, err := config.Load("--server")
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.ServerMode {
+		t.Fatal("ServerMode = false, want true")
 	}
 }
