@@ -31,6 +31,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv/builtin"
 	luadrv "github.com/gcssloop/codex-router/backend/internal/usagedrv/lua"
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv/registry"
+	"github.com/gcssloop/codex-router/backend/internal/webui"
 )
 
 type Config struct {
@@ -234,6 +235,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		}
 		http.NotFound(w, r)
 	})
+	mux.Handle(httpPrefix+"/webui/", webui.Handler(httpPrefix))
 	mux.Handle(httpPrefix+"/api/", withCORS(withLANShareAccessControl(settingsRepo, http.StripPrefix(httpPrefix+"/api", apiMux))))
 	if cfg.ServerMode {
 		mux.Handle(httpPrefix+"/", withCORS(withLANShareAccessControl(settingsRepo, http.StripPrefix(httpPrefix, gatewayMux))))
