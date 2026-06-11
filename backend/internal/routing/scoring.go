@@ -1,7 +1,9 @@
 package routing
 
 import (
+	"hash/fnv"
 	"sort"
+	"strconv"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
@@ -11,6 +13,21 @@ type Candidate struct {
 	Account  accounts.Account
 	Snapshot usage.Snapshot
 	Score    float64
+}
+
+func RotateCandidatesForUser(candidates []Candidate, userID int64) []Candidate {
+	rotated := make([]Candidate, len(candidates))
+	copy(rotated, candidates)
+	if len(rotated) <= 1 || userID <= 0 {
+		return rotated
+	}
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(strconv.FormatInt(userID, 10)))
+	start := int(hash.Sum64() % uint64(len(rotated)))
+	if start == 0 {
+		return rotated
+	}
+	return append(rotated[start:], rotated[:start]...)
 }
 
 func ScoreCandidates(candidates []Candidate) []Candidate {

@@ -180,8 +180,34 @@ func TestNewAppServerModeUsesAIGatePrefixAndGateway(t *testing.T) {
 	gatewayReq := httptest.NewRequest(http.MethodPost, "/ai-gate/v1/responses", nil)
 	gatewayRec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(gatewayRec, gatewayReq)
-	if gatewayRec.Code == http.StatusServiceUnavailable {
-		t.Fatalf("POST /ai-gate/v1/responses unexpectedly blocked by disabled proxy")
+	if gatewayRec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /ai-gate/v1/responses status = %d, want %d without token", gatewayRec.Code, http.StatusUnauthorized)
+	}
+
+	createUserReq := httptest.NewRequest(http.MethodPost, "/ai-gate/api/server-users", strings.NewReader(`{"name":"alice"}`))
+	createUserReq.Header.Set("Content-Type", "application/json")
+	createUserReq.AddCookie(cookies[0])
+	createUserRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(createUserRec, createUserReq)
+	if createUserRec.Code != http.StatusCreated {
+		t.Fatalf("POST /ai-gate/api/server-users status = %d, want %d; body=%s", createUserRec.Code, http.StatusCreated, createUserRec.Body.String())
+	}
+	var createdUser struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(createUserRec.Body.Bytes(), &createdUser); err != nil {
+		t.Fatalf("unmarshal created server user: %v", err)
+	}
+	if createdUser.Token == "" {
+		t.Fatal("created server user returned empty token")
+	}
+
+	authedGatewayReq := httptest.NewRequest(http.MethodPost, "/ai-gate/v1/responses", nil)
+	authedGatewayReq.Header.Set("Authorization", "Bearer "+createdUser.Token)
+	authedGatewayRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(authedGatewayRec, authedGatewayReq)
+	if authedGatewayRec.Code == http.StatusUnauthorized || authedGatewayRec.Code == http.StatusServiceUnavailable {
+		t.Fatalf("POST /ai-gate/v1/responses status = %d, want request past auth/proxy gates; body=%s", authedGatewayRec.Code, authedGatewayRec.Body.String())
 	}
 }
 

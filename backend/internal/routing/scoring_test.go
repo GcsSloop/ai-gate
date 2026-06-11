@@ -78,3 +78,24 @@ func TestScoreCandidates(t *testing.T) {
 		t.Fatal("top candidate score should be strictly greater than runner-up")
 	}
 }
+
+func TestRotateCandidatesForUserSpreadsStartingAccounts(t *testing.T) {
+	candidates := []routing.Candidate{
+		{Account: accounts.Account{ID: 1}},
+		{Account: accounts.Account{ID: 2}},
+		{Account: accounts.Account{ID: 3}},
+		{Account: accounts.Account{ID: 4}},
+		{Account: accounts.Account{ID: 5}},
+	}
+	starts := make(map[int64]bool)
+	for userID := int64(1); userID <= 10; userID++ {
+		rotated := routing.RotateCandidatesForUser(candidates, userID)
+		starts[rotated[0].Account.ID] = true
+	}
+	if len(starts) < 3 {
+		t.Fatalf("starts = %+v, want users spread across at least 3 accounts", starts)
+	}
+	if candidates[0].Account.ID != 1 {
+		t.Fatalf("original candidates mutated: %+v", candidates)
+	}
+}
