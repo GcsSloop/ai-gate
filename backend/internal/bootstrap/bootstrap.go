@@ -206,6 +206,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		api.WithGatewaySettings(settingsRepo),
 		api.WithGatewayHTTPClient(upstreamHTTPClient),
 		api.WithGatewayStateEvents(stateEvents),
+		api.WithGatewayServerUsers(serverUserRepo),
 	)
 	responsesHandler := api.NewResponsesHandler(
 		accountRepo,
@@ -214,6 +215,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		api.WithResponsesSettings(settingsRepo),
 		api.WithResponsesHTTPClient(upstreamHTTPClient),
 		api.WithResponsesStateEvents(stateEvents),
+		api.WithResponsesServerUsers(serverUserRepo),
 	)
 	gatewayMux := http.NewServeMux()
 	registerGatewayRoutes := func(mux *http.ServeMux, protectProxy bool) {

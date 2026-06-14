@@ -15,10 +15,13 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/providers"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/routing"
+	"github.com/gcssloop/codex-router/backend/internal/serverusers"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 	"github.com/gcssloop/codex-router/backend/internal/usage/normalize"
 )
+
+var errServerUserNoAssignedAccounts = errors.New("no upstream accounts assigned to this user")
 
 type GatewayAccounts interface {
 	List() ([]accounts.Account, error)
@@ -42,11 +45,16 @@ type GatewayRoutingSettings interface {
 	ListFailoverQueue() ([]int64, error)
 }
 
+type GatewayServerUsers interface {
+	ListAssignedAccounts(userID int64) ([]serverusers.AssignedAccount, error)
+}
+
 type GatewayHandler struct {
 	accounts      GatewayAccounts
 	usage         GatewayUsage
 	conversations GatewayRuns
 	settings      GatewayRoutingSettings
+	serverUsers   GatewayServerUsers
 	client        *http.Client
 	stateEvents   *StateEventBus
 }
@@ -70,6 +78,12 @@ func WithGatewaySettings(repo GatewayRoutingSettings) GatewayHandlerOption {
 func WithGatewayStateEvents(bus *StateEventBus) GatewayHandlerOption {
 	return func(handler *GatewayHandler) {
 		handler.stateEvents = bus
+	}
+}
+
+func WithGatewayServerUsers(repo GatewayServerUsers) GatewayHandlerOption {
+	return func(handler *GatewayHandler) {
+		handler.serverUsers = repo
 	}
 }
 
@@ -111,13 +125,14 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	candidates := make([]routing.Candidate, 0, len(accountList))
-	for _, account := range accountList {
-		snapshot, err := h.usage.GetLatest(account.ID)
-		if err != nil {
-			snapshot = normalize.DefaultFallbackSnapshot(account.ID)
+	candidates, err := h.candidatesForContext(r.Context(), accountList)
+	if err != nil {
+		if errors.Is(err, errServerUserNoAssignedAccounts) {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
 		}
-		candidates = append(candidates, routing.Candidate{Account: account, Snapshot: snapshot})
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	conversationID := int64(0)
@@ -338,6 +353,54 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		lastErr = errors.New("no candidate succeeded")
 	}
 	http.Error(w, lastErr.Error(), http.StatusBadGateway)
+}
+
+func (h *GatewayHandler) candidatesForContext(ctx context.Context, accountList []accounts.Account) ([]routing.Candidate, error) {
+	if user, ok := ServerUserFromContext(ctx); ok {
+		if h.serverUsers == nil {
+			return nil, errors.New("server user account pool is not configured")
+		}
+		assigned, err := h.serverUsers.ListAssignedAccounts(user.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(assigned) == 0 {
+			return nil, errServerUserNoAssignedAccounts
+		}
+		byID := make(map[int64]accounts.Account, len(accountList))
+		for _, account := range accountList {
+			byID[account.ID] = account
+		}
+		candidates := make([]routing.Candidate, 0, len(assigned))
+		for _, item := range assigned {
+			account, ok := byID[item.AccountID]
+			if !ok {
+				continue
+			}
+			account.Priority = len(assigned) - item.Position
+			account.IsActive = item.IsActive
+			account.IsLocked = item.IsLocked
+			snapshot, err := h.usage.GetLatest(account.ID)
+			if err != nil {
+				snapshot = normalize.DefaultFallbackSnapshot(account.ID)
+			}
+			candidates = append(candidates, routing.Candidate{Account: account, Snapshot: snapshot})
+		}
+		if len(candidates) == 0 {
+			return nil, errServerUserNoAssignedAccounts
+		}
+		return candidates, nil
+	}
+
+	candidates := make([]routing.Candidate, 0, len(accountList))
+	for _, account := range accountList {
+		snapshot, err := h.usage.GetLatest(account.ID)
+		if err != nil {
+			snapshot = normalize.DefaultFallbackSnapshot(account.ID)
+		}
+		candidates = append(candidates, routing.Candidate{Account: account, Snapshot: snapshot})
+	}
+	return candidates, nil
 }
 
 func shouldFailoverOnGatewayStreamError(err error) bool {

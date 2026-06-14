@@ -12,6 +12,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/api"
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
+	"github.com/gcssloop/codex-router/backend/internal/serverusers"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
@@ -112,6 +113,129 @@ func TestGatewayHandlerProxiesToConfiguredAccount(t *testing.T) {
 	}
 	if response["model"] != "gpt-5.2-codex" {
 		t.Fatalf("response model = %v, want %v", response["model"], "gpt-5.2-codex")
+	}
+}
+
+func TestGatewayHandlerInServerModeUsesOnlyAssignedUserAccounts(t *testing.T) {
+	t.Parallel()
+
+	var firstHits int
+	firstUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstHits++
+		http.Error(w, "first should not be used", http.StatusInternalServerError)
+	}))
+	defer firstUpstream.Close()
+
+	var secondHits int
+	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "chat.completion",
+			"model":  "gpt-test",
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "ok"}},
+			},
+		})
+	}))
+	defer secondUpstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "unassigned",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       firstUpstream.URL + "/v1",
+		CredentialRef: "sk-first",
+		Status:        accounts.StatusActive,
+		Priority:      100,
+	}); err != nil {
+		t.Fatalf("Create first account returned error: %v", err)
+	}
+	if err := accountRepo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "assigned",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       secondUpstream.URL + "/v1",
+		CredentialRef: "sk-second",
+		Status:        accounts.StatusActive,
+		Priority:      1,
+	}); err != nil {
+		t.Fatalf("Create second account returned error: %v", err)
+	}
+	accountList, err := accountRepo.List()
+	if err != nil {
+		t.Fatalf("List accounts returned error: %v", err)
+	}
+	var assignedID int64
+	for _, account := range accountList {
+		if account.AccountName == "assigned" {
+			assignedID = account.ID
+		}
+	}
+
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for _, account := range accountList {
+		if err := usageRepo.Save(usage.Snapshot{
+			AccountID:      account.ID,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.9,
+		}); err != nil {
+			t.Fatalf("Save snapshot returned error: %v", err)
+		}
+	}
+
+	userRepo := serverusers.NewSQLiteRepository(store.DB())
+	created, err := userRepo.Create("alice")
+	if err != nil {
+		t.Fatalf("Create user returned error: %v", err)
+	}
+	conversationRepo := conversations.NewSQLiteRepository(store.DB())
+	handler := api.WithServerGatewayAuth(userRepo, api.NewGatewayHandler(
+		accountRepo,
+		usageRepo,
+		conversationRepo,
+		api.WithGatewayServerUsers(userRepo),
+	))
+
+	noPoolReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-test",
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	noPoolReq.Header.Set("Content-Type", "application/json")
+	noPoolReq.Header.Set("Authorization", "Bearer "+created.Token)
+	noPoolRec := httptest.NewRecorder()
+	handler.ServeHTTP(noPoolRec, noPoolReq)
+	if noPoolRec.Code != http.StatusForbidden {
+		t.Fatalf("no pool status = %d, want %d; body=%s", noPoolRec.Code, http.StatusForbidden, noPoolRec.Body.String())
+	}
+
+	if err := userRepo.SetAccountAssignments(created.User.ID, []int64{assignedID}); err != nil {
+		t.Fatalf("SetAccountAssignments returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-test",
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+created.Token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("assigned pool status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if firstHits != 0 || secondHits != 1 {
+		t.Fatalf("upstream hits first=%d second=%d, want only assigned second", firstHits, secondHits)
 	}
 }
 
