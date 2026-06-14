@@ -80,6 +80,19 @@ func (r *Repository) List() ([]User, error) {
 	return users, nil
 }
 
+func (r *Repository) Get(id int64) (User, error) {
+	users, err := r.List()
+	if err != nil {
+		return User{}, err
+	}
+	for _, user := range users {
+		if user.ID == id {
+			return user, nil
+		}
+	}
+	return User{}, sql.ErrNoRows
+}
+
 func (r *Repository) Authenticate(token string) (User, error) {
 	hash := HashToken(token)
 	var user User
