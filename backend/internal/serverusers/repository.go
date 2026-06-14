@@ -45,10 +45,20 @@ func (r *Repository) Create(name string) (CreatedUser, error) {
 func (r *Repository) List() ([]User, error) {
 	rows, err := r.db.Query(
 		`SELECT u.id, u.name, u.username, u.token_hash, u.role, u.status, u.created_at, u.last_used_at,
-			COUNT(e.id) AS request_count, COALESCE(SUM(e.total_tokens), 0) AS total_tokens
+			COALESCE(usage_stats.request_count, 0) AS request_count,
+			COALESCE(usage_stats.total_tokens, 0) AS total_tokens,
+			COALESCE(assignment_stats.assigned_accounts, 0) AS assigned_accounts
 		 FROM server_users u
-		 LEFT JOIN usage_events e ON e.server_user_id = u.id
-		 GROUP BY u.id
+		 LEFT JOIN (
+			SELECT server_user_id, COUNT(id) AS request_count, COALESCE(SUM(total_tokens), 0) AS total_tokens
+			FROM usage_events
+			GROUP BY server_user_id
+		 ) usage_stats ON usage_stats.server_user_id = u.id
+		 LEFT JOIN (
+			SELECT user_id, COUNT(account_id) AS assigned_accounts
+			FROM server_user_accounts
+			GROUP BY user_id
+		 ) assignment_stats ON assignment_stats.user_id = u.id
 		 ORDER BY u.id ASC`,
 	)
 	if err != nil {
@@ -58,7 +68,7 @@ func (r *Repository) List() ([]User, error) {
 	users := make([]User, 0)
 	for rows.Next() {
 		var user User
-		if err := rows.Scan(&user.ID, &user.Name, &user.Username, &user.TokenHash, &user.Role, &user.Status, &user.CreatedAt, nullTimeDest(&user.LastUsedAt), &user.RequestCount, &user.TotalTokens); err != nil {
+		if err := rows.Scan(&user.ID, &user.Name, &user.Username, &user.TokenHash, &user.Role, &user.Status, &user.CreatedAt, nullTimeDest(&user.LastUsedAt), &user.RequestCount, &user.TotalTokens, &user.AssignedAccounts); err != nil {
 			return nil, fmt.Errorf("scan server user: %w", err)
 		}
 		normalizeUserFields(&user)
@@ -212,6 +222,65 @@ func (r *Repository) ListAssignedAccounts(userID int64) ([]AssignedAccount, erro
 		return nil, fmt.Errorf("iterate assigned accounts: %w", err)
 	}
 	return assigned, nil
+}
+
+func (r *Repository) ListAccountAssignments(userID int64) ([]AccountAssignment, error) {
+	rows, err := r.db.Query(
+		`SELECT a.id, a.account_name, a.provider_type, a.source_icon, a.base_url, a.status,
+			CASE WHEN sua.account_id IS NULL THEN 0 ELSE 1 END AS assigned,
+			COALESCE(sua.position, 0) AS position,
+			COALESCE(sua.is_active, 0) AS is_active,
+			COALESCE(sua.is_locked, 0) AS is_locked,
+			a.supports_responses, a.cooldown_until, a.cooldown_reason
+		 FROM accounts a
+		 LEFT JOIN server_user_accounts sua ON sua.account_id = a.id AND sua.user_id = ?
+		 ORDER BY assigned DESC, position ASC, a.id ASC`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query account assignments: %w", err)
+	}
+	defer rows.Close()
+
+	assignments := make([]AccountAssignment, 0)
+	for rows.Next() {
+		var item AccountAssignment
+		var assigned int
+		var isActive int
+		var isLocked int
+		var supportsResponses int
+		var cooldown sql.NullTime
+		if err := rows.Scan(
+			&item.AccountID,
+			&item.AccountName,
+			&item.ProviderType,
+			&item.SourceIcon,
+			&item.BaseURL,
+			&item.Status,
+			&assigned,
+			&item.Position,
+			&isActive,
+			&isLocked,
+			&supportsResponses,
+			&cooldown,
+			&item.CooldownReason,
+		); err != nil {
+			return nil, fmt.Errorf("scan account assignment: %w", err)
+		}
+		item.Assigned = assigned == 1
+		item.IsActive = isActive == 1
+		item.IsLocked = isLocked == 1
+		item.SupportsResponses = supportsResponses == 1
+		if cooldown.Valid {
+			value := cooldown.Time.UTC()
+			item.CooldownUntil = &value
+		}
+		assignments = append(assignments, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate account assignments: %w", err)
+	}
+	return assignments, nil
 }
 
 func (r *Repository) SetAccountAssignments(userID int64, accountIDs []int64) error {
