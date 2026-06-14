@@ -116,16 +116,35 @@ export type ServerSession = {
 export type ServerUser = {
   id: number;
   name: string;
+  username?: string;
+  role?: string;
   status: string;
   created_at: string;
   last_used_at?: string;
   request_count?: number;
   total_tokens?: number;
+  assigned_accounts?: number;
 };
 
 export type CreatedServerUser = {
   user: ServerUser;
   token: string;
+};
+
+export type ServerUserAccountAssignment = {
+  account_id: number;
+  account_name: string;
+  provider_type: string;
+  source_icon?: string;
+  base_url?: string;
+  status: string;
+  assigned: boolean;
+  position: number;
+  is_active: boolean;
+  is_locked: boolean;
+  supports_responses: boolean;
+  cooldown_until?: string;
+  cooldown_reason?: string;
 };
 
 export type UsageTrendPoint = {
@@ -1111,6 +1130,27 @@ export async function rotateServerUserToken(id: number): Promise<CreatedServerUs
     throw new Error("failed to rotate server user token");
   }
   return response.json();
+}
+
+export async function listServerUserAccounts(id: number): Promise<ServerUserAccountAssignment[]> {
+  const response = await fetch(apiPath(`/server-users/${id}/accounts`), { credentials: "include" });
+  if (!response.ok) {
+    throw new Error("failed to list server user accounts");
+  }
+  return response.json();
+}
+
+export async function setServerUserAccounts(id: number, accountIDs: number[]): Promise<void> {
+  const response = await fetch(apiPath(`/server-users/${id}/accounts`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ account_ids: accountIDs }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to set server user accounts");
+  }
 }
 
 export async function enableProxy(): Promise<ProxyStatus> {
