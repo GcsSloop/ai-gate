@@ -1,8 +1,8 @@
-import { CopyOutlined, PlusOutlined, ReloadOutlined, StopOutlined } from "@ant-design/icons";
-import { Alert, Button, Input, Modal, Space, Table, Tag, Typography, message } from "antd";
+import { CopyOutlined, PlusOutlined, ReloadOutlined, StopOutlined, TeamOutlined } from "@ant-design/icons";
+import { Alert, Button, Checkbox, Input, Modal, Space, Table, Tag, Typography, message } from "antd";
 import { useEffect, useState } from "react";
 
-import { createServerUser, disableServerUser, listServerUsers, rotateServerUserToken, type ServerUser } from "../../lib/api";
+import { createServerUser, disableServerUser, listServerUserAccounts, listServerUsers, rotateServerUserToken, setServerUserAccounts, type ServerUser, type ServerUserAccountAssignment } from "../../lib/api";
 
 type ServerUsersPageProps = {
   t: (value: string) => string;
@@ -13,6 +13,10 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState("");
   const [issuedToken, setIssuedToken] = useState("");
+  const [assignmentUser, setAssignmentUser] = useState<ServerUser | null>(null);
+  const [assignments, setAssignments] = useState<ServerUserAccountAssignment[]>([]);
+  const [selectedAccountIDs, setSelectedAccountIDs] = useState<number[]>([]);
+  const [assignmentLoading, setAssignmentLoading] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
 
   async function refresh() {
@@ -48,6 +52,34 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
   async function copyToken() {
     await navigator.clipboard.writeText(issuedToken);
     void messageApi.success(t("令牌已复制"));
+  }
+
+  async function openAssignments(user: ServerUser) {
+    setAssignmentUser(user);
+    setAssignmentLoading(true);
+    try {
+      const items = await listServerUserAccounts(user.id);
+      setAssignments(items);
+      setSelectedAccountIDs(items.filter((item) => item.assigned).map((item) => item.account_id));
+    } finally {
+      setAssignmentLoading(false);
+    }
+  }
+
+  async function saveAssignments() {
+    if (!assignmentUser) {
+      return;
+    }
+    setAssignmentLoading(true);
+    try {
+      await setServerUserAccounts(assignmentUser.id, selectedAccountIDs);
+      setAssignmentUser(null);
+      setAssignments([]);
+      setSelectedAccountIDs([]);
+      await refresh();
+    } finally {
+      setAssignmentLoading(false);
+    }
   }
 
   return (
@@ -93,12 +125,16 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
           },
           { title: t("请求数"), dataIndex: "request_count", align: "right" },
           { title: t("总 Tokens"), dataIndex: "total_tokens", align: "right" },
+          { title: t("账户池"), dataIndex: "assigned_accounts", align: "right", render: (value?: number) => value ?? 0 },
           {
             title: t("操作"),
             key: "actions",
             align: "right",
             render: (_: unknown, user: ServerUser) => (
               <Space>
+                <Button icon={<TeamOutlined />} aria-label={t("分配账户")} onClick={() => void openAssignments(user)}>
+                  {t("分配账户")}
+                </Button>
                 <Button icon={<ReloadOutlined />} onClick={() => void handleRotate(user)} />
                 <Button
                   danger
@@ -120,6 +156,34 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
           },
         ]}
       />
+      <Modal
+        open={assignmentUser !== null}
+        title={assignmentUser ? `${t("分配账户")} · ${assignmentUser.name}` : t("分配账户")}
+        okText={t("保存")}
+        cancelText={t("取消")}
+        okButtonProps={{ "aria-label": t("保存") }}
+        confirmLoading={assignmentLoading}
+        onOk={() => void saveAssignments()}
+        onCancel={() => {
+          setAssignmentUser(null);
+          setAssignments([]);
+          setSelectedAccountIDs([]);
+        }}
+      >
+        <Checkbox.Group value={selectedAccountIDs} onChange={(values) => setSelectedAccountIDs(values.map((value) => Number(value)))} className="server-users-assignment-list">
+          <Space orientation="vertical">
+            {assignments.map((item) => (
+              <Checkbox key={item.account_id} value={item.account_id} aria-label={item.account_name}>
+                <Space>
+                  <span>{item.account_name}</span>
+                  <Tag>{item.provider_type}</Tag>
+                  <Tag color={item.status === "active" ? "green" : "default"}>{item.status}</Tag>
+                </Space>
+              </Checkbox>
+            ))}
+          </Space>
+        </Checkbox.Group>
+      </Modal>
     </div>
   );
 }
