@@ -8,10 +8,11 @@ import { ToolingPage } from "./features/tooling/ToolingPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
 import { StatsPage } from "./features/stats/StatsPage";
 import { ServerUsersPage } from "./features/server-users/ServerUsersPage";
+import { UserPoolPage } from "./features/server-users/UserPoolPage";
 import { HomeUpdatePanel } from "./features/updates/HomeUpdatePanel";
 import { createDesktopUpdateService, type DesktopUpdateInfo } from "./features/updates/updateService";
 import appLogo from "./assets/aigate_1024_1024.png";
-import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus, getServerSession, loginServer, logoutServer, refreshAccountUsage, subscribeAccountRoutingStateChanged } from "./lib/api";
+import { type AppSettings, disableProxy, enableProxy, getAppSettings, getProxyStatus, getServerSession, loginServer, loginServerUser, logoutServer, refreshAccountUsage, subscribeAccountRoutingStateChanged } from "./lib/api";
 import { loadDesktopShellContext, refreshDesktopTrayState, subscribeDesktopBackendStateChanged } from "./lib/desktop-shell";
 import { createTranslator, getAntdLocale, normalizeLanguage } from "./lib/i18n";
 import { isServerWebUI, setAPIBase } from "./lib/paths";
@@ -26,7 +27,7 @@ const resumeGapWatchIntervalMs = 5_000;
 const resumeGapThresholdMs = 30_000;
 const hiddenResumeThresholdMs = 15_000;
 
-type AppView = "accounts" | "stats" | "skills" | "mcp" | "settings" | "server-users";
+type AppView = "accounts" | "stats" | "skills" | "mcp" | "settings" | "server-users" | "user-pool";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -52,7 +53,11 @@ export function App() {
   const [homeUpdate, setHomeUpdate] = useState<DesktopUpdateInfo | null>(null);
   const [homeUpdateModalOpen, setHomeUpdateModalOpen] = useState(false);
   const [serverAuthenticated, setServerAuthenticated] = useState(!isServerWebUI());
+  const [serverRole, setServerRole] = useState<"admin" | "user" | null>(isServerWebUI() ? null : "admin");
+  const [serverLoginMode, setServerLoginMode] = useState<"admin" | "user">("admin");
   const [serverPassword, setServerPassword] = useState("");
+  const [serverUsername, setServerUsername] = useState("");
+  const [serverUserToken, setServerUserToken] = useState("");
   const [serverLoginLoading, setServerLoginLoading] = useState(false);
   const serverMode = isServerWebUI();
   const updateService = useMemo(() => createDesktopUpdateService(), []);
@@ -176,12 +181,19 @@ export function App() {
           if (!session.authenticated) {
             if (!disposed) {
               setServerAuthenticated(false);
+              setServerRole(null);
               setShellReady(true);
             }
             return;
           }
           if (!disposed) {
             setServerAuthenticated(true);
+            setServerRole(session.role === "user" ? "user" : "admin");
+            if (session.role === "user") {
+              setView("user-pool");
+              setShellReady(true);
+              return;
+            }
           }
         }
         await Promise.all([refreshProxyState(), bootstrapAppSettingsState()]);
@@ -204,13 +216,24 @@ export function App() {
   }, [messageApi, serverMode]);
 
   async function handleServerLogin() {
-    if (!serverPassword.trim()) {
+    if (serverLoginMode === "admin" && !serverPassword.trim()) {
+      return;
+    }
+    if (serverLoginMode === "user" && (!serverUsername.trim() || !serverUserToken.trim())) {
       return;
     }
     setServerLoginLoading(true);
     try {
+      if (serverLoginMode === "user") {
+        await loginServerUser(serverUsername, serverUserToken);
+        setServerAuthenticated(true);
+        setServerRole("user");
+        setView("user-pool");
+        return;
+      }
       await loginServer(serverPassword);
       setServerAuthenticated(true);
+      setServerRole("admin");
       await Promise.all([refreshProxyState(), bootstrapAppSettingsState()]);
     } catch (error) {
       void messageApi.error(error instanceof Error ? t(error.message) : t("登录失败"));
@@ -222,6 +245,7 @@ export function App() {
   async function handleServerLogout() {
     await logoutServer();
     setServerAuthenticated(false);
+    setServerRole(null);
     setAppSettings(null);
   }
 
@@ -484,7 +508,7 @@ export function App() {
       <AntApp>
         <div className="app-theme-shell" data-theme-mode={resolvedThemeMode} data-theme-preference={themeMode}>
           {contextHolder}
-          {!shellReady || (serverAuthenticated && !appSettings) ? (
+          {!shellReady || (serverAuthenticated && serverRole !== "user" && !appSettings) ? (
             <div className="app-loading">
               <Spin size="large" />
               <span>{t("正在载入设置中心…")}</span>
@@ -494,12 +518,27 @@ export function App() {
               <div className="server-login-panel">
                 <img src={appLogo} alt="AI Gate" className="server-login-logo" />
                 <div className="server-login-title">AI Gate</div>
-                <Input.Password
-                  value={serverPassword}
-                  onChange={(event) => setServerPassword(event.target.value)}
-                  onPressEnter={() => void handleServerLogin()}
-                  placeholder={t("访问密码")}
-                />
+                <Space.Compact block>
+                  <Button type={serverLoginMode === "admin" ? "primary" : "default"} onClick={() => setServerLoginMode("admin")}>
+                    {t("管理员")}
+                  </Button>
+                  <Button type={serverLoginMode === "user" ? "primary" : "default"} onClick={() => setServerLoginMode("user")}>
+                    {t("普通用户")}
+                  </Button>
+                </Space.Compact>
+                {serverLoginMode === "admin" ? (
+                  <Input.Password
+                    value={serverPassword}
+                    onChange={(event) => setServerPassword(event.target.value)}
+                    onPressEnter={() => void handleServerLogin()}
+                    placeholder={t("访问密码")}
+                  />
+                ) : (
+                  <>
+                    <Input value={serverUsername} onChange={(event) => setServerUsername(event.target.value)} onPressEnter={() => void handleServerLogin()} placeholder={t("用户名")} />
+                    <Input.Password value={serverUserToken} onChange={(event) => setServerUserToken(event.target.value)} onPressEnter={() => void handleServerLogin()} placeholder="Token" />
+                  </>
+                )}
                 <Button type="primary" block loading={serverLoginLoading} onClick={() => void handleServerLogin()}>
                   {t("登录")}
                 </Button>
@@ -514,6 +553,21 @@ export function App() {
                     <div className="brand">AI Gate</div>
                   </a>
                   <div className="menu-pill-group top-view-switcher" role="tablist" aria-label={t("主导航")}>
+                    {serverRole === "user" ? (
+                      <Tooltip title={t("我的网关")} placement="bottom">
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-label={t("我的网关")}
+                          aria-selected={view === "user-pool"}
+                          className={view === "user-pool" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
+                          onClick={() => setView("user-pool")}
+                        >
+                          <TeamOutlined />
+                        </button>
+                      </Tooltip>
+                    ) : (
+                    <>
                     <Tooltip title={t("账户")} placement="bottom">
                       <button
                         type="button"
@@ -587,10 +641,12 @@ export function App() {
                           className={view === "server-users" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
                           onClick={() => setView("server-users")}
                         >
-                          <TeamOutlined />
-                        </button>
-                      </Tooltip>
-                    ) : null}
+                        <TeamOutlined />
+                      </button>
+                    </Tooltip>
+                  ) : null}
+                  </>
+                  )}
                   </div>
                 </div>
 
@@ -618,24 +674,28 @@ export function App() {
                       <Switch checked={proxyEnabled} loading={proxyLoading} onChange={(checked) => void handleToggleProxy(checked)} />
                     </div>
                   ) : null}
-                  <Dropdown
-                    trigger={["click"]}
-                    menu={{
-                      items: [
-                        { key: "official", label: t("官方账户") },
-                        { key: "third_party", label: t("第三方账户") },
-                        { key: "shared_import", label: t("导入账户") },
-                      ],
-                      onClick: ({ key }) => setAddModalMode(key as "official" | "third_party" | "shared_import"),
-                    }}
-                  >
-                    <Button type="primary" shape="circle" icon={<PlusOutlined />} aria-label={t("添加账户")} className="global-add-button" />
-                  </Dropdown>
+                  {serverRole !== "user" ? (
+                    <Dropdown
+                      trigger={["click"]}
+                      menu={{
+                        items: [
+                          { key: "official", label: t("官方账户") },
+                          { key: "third_party", label: t("第三方账户") },
+                          { key: "shared_import", label: t("导入账户") },
+                        ],
+                        onClick: ({ key }) => setAddModalMode(key as "official" | "third_party" | "shared_import"),
+                      }}
+                    >
+                      <Button type="primary" shape="circle" icon={<PlusOutlined />} aria-label={t("添加账户")} className="global-add-button" />
+                    </Dropdown>
+                  ) : null}
                 </div>
               </header>
 
               <div className="app-content-scroll">
-                {view === "stats" ? (
+                {serverRole === "user" ? (
+                  <UserPoolPage t={t} />
+                ) : view === "stats" ? (
                   <StatsPage language={language} t={t} />
                 ) : view === "server-users" ? (
                   <ServerUsersPage t={t} />

@@ -82,6 +82,15 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
     }
   }
 
+  function toggleSelectedAccount(accountID: number, checked: boolean) {
+    setSelectedAccountIDs((current) => {
+      if (checked) {
+        return current.includes(accountID) ? current : [...current, accountID];
+      }
+      return current.filter((value) => value !== accountID);
+    });
+  }
+
   return (
     <div className="page-surface">
       {contextHolder}
@@ -170,19 +179,17 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
           setSelectedAccountIDs([]);
         }}
       >
-        <Checkbox.Group value={selectedAccountIDs} onChange={(values) => setSelectedAccountIDs(values.map((value) => Number(value)))} className="server-users-assignment-list">
-          <Space orientation="vertical">
-            {assignments.map((item) => (
-              <Checkbox key={item.account_id} value={item.account_id} aria-label={item.account_name}>
-                <Space>
-                  <span>{item.account_name}</span>
-                  <Tag>{item.provider_type}</Tag>
-                  <Tag color={item.status === "active" ? "green" : "default"}>{item.status}</Tag>
-                </Space>
-              </Checkbox>
-            ))}
-          </Space>
-        </Checkbox.Group>
+        <Space orientation="vertical" className="server-users-assignment-list">
+          {assignments.map((item) => (
+            <Checkbox key={item.account_id} checked={selectedAccountIDs.includes(item.account_id)} aria-label={item.account_name} onChange={(event) => toggleSelectedAccount(item.account_id, event.target.checked)}>
+              <Space>
+                <span>{item.account_name}</span>
+                <Tag>{item.provider_type}</Tag>
+                <Tag color={item.status === "active" ? "green" : "default"}>{item.status}</Tag>
+              </Space>
+            </Checkbox>
+          ))}
+        </Space>
       </Modal>
     </div>
   );
