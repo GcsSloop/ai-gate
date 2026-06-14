@@ -1,5 +1,5 @@
 import { CopyOutlined, PlusOutlined, ReloadOutlined, StopOutlined, TeamOutlined } from "@ant-design/icons";
-import { Alert, Button, Checkbox, Input, Modal, Space, Table, Tag, Typography, message } from "antd";
+import { Alert, Button, Input, Modal, Space, Table, Tag, Typography, message } from "antd";
 import { useEffect, useState } from "react";
 
 import { createServerUser, disableServerUser, listServerUserAccounts, listServerUsers, rotateServerUserToken, setServerUserAccounts, type ServerUser, type ServerUserAccountAssignment } from "../../lib/api";
@@ -181,13 +181,14 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
       >
         <Space orientation="vertical" className="server-users-assignment-list">
           {assignments.map((item) => (
-            <Checkbox key={item.account_id} checked={selectedAccountIDs.includes(item.account_id)} aria-label={item.account_name} onChange={(event) => toggleSelectedAccount(item.account_id, event.target.checked)}>
+            <label key={item.account_id} className="server-users-assignment-row">
               <Space>
+                <input type="checkbox" checked={selectedAccountIDs.includes(item.account_id)} aria-label={item.account_name} onChange={(event) => toggleSelectedAccount(item.account_id, event.target.checked)} />
                 <span>{item.account_name}</span>
                 <Tag>{item.provider_type}</Tag>
                 <Tag color={item.status === "active" ? "green" : "default"}>{item.status}</Tag>
               </Space>
-            </Checkbox>
+            </label>
           ))}
         </Space>
       </Modal>
