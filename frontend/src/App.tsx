@@ -1,5 +1,5 @@
 import { BarChartOutlined, CloudDownloadOutlined, DeploymentUnitOutlined, LogoutOutlined, PlusOutlined, ReadOutlined, SettingOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
-import { App as AntApp, Button, ConfigProvider, Dropdown, Input, Modal, Spin, Switch, Tooltip, message, theme as antdTheme } from "antd";
+import { App as AntApp, Button, ConfigProvider, Dropdown, Input, Modal, Space, Spin, Switch, Tooltip, message, theme as antdTheme } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
