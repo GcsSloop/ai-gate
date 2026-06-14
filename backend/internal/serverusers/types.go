@@ -43,6 +43,22 @@ type AssignedAccount struct {
 	CredentialRef     string     `json:"-"`
 }
 
+type AccountAssignment struct {
+	AccountID         int64      `json:"account_id"`
+	AccountName       string     `json:"account_name"`
+	ProviderType      string     `json:"provider_type"`
+	SourceIcon        string     `json:"source_icon"`
+	BaseURL           string     `json:"base_url,omitempty"`
+	Status            string     `json:"status"`
+	Assigned          bool       `json:"assigned"`
+	Position          int        `json:"position"`
+	IsActive          bool       `json:"is_active"`
+	IsLocked          bool       `json:"is_locked"`
+	SupportsResponses bool       `json:"supports_responses"`
+	CooldownUntil     *time.Time `json:"cooldown_until,omitempty"`
+	CooldownReason    string     `json:"cooldown_reason,omitempty"`
+}
+
 type AccountStateUpdate struct {
 	Position int  `json:"position"`
 	IsActive bool `json:"is_active"`
