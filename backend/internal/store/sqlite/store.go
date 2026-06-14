@@ -124,6 +124,8 @@ func (s *Store) migrate() error {
 		{table: "accounts", name: "usage_driver", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "accounts", name: "usage_config_json", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "accounts", name: "cooldown_reason", definition: "TEXT NOT NULL DEFAULT ''"},
+		{table: "server_users", name: "username", definition: "TEXT NOT NULL DEFAULT ''"},
+		{table: "server_users", name: "role", definition: "TEXT NOT NULL DEFAULT 'user'"},
 		{table: "app_settings", name: "show_home_update_indicator", definition: "INTEGER NOT NULL DEFAULT 1"},
 		{table: "app_settings", name: "status_refresh_interval_seconds", definition: "INTEGER NOT NULL DEFAULT 60"},
 		{table: "app_settings", name: "usage_request_timeout_seconds", definition: "INTEGER NOT NULL DEFAULT 15"},
@@ -152,6 +154,9 @@ func (s *Store) migrate() error {
 	}
 	if _, err := s.db.Exec(`UPDATE accounts SET status = 'active' WHERE status = 'cooldown'`); err != nil {
 		return fmt.Errorf("normalize account cooldown status: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE server_users SET username = name WHERE username = ''`); err != nil {
+		return fmt.Errorf("backfill server user usernames: %w", err)
 	}
 	return nil
 }

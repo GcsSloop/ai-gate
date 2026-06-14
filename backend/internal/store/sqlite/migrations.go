@@ -73,10 +73,22 @@ var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS server_users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
+		username TEXT NOT NULL DEFAULT '',
 		token_hash TEXT NOT NULL UNIQUE,
+		role TEXT NOT NULL DEFAULT 'user',
 		status TEXT NOT NULL DEFAULT 'active',
 		last_used_at DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`,
+	`CREATE TABLE IF NOT EXISTS server_user_accounts (
+		user_id INTEGER NOT NULL,
+		account_id INTEGER NOT NULL,
+		position INTEGER NOT NULL DEFAULT 0,
+		is_active INTEGER NOT NULL DEFAULT 0,
+		is_locked INTEGER NOT NULL DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (user_id, account_id)
 	);`,
 	`CREATE TABLE IF NOT EXISTS usage_rollups_hourly (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
