@@ -24,6 +24,7 @@ import (
 	providercodex "github.com/gcssloop/codex-router/backend/internal/providers/codex"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/routing"
+	"github.com/gcssloop/codex-router/backend/internal/serverusers"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 	"github.com/gcssloop/codex-router/backend/internal/usage/normalize"
@@ -59,11 +60,16 @@ type ResponsesRuns interface {
 	ListMessages(conversationID int64) ([]conversations.Message, error)
 }
 
+type ResponsesServerUsers interface {
+	ListAssignedAccounts(userID int64) ([]serverusers.AssignedAccount, error)
+}
+
 type ResponsesHandler struct {
 	accounts      ResponsesAccounts
 	usage         ResponsesUsage
 	conversations ResponsesRuns
 	settings      settings.ReadRepository
+	serverUsers   ResponsesServerUsers
 	client        *http.Client
 	stateEvents   *StateEventBus
 }
@@ -87,6 +93,12 @@ func WithResponsesSettings(repo settings.ReadRepository) ResponsesHandlerOption 
 func WithResponsesStateEvents(bus *StateEventBus) ResponsesHandlerOption {
 	return func(handler *ResponsesHandler) {
 		handler.stateEvents = bus
+	}
+}
+
+func WithResponsesServerUsers(repo ResponsesServerUsers) ResponsesHandlerOption {
+	return func(handler *ResponsesHandler) {
+		handler.serverUsers = repo
 	}
 }
 
@@ -142,8 +154,12 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *ResponsesHandler) handleResponsesTransparentSubpath(w http.ResponseWriter, r *http.Request) {
-	account, err := h.selectThinGatewayAccount()
+	account, err := h.selectThinGatewayAccount(r.Context())
 	if err != nil {
+		if errors.Is(err, errServerUserNoAssignedAccounts) {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
 		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
 			writeThinGatewayUnsupported(w, err.Error())
 			return
@@ -187,6 +203,10 @@ func (h *ResponsesHandler) handleResponsesTransparentSubpath(w http.ResponseWrit
 func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Request, req gatewayopenai.ResponsesRequest, rawBody []byte) {
 	candidates, err := h.orderedThinGatewayCandidates(r.Context())
 	if err != nil {
+		if errors.Is(err, errServerUserNoAssignedAccounts) {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
 		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
 			writeThinGatewayUnsupported(w, err.Error())
 			return
@@ -491,10 +511,17 @@ func shouldRetryOfficialResponsesTransportError(account accounts.Account, err er
 	return usesOfficialCodexAdapter(account) && errors.Is(err, io.EOF)
 }
 
-func (h *ResponsesHandler) selectThinGatewayAccount() (accounts.Account, error) {
+func (h *ResponsesHandler) selectThinGatewayAccount(ctx context.Context) (accounts.Account, error) {
 	accountList, err := h.accounts.List()
 	if err != nil {
 		return accounts.Account{}, err
+	}
+	accountList, err = h.filterAccountsForServerUser(ctx, accountList)
+	if err != nil {
+		return accounts.Account{}, err
+	}
+	if len(accountList) == 0 {
+		return accounts.Account{}, errServerUserNoAssignedAccounts
 	}
 	if h.autoFailoverEnabled() {
 		ordered, err := settings.OrderCandidates(h.settings, h.buildCandidates(accountList))
@@ -548,6 +575,13 @@ func (h *ResponsesHandler) orderedThinGatewayCandidates(ctx context.Context) ([]
 	if err != nil {
 		return nil, err
 	}
+	accountList, err = h.filterAccountsForServerUser(ctx, accountList)
+	if err != nil {
+		return nil, err
+	}
+	if len(accountList) == 0 {
+		return nil, errServerUserNoAssignedAccounts
+	}
 	candidates := h.buildCandidates(accountList)
 	if user, ok := ServerUserFromContext(ctx); ok {
 		return routing.RotateCandidatesForUser(orderCandidatesByPriority(candidates), user.ID), nil
@@ -590,6 +624,39 @@ func (h *ResponsesHandler) nextThinFailoverTarget(candidates []routing.Candidate
 		return candidate, true
 	}
 	return routing.Candidate{}, false
+}
+
+func (h *ResponsesHandler) filterAccountsForServerUser(ctx context.Context, accountList []accounts.Account) ([]accounts.Account, error) {
+	user, ok := ServerUserFromContext(ctx)
+	if !ok {
+		return accountList, nil
+	}
+	if h.serverUsers == nil {
+		return nil, errors.New("server user account pool is not configured")
+	}
+	assigned, err := h.serverUsers.ListAssignedAccounts(user.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(assigned) == 0 {
+		return nil, errServerUserNoAssignedAccounts
+	}
+	byID := make(map[int64]accounts.Account, len(accountList))
+	for _, account := range accountList {
+		byID[account.ID] = account
+	}
+	filtered := make([]accounts.Account, 0, len(assigned))
+	for _, item := range assigned {
+		account, ok := byID[item.AccountID]
+		if !ok {
+			continue
+		}
+		account.Priority = len(assigned) - item.Position
+		account.IsActive = item.IsActive
+		account.IsLocked = item.IsLocked
+		filtered = append(filtered, account)
+	}
+	return filtered, nil
 }
 
 func copyResponseHeaders(dst, src http.Header) {
@@ -784,8 +851,12 @@ func (h *ResponsesHandler) handleModelDetail(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *ResponsesHandler) handleModelsPassthrough(w http.ResponseWriter, r *http.Request, endpointPath string) {
-	account, err := h.selectThinGatewayAccount()
+	account, err := h.selectThinGatewayAccount(r.Context())
 	if err != nil {
+		if errors.Is(err, errServerUserNoAssignedAccounts) {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
 		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
 			writeThinGatewayUnsupported(w, err.Error())
 			return
