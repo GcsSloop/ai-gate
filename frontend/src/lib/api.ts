@@ -111,6 +111,9 @@ export type UsageDashboardSummary = {
 
 export type ServerSession = {
   authenticated: boolean;
+  role?: "admin" | "user";
+  user_id?: number;
+  username?: string;
 };
 
 export type ServerUser = {
@@ -129,6 +132,28 @@ export type ServerUser = {
 export type CreatedServerUser = {
   user: ServerUser;
   token: string;
+};
+
+export type ServerMe = {
+  user: ServerUser;
+  request_count: number;
+  total_tokens: number;
+};
+
+export type ServerAssignedAccount = {
+  user_id: number;
+  account_id: number;
+  account_name: string;
+  provider_type: string;
+  source_icon?: string;
+  base_url?: string;
+  status: string;
+  position: number;
+  is_active: boolean;
+  is_locked: boolean;
+  supports_responses: boolean;
+  cooldown_until?: string;
+  cooldown_reason?: string;
 };
 
 export type ServerUserAccountAssignment = {
@@ -1082,6 +1107,20 @@ export async function loginServer(password: string): Promise<void> {
   }
 }
 
+export async function loginServerUser(username: string, token: string): Promise<ServerSession> {
+  const response = await fetch(authPath("/user-login"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ username, token }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "login failed");
+  }
+  return response.json();
+}
+
 export async function logoutServer(): Promise<void> {
   await fetch(authPath("/logout"), {
     method: "POST",
@@ -1150,6 +1189,38 @@ export async function setServerUserAccounts(id: number, accountIDs: number[]): P
   if (!response.ok) {
     const details = await response.text();
     throw new Error(details || "failed to set server user accounts");
+  }
+}
+
+export async function getServerMe(): Promise<ServerMe> {
+  const response = await fetch(apiPath("/me"), { credentials: "include" });
+  if (!response.ok) {
+    throw new Error("failed to load current server user");
+  }
+  return response.json();
+}
+
+export async function listMyServerAccounts(): Promise<ServerAssignedAccount[]> {
+  const response = await fetch(apiPath("/me/accounts"), { credentials: "include" });
+  if (!response.ok) {
+    throw new Error("failed to list assigned accounts");
+  }
+  return response.json();
+}
+
+export async function updateMyServerAccountState(
+  accountID: number,
+  payload: { position: number; is_active: boolean; is_locked: boolean },
+): Promise<void> {
+  const response = await fetch(apiPath(`/me/accounts/${accountID}/state`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to update assigned account state");
   }
 }
 
