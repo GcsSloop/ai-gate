@@ -247,12 +247,22 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	})
 	webuiHandler := webui.Handler(httpPrefix)
 	apiHandler := http.Handler(http.StripPrefix(httpPrefix+"/api", apiMux))
+	var userAPIHandler http.Handler
 	if cfg.ServerMode {
-		authManager := serverauth.NewManager(cfg.ServerPassword, 12*time.Hour)
+		authManager := serverauth.NewManagerWithUsers(cfg.ServerPassword, 12*time.Hour, serverUserRepo)
 		mux.Handle(httpPrefix+"/auth/", withCORS(http.StripPrefix(httpPrefix+"/auth", authManager)))
 		apiHandler = authManager.RequireSession(apiHandler)
+		userAPIMux := http.NewServeMux()
+		meHandler := api.NewServerMeHandler(serverUserRepo)
+		userAPIMux.Handle("/me", meHandler)
+		userAPIMux.Handle("/me/", meHandler)
+		userAPIHandler = authManager.RequireUserSession(http.StripPrefix(httpPrefix+"/api", userAPIMux))
 	}
 	mux.Handle(httpPrefix+"/webui/", webuiHandler)
+	if cfg.ServerMode {
+		mux.Handle(httpPrefix+"/api/me", withCORS(withLANShareAccessControl(settingsRepo, userAPIHandler)))
+		mux.Handle(httpPrefix+"/api/me/", withCORS(withLANShareAccessControl(settingsRepo, userAPIHandler)))
+	}
 	mux.Handle(httpPrefix+"/api/", withCORS(withLANShareAccessControl(settingsRepo, apiHandler)))
 	if cfg.ServerMode {
 		gatewayHandler := api.WithServerGatewayAuth(serverUserRepo, http.StripPrefix(httpPrefix, gatewayMux))
