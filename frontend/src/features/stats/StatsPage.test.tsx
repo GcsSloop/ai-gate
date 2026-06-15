@@ -130,4 +130,17 @@ describe("StatsPage", () => {
       expect(getDashboardRecentEvents).toHaveBeenLastCalledWith("24h", undefined, "", 20, 11);
     });
   });
+
+  it("loads yearly dashboard statistics when the yearly range is selected", async () => {
+    render(<StatsPage language="zh-CN" t={t} />);
+
+    fireEvent.click(await screen.findByText("1y"));
+
+    await waitFor(() => {
+      expect(getDashboardSummary).toHaveBeenLastCalledWith("1y", undefined, "", undefined);
+      expect(getDashboardTrends).toHaveBeenLastCalledWith("1y", undefined, "", undefined);
+      expect(getDashboardModelDistribution).toHaveBeenLastCalledWith("1y", undefined, "", undefined);
+      expect(getDashboardRecentEvents).toHaveBeenLastCalledWith("1y", undefined, "", 20, undefined);
+    });
+  });
 });

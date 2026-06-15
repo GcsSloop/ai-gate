@@ -193,6 +193,10 @@ func resolveDashboardRange(now time.Time, rangeKey string) (time.Time, time.Time
 		end := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
 		start := end.AddDate(0, 0, -30)
 		return start.UTC(), end.UTC(), 24 * time.Hour
+	case "1y":
+		end := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+		start := end.AddDate(-1, 0, 0)
+		return start.UTC(), end.UTC(), 24 * time.Hour
 	default:
 		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 		end := start.Add(24 * time.Hour)

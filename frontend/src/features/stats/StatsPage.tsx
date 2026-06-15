@@ -164,6 +164,7 @@ export function StatsPage({ language, t, serverMode = false }: StatsPageProps) {
               { label: "24h", value: "24h" },
               { label: "7d", value: "7d" },
               { label: "30d", value: "30d" },
+              { label: "1y", value: "1y" },
             ]}
             value={rangeHours}
             onChange={(value) => setRangeHours(value as RangeOption)}
