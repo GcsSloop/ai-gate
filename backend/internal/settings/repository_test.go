@@ -70,7 +70,6 @@ func TestRepositoryPersistsAppSettingsAndQueue(t *testing.T) {
 		UpstreamProxyURL:             "http://127.0.0.1:7890",
 		UpstreamProxyUsername:        "proxy-user",
 		UpstreamProxyPassword:        "proxy-pass",
-		UpstreamSkipTLSVerify:        true,
 		AutoFailoverEnabled:          true,
 		AutoBackupIntervalHours:      12,
 		BackupRetentionCount:         7,

@@ -531,6 +531,11 @@ describe("AccountsPage", () => {
     expect(
       within(thirdPartyModal).queryByLabelText("原生 /responses"),
     ).not.toBeInTheDocument();
+    const tlsSwitch = within(thirdPartyModal).getByRole("switch", {
+      name: "跳过 TLS 证书校验",
+    });
+    expect(tlsSwitch).not.toBeChecked();
+    fireEvent.click(tlsSwitch);
     fireEvent.change(within(thirdPartyModal).getByLabelText("账户名称"), {
       target: { value: "ppchat-main" },
     });
@@ -557,6 +562,7 @@ describe("AccountsPage", () => {
             base_url: "https://code.ppchat.vip/v1",
             credential_ref: "sk-test",
             supports_responses: true,
+            skip_tls_verify: true,
           }),
         }),
       );
@@ -582,6 +588,7 @@ describe("AccountsPage", () => {
             usage_driver: "",
             usage_config_json: "",
             supports_responses: true,
+            skip_tls_verify: false,
           }),
         }),
       );
@@ -1509,6 +1516,7 @@ describe("AccountsPage", () => {
             usage_config_json:
               '{"script":"managed:vendor_shared","endpoint":"https://usage.example.test/v1/usage"}',
             supports_responses: true,
+            skip_tls_verify: false,
           }),
         }),
       );

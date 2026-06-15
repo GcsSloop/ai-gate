@@ -24,6 +24,7 @@ import {
   Modal,
   Select,
   Statistic,
+  Switch,
   Tag,
   Tooltip,
   Typography,
@@ -1231,6 +1232,7 @@ export function AccountsPage({
     account_name: string;
     base_url: string;
     credential_ref: string;
+    skip_tls_verify?: boolean;
   }) {
     await createAccount({
       provider_type: "openai-compatible",
@@ -1240,6 +1242,7 @@ export function AccountsPage({
       base_url: values.base_url,
       credential_ref: values.credential_ref,
       supports_responses: true,
+      skip_tls_verify: values.skip_tls_verify ?? false,
     });
     try {
       await refreshAccountUsage();
@@ -1458,6 +1461,7 @@ export function AccountsPage({
       base_url: account.base_url,
       credential_ref: "",
       usage_driver: account.usage_driver === "lua" ? "lua" : "",
+      skip_tls_verify: account.skip_tls_verify ?? false,
     });
     testForm.setFieldsValue({
       model: getDefaultTestModel(account),
@@ -1471,6 +1475,7 @@ export function AccountsPage({
     base_url: string;
     credential_ref?: string;
     usage_driver?: string;
+    skip_tls_verify?: boolean;
   }) {
     if (!editingAccount) {
       return;
@@ -1502,6 +1507,7 @@ export function AccountsPage({
       usage_driver: usageDriver,
       usage_config_json: usageConfigJSON,
       supports_responses: true,
+      skip_tls_verify: values.skip_tls_verify ?? false,
     });
     setEditingAccount(null);
     editForm.resetFields();
@@ -2237,7 +2243,7 @@ export function AccountsPage({
         <Form
           form={thirdPartyForm}
           layout="vertical"
-          initialValues={{ base_url: defaultBaseURL }}
+          initialValues={{ base_url: defaultBaseURL, skip_tls_verify: false }}
           onFinish={(values) => void handleCreateThirdParty(values)}
         >
           <Form.Item
@@ -2260,6 +2266,14 @@ export function AccountsPage({
             rules={[{ required: true, message: t("请输入 API Key") }]}
           >
             <Input.Password />
+          </Form.Item>
+          <Form.Item
+            label={t("跳过 TLS 证书校验")}
+            name="skip_tls_verify"
+            valuePropName="checked"
+            extra={t("仅在该账户上游使用自签名或不合规证书时开启。")}
+          >
+            <Switch aria-label={t("跳过 TLS 证书校验")} />
           </Form.Item>
           <div className="modal-footer">
             <Button onClick={() => setInternalAddModalMode(null)}>
@@ -2482,6 +2496,14 @@ export function AccountsPage({
           </Form.Item>
           <Form.Item label={t("API Key / Token")} name="credential_ref">
             <Input.Password placeholder={t("留空表示不修改")} />
+          </Form.Item>
+          <Form.Item
+            label={t("跳过 TLS 证书校验")}
+            name="skip_tls_verify"
+            valuePropName="checked"
+            extra={t("仅在该账户上游使用自签名或不合规证书时开启。")}
+          >
+            <Switch aria-label={t("跳过 TLS 证书校验")} />
           </Form.Item>
           <Form.Item label={t("用量驱动")} name="usage_driver">
             <Select

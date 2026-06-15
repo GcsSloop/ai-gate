@@ -119,6 +119,7 @@ func (s *Store) migrate() error {
 		{table: "accounts", name: "is_active", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "accounts", name: "is_locked", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "accounts", name: "supports_responses", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "accounts", name: "skip_tls_verify", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "accounts", name: "source_icon", definition: "TEXT NOT NULL DEFAULT 'openai'"},
 		{table: "accounts", name: "account_driver", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "accounts", name: "usage_driver", definition: "TEXT NOT NULL DEFAULT ''"},

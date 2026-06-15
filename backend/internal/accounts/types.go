@@ -43,6 +43,7 @@ type Account struct {
 	IsActive          bool
 	IsLocked          bool
 	SupportsResponses bool
+	SkipTLSVerify     bool
 	CooldownUntil     *time.Time
 	CooldownReason    string
 	CreatedAt         time.Time

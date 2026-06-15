@@ -188,7 +188,7 @@ func (h *ResponsesHandler) handleResponsesTransparentSubpath(w http.ResponseWrit
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	resp, err := h.client.Do(upstreamReq)
+	resp, err := doAccountRequest(h.client, upstreamReq, account)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -440,7 +440,7 @@ func (h *ResponsesHandler) executeThinResponsesUpstreamRequest(ctx context.Conte
 		if err != nil {
 			return nil, err
 		}
-		resp, err := h.client.Do(upstreamReq)
+		resp, err := doAccountRequest(h.client, upstreamReq, account)
 		if err == nil {
 			return resp, nil
 		}
@@ -880,7 +880,7 @@ func (h *ResponsesHandler) handleModelsPassthrough(w http.ResponseWriter, r *htt
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	resp, err := h.client.Do(upstreamReq)
+	resp, err := doAccountRequest(h.client, upstreamReq, account)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
