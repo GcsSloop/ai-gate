@@ -17,8 +17,10 @@ LIST_FILE="${OUT_DIR}/artifact-list.txt"
 unzip -l "${ARTIFACT}" >"${LIST_FILE}"
 grep -q "daemon.json" "${LIST_FILE}"
 unzip -p "${ARTIFACT}" daemon.json | grep -q '"name": "ai-gate"'
+unzip -p "${ARTIFACT}" daemon.json | grep -q '"icon": "./icon.png"'
 unzip -p "${ARTIFACT}" daemon.json | grep -q '"apiPrefix": "/ai-gate"'
 unzip -p "${ARTIFACT}" daemon.json | grep -q '"./data"'
 grep -q "backend/ai-gate" "${LIST_FILE}"
+grep -q "icon.png" "${LIST_FILE}"
 
 echo "build_ai_gate_msvc_test passed"

@@ -20,6 +20,11 @@ type UserStore interface {
 	AuthenticateLogin(username string, token string) (serverusers.User, error)
 }
 
+type PasswordStore interface {
+	LoadOrInitialize(initialPassword string) (string, error)
+	Save(password string) error
+}
+
 type Session struct {
 	Authenticated bool   `json:"authenticated"`
 	Role          string `json:"role,omitempty"`
@@ -34,11 +39,12 @@ type sessionRecord struct {
 }
 
 type Manager struct {
-	password string
-	ttl      time.Duration
-	users    UserStore
-	mu       sync.Mutex
-	sessions map[string]sessionRecord
+	password      string
+	ttl           time.Duration
+	users         UserStore
+	passwordStore PasswordStore
+	mu            sync.Mutex
+	sessions      map[string]sessionRecord
 }
 
 func NewManager(password string, ttl time.Duration) *Manager {
@@ -46,14 +52,19 @@ func NewManager(password string, ttl time.Duration) *Manager {
 }
 
 func NewManagerWithUsers(password string, ttl time.Duration, users UserStore) *Manager {
+	return NewManagerWithUsersAndPasswordStore(password, ttl, users, nil)
+}
+
+func NewManagerWithUsersAndPasswordStore(password string, ttl time.Duration, users UserStore, passwordStore PasswordStore) *Manager {
 	if ttl <= 0 {
 		ttl = 12 * time.Hour
 	}
 	return &Manager{
-		password: strings.TrimSpace(password),
-		ttl:      ttl,
-		users:    users,
-		sessions: make(map[string]sessionRecord),
+		password:      strings.TrimSpace(password),
+		ttl:           ttl,
+		users:         users,
+		passwordStore: passwordStore,
+		sessions:      make(map[string]sessionRecord),
 	}
 }
 
@@ -155,6 +166,12 @@ func (m *Manager) changePassword(w http.ResponseWriter, r *http.Request) {
 	if subtle.ConstantTimeCompare([]byte(payload.CurrentPassword), []byte(m.password)) != 1 {
 		http.Error(w, "invalid current password", http.StatusUnauthorized)
 		return
+	}
+	if m.passwordStore != nil {
+		if err := m.passwordStore.Save(newPassword); err != nil {
+			http.Error(w, "save password: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	m.password = newPassword
 	writeJSON(w, http.StatusOK, map[string]any{"updated": true})

@@ -211,6 +211,90 @@ func TestNewAppServerModeUsesAIGatePrefixAndGateway(t *testing.T) {
 	}
 }
 
+func TestNewAppServerModePersistsAdminPasswordEncryptedInDataDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "data", "aigate.sqlite")
+	passwordPath := filepath.Join(root, "data", "server-password.enc")
+
+	app, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
+		ListenAddr:             "127.0.0.1:0",
+		DatabasePath:           dbPath,
+		ServerMode:             true,
+		HTTPPrefix:             "/ai-gate",
+		ProxyEnabledByDefault:  true,
+		SkipCodexConfigChanges: true,
+		ServerPassword:         "server-secret",
+	})
+	if err != nil {
+		t.Fatalf("NewApp returned error: %v", err)
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/ai-gate/auth/login", strings.NewReader(`{"password":"server-secret"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("POST /ai-gate/auth/login status = %d, want %d; body=%s", loginRec.Code, http.StatusOK, loginRec.Body.String())
+	}
+	cookies := loginRec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("POST /ai-gate/auth/login returned no cookies")
+	}
+
+	changeReq := httptest.NewRequest(http.MethodPut, "/ai-gate/auth/password", strings.NewReader(`{"current_password":"server-secret","new_password":"new-secret"}`))
+	changeReq.Header.Set("Content-Type", "application/json")
+	changeReq.AddCookie(cookies[0])
+	changeRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(changeRec, changeReq)
+	if changeRec.Code != http.StatusOK {
+		t.Fatalf("PUT /ai-gate/auth/password status = %d, want %d; body=%s", changeRec.Code, http.StatusOK, changeRec.Body.String())
+	}
+	if err := app.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	encrypted, err := os.ReadFile(passwordPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) returned error: %v", passwordPath, err)
+	}
+	if bytes.Contains(encrypted, []byte("server-secret")) || bytes.Contains(encrypted, []byte("new-secret")) {
+		t.Fatalf("password store contains plaintext password: %s", string(encrypted))
+	}
+
+	restarted, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
+		ListenAddr:             "127.0.0.1:0",
+		DatabasePath:           dbPath,
+		ServerMode:             true,
+		HTTPPrefix:             "/ai-gate",
+		ProxyEnabledByDefault:  true,
+		SkipCodexConfigChanges: true,
+		ServerPassword:         "server-secret",
+	})
+	if err != nil {
+		t.Fatalf("NewApp after restart returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = restarted.Close()
+	})
+
+	oldLoginReq := httptest.NewRequest(http.MethodPost, "/ai-gate/auth/login", strings.NewReader(`{"password":"server-secret"}`))
+	oldLoginReq.Header.Set("Content-Type", "application/json")
+	oldLoginRec := httptest.NewRecorder()
+	restarted.Handler().ServeHTTP(oldLoginRec, oldLoginReq)
+	if oldLoginRec.Code != http.StatusUnauthorized {
+		t.Fatalf("old password login status = %d, want %d", oldLoginRec.Code, http.StatusUnauthorized)
+	}
+
+	newLoginReq := httptest.NewRequest(http.MethodPost, "/ai-gate/auth/login", strings.NewReader(`{"password":"new-secret"}`))
+	newLoginReq.Header.Set("Content-Type", "application/json")
+	newLoginRec := httptest.NewRecorder()
+	restarted.Handler().ServeHTTP(newLoginRec, newLoginReq)
+	if newLoginRec.Code != http.StatusOK {
+		t.Fatalf("new password login status = %d, want %d; body=%s", newLoginRec.Code, http.StatusOK, newLoginRec.Body.String())
+	}
+}
+
 func TestNewAppServerModeRequiresPassword(t *testing.T) {
 	_, err := bootstrap.NewApp(context.Background(), bootstrap.Config{
 		ListenAddr:   "127.0.0.1:0",
