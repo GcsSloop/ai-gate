@@ -62,6 +62,47 @@ describe("SettingsPage", () => {
     setAPIBase("/ai-router/api");
   });
 
+  it("lets an authenticated admin change the server password", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/api/settings/database/backups") {
+        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url === "/ai-router/auth/password" && init?.method === "PUT") {
+        return Promise.resolve(new Response(JSON.stringify({ updated: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.mocked(getAppMetadata).mockResolvedValue({
+      name: "AI Gate",
+      version: "0.1.0",
+      description: "桌面代理与路由控制台",
+      author: "GcsSloop",
+    });
+    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
+    vi.mocked(applyDesktopAppSettings).mockResolvedValue(null);
+
+    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
+
+    fireEvent.change(await screen.findByLabelText("当前管理员密码"), { target: { value: "old-secret" } });
+    fireEvent.change(screen.getByLabelText("新管理员密码"), { target: { value: "new-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "修改管理员密码" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/auth/password",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ current_password: "old-secret", new_password: "new-secret" }),
+        }),
+      );
+    });
+  });
+
   it("renders new settings sections and saves desktop-bound app settings", async () => {
     const onSettingsChanged = vi.fn();
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {

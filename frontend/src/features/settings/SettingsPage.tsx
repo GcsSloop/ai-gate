@@ -28,6 +28,7 @@ import {
   type AccountRecord,
   type AppSettings,
   type DatabaseBackupItem,
+  changeServerPassword,
   createDatabaseBackup,
   deleteDatabaseBackup,
   exportDatabaseSQL,
@@ -199,6 +200,9 @@ export function SettingsPage({
   const [activeTab, setActiveTab] = useState<SettingsTabKey>(initialTab);
   const [skillSyncMethod, setSkillSyncMethod] = useState<"symlink" | "copy">("symlink");
   const [savingSkillSyncMethod, setSavingSkillSyncMethod] = useState(false);
+  const [currentAdminPassword, setCurrentAdminPassword] = useState("");
+  const [newAdminPassword, setNewAdminPassword] = useState("");
+  const [savingAdminPassword, setSavingAdminPassword] = useState(false);
 
   useEffect(() => {
     setDraftSettings({
@@ -506,6 +510,26 @@ export function SettingsPage({
     }
   }
 
+  async function handleChangeAdminPassword() {
+    const currentPassword = currentAdminPassword.trim();
+    const nextPassword = newAdminPassword.trim();
+    if (!currentPassword || !nextPassword) {
+      void messageApi.warning(t("请填写当前密码和新密码"));
+      return;
+    }
+    setSavingAdminPassword(true);
+    try {
+      await changeServerPassword(currentPassword, nextPassword);
+      setCurrentAdminPassword("");
+      setNewAdminPassword("");
+      void messageApi.success(t("管理员密码已修改"));
+    } catch (error) {
+      void messageApi.error(error instanceof Error ? t(error.message) : t("修改管理员密码失败"));
+    } finally {
+      setSavingAdminPassword(false);
+    }
+  }
+
   async function handleRestoreBackup(item: DatabaseBackupItem) {
     setOpenBackupMenuID(null);
     setBackupBusy(item.backup_id);
@@ -629,6 +653,33 @@ export function SettingsPage({
                 checked={draftSettings.close_to_tray}
                 onChange={(checked) => updateDraft({ close_to_tray: checked })}
               />
+            </div>
+          </Card>
+
+          <Card className="settings-card settings-card-overflow-visible" variant="borderless">
+            <SectionHeader icon={<ControlOutlined />} title={t("管理员密码")} description={t("修改当前服务进程的管理员访问密码，重启后仍以部署环境变量为准。")} />
+            <div className="settings-stack">
+              <label className="settings-field">
+                <span className="settings-field-label">{t("当前管理员密码")}</span>
+                <Input.Password
+                  aria-label={t("当前管理员密码")}
+                  value={currentAdminPassword}
+                  onChange={(event) => setCurrentAdminPassword(event.target.value)}
+                  onPressEnter={() => void handleChangeAdminPassword()}
+                />
+              </label>
+              <label className="settings-field">
+                <span className="settings-field-label">{t("新管理员密码")}</span>
+                <Input.Password
+                  aria-label={t("新管理员密码")}
+                  value={newAdminPassword}
+                  onChange={(event) => setNewAdminPassword(event.target.value)}
+                  onPressEnter={() => void handleChangeAdminPassword()}
+                />
+              </label>
+              <Button type="primary" loading={savingAdminPassword} onClick={() => void handleChangeAdminPassword()}>
+                {t("修改管理员密码")}
+              </Button>
             </div>
           </Card>
         </div>

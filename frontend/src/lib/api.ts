@@ -1107,6 +1107,19 @@ export async function loginServer(password: string): Promise<void> {
   }
 }
 
+export async function changeServerPassword(currentPassword: string, newPassword: string): Promise<void> {
+  const response = await fetch(authPath("/password"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to change server password");
+  }
+}
+
 export async function loginServerUser(username: string, token: string): Promise<ServerSession> {
   const response = await fetch(authPath("/user-login"), {
     method: "POST",
