@@ -69,6 +69,9 @@ if [[ "${SELECTED_TARGET}" != "linux/amd64" ]]; then
   exit 1
 fi
 
+mkdir -p "${OUTPUT_DIR}"
+OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
+
 if [[ -z "${VERSION}" ]]; then
   latest_tag="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 2>/dev/null || true)"
   if [[ -n "${latest_tag}" ]]; then
