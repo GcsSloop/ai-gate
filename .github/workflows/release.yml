@@ -290,7 +290,7 @@ jobs:
             exit 1
           fi
           for plugin in "${plugins[@]}"; do
-            spub -f "$plugin" -t "$SANSI_CLOUD_PLUGIN_TOKEN"
+            spub -f "$plugin" -t "$SANSI_CLOUD_PLUGIN_TOKEN" --open
           done
 
       - name: Publish GitHub release

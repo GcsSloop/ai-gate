@@ -1478,7 +1478,8 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   flex-wrap: wrap;
 }
 
-.stats-account-filter {
+.stats-account-filter,
+.stats-user-filter {
   min-width: 168px;
 }
 

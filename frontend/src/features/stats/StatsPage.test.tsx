@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { StatsPage } from "./StatsPage";
 
@@ -8,9 +8,10 @@ vi.mock("../../lib/api", () => ({
   getDashboardTrends: vi.fn(),
   getDashboardModelDistribution: vi.fn(),
   getDashboardRecentEvents: vi.fn(),
+  listServerUsers: vi.fn(),
 }));
 
-import { getDashboardModelDistribution, getDashboardRecentEvents, getDashboardSummary, getDashboardTrends, listAccounts } from "../../lib/api";
+import { getDashboardModelDistribution, getDashboardRecentEvents, getDashboardSummary, getDashboardTrends, listAccounts, listServerUsers } from "../../lib/api";
 
 describe("StatsPage", () => {
   const t = (value: string) => value;
@@ -20,6 +21,10 @@ describe("StatsPage", () => {
     vi.mocked(listAccounts).mockResolvedValue([
       { id: 1, account_name: "Alpha" },
       { id: 2, account_name: "Beta" },
+    ] as never);
+    vi.mocked(listServerUsers).mockResolvedValue([
+      { id: 11, name: "Alice", username: "alice", status: "active", created_at: "2026-03-15T10:00:00Z" },
+      { id: 12, name: "Bob", username: "bob", status: "active", created_at: "2026-03-15T10:00:00Z" },
     ] as never);
     vi.mocked(getDashboardSummary).mockResolvedValue({
       request_count: 12,
@@ -87,10 +92,10 @@ describe("StatsPage", () => {
     expect(screen.getByTestId("stats-model-distribution-chart")).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(getDashboardSummary).toHaveBeenCalledWith("24h", undefined, "");
-      expect(getDashboardTrends).toHaveBeenCalledWith("24h", undefined, "");
-      expect(getDashboardModelDistribution).toHaveBeenCalledWith("24h", undefined, "");
-      expect(getDashboardRecentEvents).toHaveBeenCalledWith("24h", undefined, "", 20);
+      expect(getDashboardSummary).toHaveBeenCalledWith("24h", undefined, "", undefined);
+      expect(getDashboardTrends).toHaveBeenCalledWith("24h", undefined, "", undefined);
+      expect(getDashboardModelDistribution).toHaveBeenCalledWith("24h", undefined, "", undefined);
+      expect(getDashboardRecentEvents).toHaveBeenCalledWith("24h", undefined, "", 20, undefined);
     });
   });
 
@@ -105,5 +110,24 @@ describe("StatsPage", () => {
     expect(await screen.findByText("暂无趋势数据")).toBeInTheDocument();
     expect(await screen.findByText("暂无模型数据")).toBeInTheDocument();
     expect(await screen.findByText("暂无最近记录")).toBeInTheDocument();
+  });
+
+  it("filters dashboard requests by server user", async () => {
+    render(<StatsPage language="zh-CN" t={t} serverMode />);
+
+    const userFilter = await screen.findByRole("combobox", { name: "筛选服务用户" });
+    await waitFor(() => {
+      expect(listServerUsers).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.mouseDown(userFilter);
+    fireEvent.click(screen.getByText("Alice"));
+
+    await waitFor(() => {
+      expect(getDashboardSummary).toHaveBeenLastCalledWith("24h", undefined, "", 11);
+      expect(getDashboardTrends).toHaveBeenLastCalledWith("24h", undefined, "", 11);
+      expect(getDashboardModelDistribution).toHaveBeenLastCalledWith("24h", undefined, "", 11);
+      expect(getDashboardRecentEvents).toHaveBeenLastCalledWith("24h", undefined, "", 20, 11);
+    });
   });
 });

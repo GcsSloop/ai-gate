@@ -580,6 +580,20 @@ export function App() {
                         <UserOutlined />
                       </button>
                     </Tooltip>
+                    {serverMode ? (
+                      <Tooltip title={t("服务用户")} placement="bottom">
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-label={t("服务用户")}
+                          aria-selected={view === "server-users"}
+                          className={view === "server-users" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
+                          onClick={() => setView("server-users")}
+                        >
+                        <TeamOutlined />
+                      </button>
+                    </Tooltip>
+                  ) : null}
                     <Tooltip title={t("统计")} placement="bottom">
                       <button
                         type="button"
@@ -592,30 +606,34 @@ export function App() {
                         <BarChartOutlined />
                       </button>
                     </Tooltip>
-                    <Tooltip title="Skill" placement="bottom">
-                      <button
-                        type="button"
-                        role="tab"
-                        aria-label="Skill"
-                        aria-selected={view === "skills"}
-                        className={view === "skills" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
-                        onClick={() => setView("skills")}
-                      >
-                        <ReadOutlined />
-                      </button>
-                    </Tooltip>
-                    <Tooltip title="MCP" placement="bottom">
-                      <button
-                        type="button"
-                        role="tab"
-                        aria-label="MCP"
-                        aria-selected={view === "mcp"}
-                        className={view === "mcp" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
-                        onClick={() => setView("mcp")}
-                      >
-                        <DeploymentUnitOutlined />
-                      </button>
-                    </Tooltip>
+                    {!serverMode ? (
+                      <>
+                        <Tooltip title="Skill" placement="bottom">
+                          <button
+                            type="button"
+                            role="tab"
+                            aria-label="Skill"
+                            aria-selected={view === "skills"}
+                            className={view === "skills" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
+                            onClick={() => setView("skills")}
+                          >
+                            <ReadOutlined />
+                          </button>
+                        </Tooltip>
+                        <Tooltip title="MCP" placement="bottom">
+                          <button
+                            type="button"
+                            role="tab"
+                            aria-label="MCP"
+                            aria-selected={view === "mcp"}
+                            className={view === "mcp" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
+                            onClick={() => setView("mcp")}
+                          >
+                            <DeploymentUnitOutlined />
+                          </button>
+                        </Tooltip>
+                      </>
+                    ) : null}
                     <Tooltip title={t("设置")} placement="bottom">
                       <button
                         type="button"
@@ -631,20 +649,6 @@ export function App() {
                         <SettingOutlined />
                       </button>
                     </Tooltip>
-                    {serverMode ? (
-                      <Tooltip title={t("服务用户")} placement="bottom">
-                        <button
-                          type="button"
-                          role="tab"
-                          aria-label={t("服务用户")}
-                          aria-selected={view === "server-users"}
-                          className={view === "server-users" ? "menu-pill-button menu-pill-button-icon is-active" : "menu-pill-button menu-pill-button-icon"}
-                          onClick={() => setView("server-users")}
-                        >
-                        <TeamOutlined />
-                      </button>
-                    </Tooltip>
-                  ) : null}
                   </>
                   )}
                   </div>
@@ -696,7 +700,7 @@ export function App() {
                 {serverRole === "user" ? (
                   <UserPoolPage t={t} />
                 ) : view === "stats" ? (
-                  <StatsPage language={language} t={t} />
+                  <StatsPage language={language} t={t} serverMode={serverMode} />
                 ) : view === "server-users" ? (
                   <ServerUsersPage t={t} />
                 ) : view === "skills" ? (

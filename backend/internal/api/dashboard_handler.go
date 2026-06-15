@@ -165,6 +165,11 @@ func dashboardEventFilter(r *http.Request) usage.EventFilter {
 			filter.AccountID = &accountID
 		}
 	}
+	if raw := query.Get("server_user_id"); raw != "" {
+		if serverUserID, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			filter.ServerUserID = &serverUserID
+		}
+	}
 	filter.Model = query.Get("model")
 
 	if raw := query.Get("limit"); raw != "" {
