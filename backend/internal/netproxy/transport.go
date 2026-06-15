@@ -1,6 +1,7 @@
 package netproxy
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -30,11 +31,57 @@ func SetSystemProxyResolverForTest(resolver func(*http.Request) (*url.URL, error
 }
 
 func NewHTTPClient(repo settingsReader) *http.Client {
+	return &http.Client{Transport: newSettingsTransport(repo)}
+}
+
+type settingsTransport struct {
+	repo     settingsReader
+	strict   *http.Transport
+	insecure *http.Transport
+}
+
+func newSettingsTransport(repo settingsReader) http.RoundTripper {
+	strict := newTransport(repo)
+	insecure := newTransport(repo)
+	tlsConfig := insecure.TLSClientConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+		if tlsConfig.MinVersion == 0 {
+			tlsConfig.MinVersion = tls.VersionTLS12
+		}
+	}
+	tlsConfig.InsecureSkipVerify = true
+	insecure.TLSClientConfig = tlsConfig
+	return &settingsTransport{
+		repo:     repo,
+		strict:   strict,
+		insecure: insecure,
+	}
+}
+
+func newTransport(repo settingsReader) *http.Transport {
 	transport := defaultTransportClone()
 	transport.Proxy = func(req *http.Request) (*url.URL, error) {
 		return ResolveProxy(req, repo)
 	}
-	return &http.Client{Transport: transport}
+	return transport
+}
+
+func (t *settingsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if shouldSkipTLSVerify(t.repo) {
+		return t.insecure.RoundTrip(req)
+	}
+	return t.strict.RoundTrip(req)
+}
+
+func shouldSkipTLSVerify(repo settingsReader) bool {
+	if repo == nil {
+		return false
+	}
+	appSettings, err := repo.GetAppSettings()
+	return err == nil && appSettings.UpstreamSkipTLSVerify
 }
 
 func ResolveProxy(req *http.Request, repo settingsReader) (*url.URL, error) {

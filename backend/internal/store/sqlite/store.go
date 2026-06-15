@@ -136,6 +136,7 @@ func (s *Store) migrate() error {
 		{table: "app_settings", name: "upstream_proxy_url", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "app_settings", name: "upstream_proxy_username", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "app_settings", name: "upstream_proxy_password", definition: "TEXT NOT NULL DEFAULT ''"},
+		{table: "app_settings", name: "upstream_skip_tls_verify", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "app_settings", name: "audit_limit_message", definition: "INTEGER NOT NULL DEFAULT 200"},
 		{table: "app_settings", name: "audit_limit_function_call", definition: "INTEGER NOT NULL DEFAULT 100"},
 		{table: "app_settings", name: "audit_limit_function_call_output", definition: "INTEGER NOT NULL DEFAULT 100"},

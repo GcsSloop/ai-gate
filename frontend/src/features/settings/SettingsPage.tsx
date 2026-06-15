@@ -217,6 +217,7 @@ export function SettingsPage({
       upstream_proxy_url: initialSettings.upstream_proxy_url ?? "",
       upstream_proxy_username: initialSettings.upstream_proxy_username ?? "",
       upstream_proxy_password: initialSettings.upstream_proxy_password ?? "",
+      upstream_skip_tls_verify: initialSettings.upstream_skip_tls_verify ?? false,
     });
   }, [initialSettings]);
 
@@ -825,6 +826,14 @@ export function SettingsPage({
                 <Radio value="manual">{t("手动指定")}</Radio>
               </Radio.Group>
               <Text type="secondary">{t("Clash / Mihomo 常见地址示例：")}http://127.0.0.1:7890</Text>
+              <ToggleRow
+                icon={<ControlOutlined />}
+                title={t("跳过上游 TLS 证书校验")}
+                description={t("仅在上游服务使用自签名或不合规证书时开启；默认关闭并按系统信任链校验。")}
+                label={t("跳过上游 TLS 证书校验")}
+                checked={draftSettings.upstream_skip_tls_verify ?? false}
+                onChange={(checked) => updateDraft({ upstream_skip_tls_verify: checked })}
+              />
             </div>
             {draftSettings.upstream_proxy_mode === "manual" ? (
               <div className="settings-field-grid">
