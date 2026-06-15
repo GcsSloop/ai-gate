@@ -44,7 +44,7 @@ describe("ServerUsersPage", () => {
       { id: 1, name: "alice", username: "alice", role: "user", status: "active", created_at: "2026-06-12T00:00:00Z", assigned_accounts: 1 },
     ]);
     vi.mocked(listServerUserAccounts).mockResolvedValue([
-      { account_id: 10, account_name: "pool-a", provider_type: "openai-compatible", source_icon: "openai", status: "active", assigned: true, position: 0, is_active: false, is_locked: false, supports_responses: true },
+      { account_id: 10, account_name: "pool-a", provider_type: "openai-compatible", source_icon: "openai", status: "active", assigned: true, position: 0, is_active: true, is_locked: false, supports_responses: true },
       { account_id: 11, account_name: "pool-b", provider_type: "openai-compatible", source_icon: "openai", status: "active", assigned: false, position: 0, is_active: false, is_locked: false, supports_responses: true },
     ]);
 
