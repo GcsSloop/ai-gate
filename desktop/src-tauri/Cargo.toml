@@ -1,6 +1,6 @@
 [package]
 name = "aigate-desktop"
-version = "1.5.11"
+version = "1.5.12"
 edition = "2021"
 
 [build-dependencies]
