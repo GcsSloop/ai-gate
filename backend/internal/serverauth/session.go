@@ -63,6 +63,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.login(w, r)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/user-login"):
 		m.userLogin(w, r)
+	case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/password"):
+		m.changePassword(w, r)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/logout"):
 		m.logout(w, r)
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/session"):
@@ -110,7 +112,7 @@ func (m *Manager) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid login payload", http.StatusBadRequest)
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(payload.Password), []byte(m.password)) != 1 {
+	if !m.passwordMatches(payload.Password) {
 		http.Error(w, "invalid password", http.StatusUnauthorized)
 		return
 	}
@@ -123,6 +125,39 @@ func (m *Manager) login(w http.ResponseWriter, r *http.Request) {
 	session := Session{Authenticated: true, Role: serverusers.RoleAdmin, ExpiresAt: expires.Format(time.RFC3339)}
 	m.setSessionCookie(w, token, session, expires)
 	writeJSON(w, http.StatusOK, session)
+}
+
+func (m *Manager) changePassword(w http.ResponseWriter, r *http.Request) {
+	session, ok := m.sessionFromRequest(r)
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	if session.Role != serverusers.RoleAdmin {
+		http.Error(w, "admin session required", http.StatusForbidden)
+		return
+	}
+	var payload struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid password payload", http.StatusBadRequest)
+		return
+	}
+	newPassword := strings.TrimSpace(payload.NewPassword)
+	if newPassword == "" {
+		http.Error(w, "new password is required", http.StatusBadRequest)
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if subtle.ConstantTimeCompare([]byte(payload.CurrentPassword), []byte(m.password)) != 1 {
+		http.Error(w, "invalid current password", http.StatusUnauthorized)
+		return
+	}
+	m.password = newPassword
+	writeJSON(w, http.StatusOK, map[string]any{"updated": true})
 }
 
 func (m *Manager) userLogin(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +243,12 @@ func (m *Manager) sessionFromRequest(r *http.Request) (Session, bool) {
 		return Session{}, false
 	}
 	return record.session, true
+}
+
+func (m *Manager) passwordMatches(password string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return subtle.ConstantTimeCompare([]byte(password), []byte(m.password)) == 1
 }
 
 func (m *Manager) setSessionCookie(w http.ResponseWriter, token string, session Session, expires time.Time) {

@@ -193,6 +193,9 @@ func TestRepositoryAssignsAccountPoolWithoutGlobalAccountMutation(t *testing.T) 
 	if assigned[0].AccountID != secondID || assigned[0].Position != 0 || assigned[1].AccountID != firstID || assigned[1].Position != 1 {
 		t.Fatalf("assigned accounts = %+v, want saved order second, first", assigned)
 	}
+	if !assigned[0].IsActive || !assigned[1].IsActive {
+		t.Fatalf("assigned accounts = %+v, want newly assigned accounts active by default", assigned)
+	}
 	if assigned[0].CredentialRef != "" || assigned[1].CredentialRef != "" {
 		t.Fatalf("assigned accounts leaked credentials: %+v", assigned)
 	}

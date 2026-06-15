@@ -317,7 +317,7 @@ func (r *Repository) SetAccountAssignments(userID int64, accountIDs []int64) err
 		seen[accountID] = true
 		if _, err := tx.Exec(
 			`INSERT INTO server_user_accounts (user_id, account_id, position, is_active, is_locked, created_at, updated_at)
-			 VALUES (?, ?, ?, 0, 0, ?, ?)`,
+			 VALUES (?, ?, ?, 1, 0, ?, ?)`,
 			userID,
 			accountID,
 			position,
