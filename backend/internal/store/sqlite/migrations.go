@@ -153,6 +153,7 @@ var schemaStatements = []string{
 		upstream_proxy_url TEXT NOT NULL DEFAULT '',
 		upstream_proxy_username TEXT NOT NULL DEFAULT '',
 		upstream_proxy_password TEXT NOT NULL DEFAULT '',
+		upstream_skip_tls_verify INTEGER NOT NULL DEFAULT 0,
 		auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
 		auto_backup_interval_hours INTEGER NOT NULL DEFAULT 24,
 		backup_retention_count INTEGER NOT NULL DEFAULT 10,

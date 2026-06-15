@@ -313,6 +313,7 @@ export type AppSettings = {
   upstream_proxy_url?: string;
   upstream_proxy_username?: string;
   upstream_proxy_password?: string;
+  upstream_skip_tls_verify?: boolean;
   auto_failover_enabled: boolean;
   auto_backup_interval_hours: number;
   backup_retention_count: number;

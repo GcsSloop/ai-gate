@@ -1,8 +1,12 @@
 package netproxy_test
 
 import (
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/gcssloop/codex-router/backend/internal/netproxy"
@@ -14,6 +18,14 @@ type stubSettingsReader struct {
 }
 
 func (s stubSettingsReader) GetAppSettings() (settings.AppSettings, error) {
+	return s.value, nil
+}
+
+type mutableSettingsReader struct {
+	value settings.AppSettings
+}
+
+func (s *mutableSettingsReader) GetAppSettings() (settings.AppSettings, error) {
 	return s.value, nil
 }
 
@@ -34,6 +46,83 @@ func TestResolveProxyUsesDirectMode(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("ResolveProxy = %v, want nil in direct mode", got)
+	}
+}
+
+func TestNewHTTPClientUsesStrictTLSVerificationByDefault(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer server.Close()
+
+	client := netproxy.NewHTTPClient(stubSettingsReader{value: settings.DefaultAppSettings()})
+	resp, err := client.Get(server.URL)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("client.Get succeeded, want TLS verification error by default")
+	}
+	if !strings.Contains(err.Error(), "certificate") {
+		t.Fatalf("client.Get error = %v, want certificate verification error", err)
+	}
+}
+
+func TestNewHTTPClientCanSkipUpstreamTLSVerification(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer server.Close()
+
+	value := settings.DefaultAppSettings()
+	value.UpstreamSkipTLSVerify = true
+	client := netproxy.NewHTTPClient(stubSettingsReader{value: value})
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("client.Get returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll returned error: %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("body = %q, want ok", string(body))
+	}
+}
+
+func TestNewHTTPClientAppliesTLSVerificationSettingPerRequest(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer server.Close()
+
+	reader := &mutableSettingsReader{value: settings.DefaultAppSettings()}
+	client := netproxy.NewHTTPClient(reader)
+
+	resp, err := client.Get(server.URL)
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("client.Get succeeded, want TLS verification error before enabling bypass")
+	}
+
+	reader.value.UpstreamSkipTLSVerify = true
+	resp, err = client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("client.Get returned error after enabling bypass: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll returned error: %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("body = %q, want ok", string(body))
 	}
 }
 
