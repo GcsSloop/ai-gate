@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -8,6 +9,22 @@ import (
 
 	"github.com/gcssloop/codex-router/backend/internal/config"
 )
+
+func chdirForTest(t *testing.T, dir string) {
+	t.Helper()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd returned error: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatalf("restore cwd returned error: %v", err)
+		}
+	})
+}
 
 func TestLoadDefaults(t *testing.T) {
 	home := t.TempDir()
@@ -84,7 +101,7 @@ func TestLoadAllowsLANShareListenAddr(t *testing.T) {
 
 func TestLoadServerModeDefaults(t *testing.T) {
 	root := t.TempDir()
-	t.Chdir(root)
+	chdirForTest(t, root)
 	t.Setenv("AI_GATE_MODE", "server")
 	t.Setenv("CODEX_ROUTER_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
 	t.Setenv("AI_GATE_SERVER_PASSWORD", "server-secret")
@@ -100,7 +117,11 @@ func TestLoadServerModeDefaults(t *testing.T) {
 	if cfg.ListenAddr != "0.0.0.0:6789" {
 		t.Fatalf("ListenAddr = %q, want %q", cfg.ListenAddr, "0.0.0.0:6789")
 	}
-	expectedDB := filepath.Join(root, "data", "aigate.sqlite")
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd returned error: %v", err)
+	}
+	expectedDB := filepath.Join(workingDir, "data", "aigate.sqlite")
 	if cfg.DatabasePath != expectedDB {
 		t.Fatalf("DatabasePath = %q, want %q", cfg.DatabasePath, expectedDB)
 	}
@@ -120,7 +141,7 @@ func TestLoadServerModeDefaults(t *testing.T) {
 
 func TestLoadServerModeFromArgs(t *testing.T) {
 	root := t.TempDir()
-	t.Chdir(root)
+	chdirForTest(t, root)
 	t.Setenv("CODEX_ROUTER_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
 	t.Setenv("AI_GATE_SERVER_PASSWORD", "server-secret")
 
