@@ -1,6 +1,7 @@
 package netproxy
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -16,7 +17,13 @@ type settingsReader interface {
 	GetAppSettings() (settings.AppSettings, error)
 }
 
+type skipTLSVerifyContextKey struct{}
+
 var systemProxyResolver = resolveSystemProxy
+
+func ContextWithSkipTLSVerify(ctx context.Context, skip bool) context.Context {
+	return context.WithValue(ctx, skipTLSVerifyContextKey{}, skip)
+}
 
 func SetSystemProxyResolverForTest(resolver func(*http.Request) (*url.URL, error)) func() {
 	previous := systemProxyResolver
@@ -70,18 +77,18 @@ func newTransport(repo settingsReader) *http.Transport {
 }
 
 func (t *settingsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if shouldSkipTLSVerify(t.repo) {
+	if shouldSkipTLSVerify(req) {
 		return t.insecure.RoundTrip(req)
 	}
 	return t.strict.RoundTrip(req)
 }
 
-func shouldSkipTLSVerify(repo settingsReader) bool {
-	if repo == nil {
+func shouldSkipTLSVerify(req *http.Request) bool {
+	if req == nil {
 		return false
 	}
-	appSettings, err := repo.GetAppSettings()
-	return err == nil && appSettings.UpstreamSkipTLSVerify
+	value, _ := req.Context().Value(skipTLSVerifyContextKey{}).(bool)
+	return value
 }
 
 func ResolveProxy(req *http.Request, repo settingsReader) (*url.URL, error) {

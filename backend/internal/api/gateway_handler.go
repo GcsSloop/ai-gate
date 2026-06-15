@@ -174,7 +174,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		resp, err := h.client.Do(upstreamReq)
+		resp, err := doAccountRequest(h.client, upstreamReq, account)
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
 			return err
@@ -292,7 +292,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 			return
 		}
 
-		resp, err := h.client.Do(upstreamReq)
+		resp, err := doAccountRequest(h.client, upstreamReq, account)
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
 			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)

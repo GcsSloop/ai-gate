@@ -495,6 +495,55 @@ func TestAccountsHandlerCreateThirdPartyDefaultsResponsesSupport(t *testing.T) {
 	}
 }
 
+func TestAccountsHandlerCreateThirdPartyPersistsTLSVerificationBypass(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts", bytes.NewBufferString(`{
+		"provider_type":"openai-compatible",
+		"account_name":"team3",
+		"auth_mode":"api_key",
+		"base_url":"https://code.ppchat.vip/v1",
+		"credential_ref":"sk-test",
+		"skip_tls_verify": true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /accounts status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/accounts", nil)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts status = %d, want %d; body=%s", listRec.Code, http.StatusOK, listRec.Body.String())
+	}
+	var listed []struct {
+		AccountName   string `json:"account_name"`
+		SkipTLSVerify bool   `json:"skip_tls_verify"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("listed accounts = %d, want 1", len(listed))
+	}
+	if !listed[0].SkipTLSVerify {
+		t.Fatal("skip_tls_verify = false, want true")
+	}
+}
+
 func TestAccountsHandlerCreateThirdPartyRespectsExplicitResponsesOptOut(t *testing.T) {
 	t.Parallel()
 

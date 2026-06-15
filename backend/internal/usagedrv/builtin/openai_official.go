@@ -12,6 +12,7 @@ import (
 
 	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/netproxy"
 	providercodex "github.com/gcssloop/codex-router/backend/internal/providers/codex"
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv"
 )
@@ -69,6 +70,9 @@ func (d *OpenAIOfficialDriver) Fetch(ctx context.Context, account accounts.Accou
 	}
 	if token == "" {
 		return usagedrv.RawUsageResult{}, &FetchError{Kind: FetchErrorKindAuth, Op: "build_usage_request", Err: fmt.Errorf("missing access token")}
+	}
+	if account.SkipTLSVerify {
+		ctx = netproxy.ContextWithSkipTLSVerify(ctx, true)
 	}
 	accountID, _ := credential.Metadata["account_id"].(string)
 	accountID = strings.TrimSpace(accountID)

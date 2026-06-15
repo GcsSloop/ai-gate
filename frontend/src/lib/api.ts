@@ -16,6 +16,7 @@ export type AccountRecord = {
   is_active: boolean;
   is_locked?: boolean;
   supports_responses?: boolean;
+  skip_tls_verify?: boolean;
   cooldown_remaining_seconds?: number;
   routing_cooldown_remaining_seconds?: number;
   routing_cooldown_reason?: string;
@@ -91,6 +92,7 @@ export type CreateAccountPayload = {
   usage_driver?: string;
   usage_config_json?: string;
   supports_responses?: boolean;
+  skip_tls_verify?: boolean;
 };
 
 export type ShareAccountResponse = {
@@ -313,7 +315,6 @@ export type AppSettings = {
   upstream_proxy_url?: string;
   upstream_proxy_username?: string;
   upstream_proxy_password?: string;
-  upstream_skip_tls_verify?: boolean;
   auto_failover_enabled: boolean;
   auto_backup_interval_hours: number;
   backup_retention_count: number;

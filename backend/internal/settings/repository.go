@@ -37,7 +37,6 @@ type AppSettings struct {
 	UpstreamProxyURL             string                 `json:"upstream_proxy_url"`
 	UpstreamProxyUsername        string                 `json:"upstream_proxy_username"`
 	UpstreamProxyPassword        string                 `json:"upstream_proxy_password"`
-	UpstreamSkipTLSVerify        bool                   `json:"upstream_skip_tls_verify"`
 	AutoFailoverEnabled          bool                   `json:"auto_failover_enabled"`
 	AutoBackupIntervalHours      int                    `json:"auto_backup_interval_hours"`
 	BackupRetentionCount         int                    `json:"backup_retention_count"`
@@ -90,7 +89,7 @@ func DefaultAppSettings() AppSettings {
 func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	row := r.db.QueryRow(
 		`SELECT launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, lan_share_enabled, lan_share_whitelist_enabled, lan_share_ip_whitelist,
-		        upstream_proxy_mode, upstream_proxy_url, upstream_proxy_username, upstream_proxy_password, upstream_skip_tls_verify, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
+		        upstream_proxy_mode, upstream_proxy_url, upstream_proxy_username, upstream_proxy_password, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
 		        language, theme_mode, provider_pricing, account_pricing
 		 FROM app_settings WHERE id = 1`,
 	)
@@ -111,7 +110,6 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 	var upstreamProxyURL string
 	var upstreamProxyUsername string
 	var upstreamProxyPassword string
-	var upstreamSkipTLSVerify int
 	var autoFailoverEnabled int
 	var autoBackupIntervalHours int
 	var backupRetentionCount int
@@ -137,7 +135,6 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		&upstreamProxyURL,
 		&upstreamProxyUsername,
 		&upstreamProxyPassword,
-		&upstreamSkipTLSVerify,
 		&autoFailoverEnabled,
 		&autoBackupIntervalHours,
 		&backupRetentionCount,
@@ -178,7 +175,6 @@ func (r *SQLiteRepository) GetAppSettings() (AppSettings, error) {
 		UpstreamProxyURL:             upstreamProxyURL,
 		UpstreamProxyUsername:        upstreamProxyUsername,
 		UpstreamProxyPassword:        upstreamProxyPassword,
-		UpstreamSkipTLSVerify:        upstreamSkipTLSVerify == 1,
 		AutoFailoverEnabled:          autoFailoverEnabled == 1,
 		AutoBackupIntervalHours:      autoBackupIntervalHours,
 		BackupRetentionCount:         backupRetentionCount,
@@ -202,9 +198,9 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 	_, err = r.db.Exec(
 		`INSERT INTO app_settings (
 			id, launch_at_login, silent_start, close_to_tray, show_proxy_switch_on_home, show_home_update_indicator, status_refresh_interval_seconds, usage_request_timeout_seconds, proxy_host, proxy_port, lan_share_enabled, lan_share_whitelist_enabled, lan_share_ip_whitelist,
-			upstream_proxy_mode, upstream_proxy_url, upstream_proxy_username, upstream_proxy_password, upstream_skip_tls_verify, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
+			upstream_proxy_mode, upstream_proxy_url, upstream_proxy_username, upstream_proxy_password, auto_failover_enabled, auto_backup_interval_hours, backup_retention_count,
 			language, theme_mode, provider_pricing, account_pricing, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			launch_at_login = excluded.launch_at_login,
 			silent_start = excluded.silent_start,
@@ -222,7 +218,6 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 			upstream_proxy_url = excluded.upstream_proxy_url,
 			upstream_proxy_username = excluded.upstream_proxy_username,
 			upstream_proxy_password = excluded.upstream_proxy_password,
-			upstream_skip_tls_verify = excluded.upstream_skip_tls_verify,
 			auto_failover_enabled = excluded.auto_failover_enabled,
 			auto_backup_interval_hours = excluded.auto_backup_interval_hours,
 			backup_retention_count = excluded.backup_retention_count,
@@ -248,7 +243,6 @@ func (r *SQLiteRepository) SaveAppSettings(value AppSettings) error {
 		value.UpstreamProxyURL,
 		value.UpstreamProxyUsername,
 		value.UpstreamProxyPassword,
-		boolToInt(value.UpstreamSkipTLSVerify),
 		boolToInt(value.AutoFailoverEnabled),
 		value.AutoBackupIntervalHours,
 		value.BackupRetentionCount,

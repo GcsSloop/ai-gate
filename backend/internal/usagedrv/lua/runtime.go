@@ -15,6 +15,7 @@ import (
 
 	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/netproxy"
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv"
 )
 
@@ -43,6 +44,9 @@ func (r *Runtime) Execute(ctx context.Context, script string, account accounts.A
 }
 
 func (r *Runtime) ExecuteSource(ctx context.Context, source string, sourceName string, account accounts.Account, credential accountdrv.ResolvedCredential, config map[string]any) (usagedrv.RawUsageResult, error) {
+	if account.SkipTLSVerify {
+		ctx = netproxy.ContextWithSkipTLSVerify(ctx, true)
+	}
 	L := golua.NewState(golua.Options{
 		SkipOpenLibs: true,
 	})

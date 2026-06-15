@@ -190,6 +190,7 @@ type createAccountRequest struct {
 	UsageDriver       string                `json:"usage_driver"`
 	UsageConfigJSON   string                `json:"usage_config_json"`
 	SupportsResponses *bool                 `json:"supports_responses"`
+	SkipTLSVerify     bool                  `json:"skip_tls_verify"`
 }
 
 type importLocalAuthRequest struct {
@@ -230,6 +231,7 @@ type accountSharePayload struct {
 	UsageDriver       string                `json:"usage_driver"`
 	UsageConfigJSON   string                `json:"usage_config_json"`
 	SupportsResponses bool                  `json:"supports_responses"`
+	SkipTLSVerify     bool                  `json:"skip_tls_verify"`
 }
 
 type updateAccountRequest struct {
@@ -245,6 +247,7 @@ type updateAccountRequest struct {
 	IsActive          *bool           `json:"is_active"`
 	IsLocked          *bool           `json:"is_locked"`
 	SupportsResponses *bool           `json:"supports_responses"`
+	SkipTLSVerify     *bool           `json:"skip_tls_verify"`
 }
 
 type accountTestResponse struct {
@@ -307,6 +310,7 @@ func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) 
 		UsageConfigJSON:   strings.TrimSpace(req.UsageConfigJSON),
 		Status:            accounts.StatusActive,
 		SupportsResponses: supportsResponses,
+		SkipTLSVerify:     req.SkipTLSVerify,
 	})
 
 	err := h.repo.Create(account)
@@ -357,6 +361,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 		IsActive                        bool                  `json:"is_active"`
 		IsLocked                        bool                  `json:"is_locked"`
 		SupportsResponses               bool                  `json:"supports_responses"`
+		SkipTLSVerify                   bool                  `json:"skip_tls_verify"`
 	}
 
 	response := make([]responseItem, 0, len(accountList))
@@ -375,6 +380,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 			IsActive:             account.IsActive,
 			IsLocked:             account.IsLocked,
 			SupportsResponses:    account.SupportsResponses,
+			SkipTLSVerify:        account.SkipTLSVerify,
 			Balance:              0,
 			QuotaRemaining:       0,
 			RPMRemaining:         0,
@@ -784,6 +790,7 @@ func (h *AccountsHandler) shareAccount(w http.ResponseWriter, r *http.Request) {
 			UsageDriver:       account.UsageDriver,
 			UsageConfigJSON:   account.UsageConfigJSON,
 			SupportsResponses: account.NativeResponsesCapable(),
+			SkipTLSVerify:     account.SkipTLSVerify,
 		},
 	})
 	if err != nil {
@@ -821,6 +828,7 @@ func (h *AccountsHandler) importSharedAccount(w http.ResponseWriter, r *http.Req
 		Priority:          0,
 		IsActive:          false,
 		SupportsResponses: envelope.Account.SupportsResponses,
+		SkipTLSVerify:     envelope.Account.SkipTLSVerify,
 	})
 
 	if err := h.repo.Create(account); err != nil {
@@ -892,6 +900,9 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.SupportsResponses != nil {
 		current.SupportsResponses = *req.SupportsResponses
+	}
+	if req.SkipTLSVerify != nil {
+		current.SkipTLSVerify = *req.SkipTLSVerify
 	}
 	current = applyBuiltInDriverDefaults(current)
 
@@ -1181,7 +1192,7 @@ func (h *AccountsHandler) getPPChatTokenLogs(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	resp, err := h.client.Do(req)
+	resp, err := doAccountRequest(h.client, req, account)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -1261,7 +1272,7 @@ func (h *AccountsHandler) runResponsesTest(ctx context.Context, account accounts
 		if err != nil {
 			return accountTestResponse{OK: false, Message: "构造测试请求失败", Details: err.Error()}
 		}
-		resp, err := h.client.Do(req)
+		resp, err := doAccountRequest(h.client, req, account)
 		if err != nil {
 			return accountTestResponse{OK: false, Message: "请求上游失败", Details: err.Error()}
 		}
@@ -1304,7 +1315,7 @@ func (h *AccountsHandler) runResponsesTest(ctx context.Context, account accounts
 	if err != nil {
 		return accountTestResponse{OK: false, Message: "构造测试请求失败", Details: err.Error()}
 	}
-	return h.executeUpstreamTest(req, model, parseResponsesContent, "OpenAI responses 测试成功")
+	return h.executeUpstreamTest(req, account, model, parseResponsesContent, "OpenAI responses 测试成功")
 }
 
 func (h *AccountsHandler) runChatCompletionTest(ctx context.Context, account accounts.Account, credential string, model string, input string) accountTestResponse {
@@ -1330,11 +1341,11 @@ func (h *AccountsHandler) runChatCompletionTest(ctx context.Context, account acc
 		return accountTestResponse{OK: false, Message: "构造测试请求失败", Details: err.Error()}
 	}
 
-	return h.executeUpstreamTest(req, model, parseChatCompletionsContent, "远端连通性测试成功")
+	return h.executeUpstreamTest(req, account, model, parseChatCompletionsContent, "远端连通性测试成功")
 }
 
-func (h *AccountsHandler) executeUpstreamTest(req *http.Request, model string, parser func([]byte) string, successMessage string) accountTestResponse {
-	resp, err := h.client.Do(req)
+func (h *AccountsHandler) executeUpstreamTest(req *http.Request, account accounts.Account, model string, parser func([]byte) string, successMessage string) accountTestResponse {
+	resp, err := doAccountRequest(h.client, req, account)
 	if err != nil {
 		return accountTestResponse{OK: false, Message: "请求上游失败", Details: err.Error()}
 	}
@@ -1369,7 +1380,7 @@ func (h *AccountsHandler) discoverFallbackModel(ctx context.Context, account acc
 	}
 	req.Header.Set("Authorization", "Bearer "+credential)
 
-	resp, err := h.client.Do(req)
+	resp, err := doAccountRequest(h.client, req, account)
 	if err != nil {
 		return "", err
 	}

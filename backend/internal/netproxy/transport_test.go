@@ -1,6 +1,7 @@
 package netproxy_test
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -76,11 +77,14 @@ func TestNewHTTPClientCanSkipUpstreamTLSVerification(t *testing.T) {
 	}))
 	defer server.Close()
 
-	value := settings.DefaultAppSettings()
-	value.UpstreamSkipTLSVerify = true
-	client := netproxy.NewHTTPClient(stubSettingsReader{value: value})
+	client := netproxy.NewHTTPClient(stubSettingsReader{value: settings.DefaultAppSettings()})
+	ctx := netproxy.ContextWithSkipTLSVerify(context.Background(), true)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext returned error: %v", err)
+	}
 
-	resp, err := client.Get(server.URL)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("client.Get returned error: %v", err)
 	}
@@ -94,7 +98,7 @@ func TestNewHTTPClientCanSkipUpstreamTLSVerification(t *testing.T) {
 	}
 }
 
-func TestNewHTTPClientAppliesTLSVerificationSettingPerRequest(t *testing.T) {
+func TestNewHTTPClientAppliesTLSVerificationContextPerRequest(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -102,8 +106,7 @@ func TestNewHTTPClientAppliesTLSVerificationSettingPerRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	reader := &mutableSettingsReader{value: settings.DefaultAppSettings()}
-	client := netproxy.NewHTTPClient(reader)
+	client := netproxy.NewHTTPClient(stubSettingsReader{value: settings.DefaultAppSettings()})
 
 	resp, err := client.Get(server.URL)
 	if err == nil {
@@ -111,8 +114,12 @@ func TestNewHTTPClientAppliesTLSVerificationSettingPerRequest(t *testing.T) {
 		t.Fatal("client.Get succeeded, want TLS verification error before enabling bypass")
 	}
 
-	reader.value.UpstreamSkipTLSVerify = true
-	resp, err = client.Get(server.URL)
+	ctx := netproxy.ContextWithSkipTLSVerify(context.Background(), true)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext returned error: %v", err)
+	}
+	resp, err = client.Do(req)
 	if err != nil {
 		t.Fatalf("client.Get returned error after enabling bypass: %v", err)
 	}

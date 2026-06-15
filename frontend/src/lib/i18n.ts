@@ -263,6 +263,8 @@ const enUSMessages: Record<string, string> = {
   "请选择来源图标": "Choose a source icon",
   "API Key / Token": "API key / token",
   "留空表示不修改": "Leave blank to keep the current value",
+  "跳过 TLS 证书校验": "Skip TLS certificate verification",
+  "仅在该账户上游使用自签名或不合规证书时开启。": "Enable only when this account's upstream uses a self-signed or non-compliant certificate.",
   "连接测试": "Connection test",
   "模型": "Model",
   "请选择模型": "Choose a model",

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/netproxy"
 	"github.com/gcssloop/codex-router/backend/internal/providers"
 	"github.com/gcssloop/codex-router/backend/internal/usagedrv"
 )
@@ -45,6 +46,9 @@ func (d *PPChatDriver) Fetch(ctx context.Context, account accounts.Account, cred
 	token = strings.TrimSpace(strings.TrimPrefix(token, "Bearer "))
 	if token == "" {
 		return usagedrv.RawUsageResult{}, &FetchError{Kind: FetchErrorKindAuth, Op: "build_usage_request", Err: fmt.Errorf("missing ppchat token")}
+	}
+	if account.SkipTLSVerify {
+		ctx = netproxy.ContextWithSkipTLSVerify(ctx, true)
 	}
 
 	base, err := url.Parse(d.tokenLogsBaseURL)

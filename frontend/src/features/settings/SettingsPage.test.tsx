@@ -28,7 +28,6 @@ const baseSettings = {
   upstream_proxy_url: "",
   upstream_proxy_username: "",
   upstream_proxy_password: "",
-  upstream_skip_tls_verify: false,
   auto_failover_enabled: true,
   auto_backup_interval_hours: 24,
   backup_retention_count: 10,
@@ -99,50 +98,6 @@ describe("SettingsPage", () => {
         expect.objectContaining({
           method: "PUT",
           body: JSON.stringify({ current_password: "old-secret", new_password: "new-secret" }),
-        }),
-      );
-    });
-  });
-
-  it("renders upstream TLS verification bypass as an explicit opt-in setting", async () => {
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url === "/ai-router/api/accounts") {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url === "/ai-router/api/settings/database/backups") {
-        return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url === "/ai-router/api/settings/app" && init?.method === "PUT") {
-        return Promise.resolve(new Response(String(init.body), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      return Promise.resolve(new Response(null, { status: 404 }));
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    vi.mocked(getAppMetadata).mockResolvedValue({
-      name: "AI Gate",
-      version: "0.1.0",
-      description: "桌面代理与路由控制台",
-      author: "GcsSloop",
-    });
-    vi.mocked(getRecentDesktopLogs).mockResolvedValue([]);
-    vi.mocked(applyDesktopAppSettings).mockResolvedValue(null);
-
-    render(<SettingsPage initialSettings={baseSettings} language="zh-CN" t={identity} proxyEnabled={false} onSettingsChanged={vi.fn()} />);
-
-    fireEvent.click(await screen.findByRole("tab", { name: "代理" }));
-    const tlsSwitch = await screen.findByRole("switch", { name: "跳过上游 TLS 证书校验" });
-    expect(tlsSwitch).not.toBeChecked();
-
-    fireEvent.click(tlsSwitch);
-    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/ai-router/api/settings/app",
-        expect.objectContaining({
-          method: "PUT",
-          body: JSON.stringify({ ...baseSettings, upstream_skip_tls_verify: true }),
         }),
       );
     });
