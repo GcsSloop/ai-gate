@@ -251,7 +251,13 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiHandler := http.Handler(http.StripPrefix(httpPrefix+"/api", apiMux))
 	var userAPIHandler http.Handler
 	if cfg.ServerMode {
-		authManager := serverauth.NewManagerWithUsers(cfg.ServerPassword, 12*time.Hour, serverUserRepo)
+		passwordStore := serverauth.NewEncryptedPasswordStore(filepath.Join(filepath.Dir(cfg.DatabasePath), "server-password.enc"))
+		serverPassword, err := passwordStore.LoadOrInitialize(cfg.ServerPassword)
+		if err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("load server password: %w", err)
+		}
+		authManager := serverauth.NewManagerWithUsersAndPasswordStore(serverPassword, 12*time.Hour, serverUserRepo, passwordStore)
 		mux.Handle(httpPrefix+"/auth/", withCORS(http.StripPrefix(httpPrefix+"/auth", authManager)))
 		apiHandler = authManager.RequireSession(apiHandler)
 		userAPIMux := http.NewServeMux()

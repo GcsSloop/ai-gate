@@ -109,6 +109,7 @@ msvc_path="${OUTPUT_DIR}/${base_name}.msvc"
 echo "[${os}/${arch}] build binary"
 rm -rf "${stage_dir}"
 mkdir -p "${stage_dir}/backend" "${stage_dir}/data" "${stage_dir}/logs" "${gocache_dir}"
+cp "${REPO_ROOT}/assets/aigate_1024_1024.png" "${stage_dir}/icon.png"
 (
   cd "${REPO_ROOT}/backend"
   GOCACHE="${gocache_dir}" CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
@@ -128,7 +129,7 @@ cat > "${stage_dir}/daemon.json" <<JSON
   "version": "${VERSION}",
   "log_file": "./logs/ai-gate.log",
   "pid_file": "",
-  "icon": "",
+  "icon": "./icon.png",
   "name": "${PLUGIN_NAME}",
   "description": "${PLUGIN_DESC}",
   "args": ["--server"],

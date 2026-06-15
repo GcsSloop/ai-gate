@@ -658,7 +658,7 @@ export function SettingsPage({
           </Card>
 
           <Card className="settings-card settings-card-overflow-visible" variant="borderless">
-            <SectionHeader icon={<ControlOutlined />} title={t("管理员密码")} description={t("修改当前服务进程的管理员访问密码，重启后仍以部署环境变量为准。")} />
+            <SectionHeader icon={<ControlOutlined />} title={t("管理员密码")} description={t("修改管理员访问密码，并加密保存到服务端 data 目录。")} />
             <div className="settings-stack">
               <label className="settings-field">
                 <span className="settings-field-label">{t("当前管理员密码")}</span>
