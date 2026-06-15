@@ -57,6 +57,47 @@ func TestManagerRejectsWrongPassword(t *testing.T) {
 	}
 }
 
+func TestManagerLetsAdminChangePassword(t *testing.T) {
+	manager := NewManager("secret-password", time.Minute)
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"password":"secret-password"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRec := httptest.NewRecorder()
+	manager.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("initial login status = %d, want %d; body=%s", loginRec.Code, http.StatusOK, loginRec.Body.String())
+	}
+	cookies := loginRec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("initial login cookies = %+v, want session cookie", cookies)
+	}
+
+	changeReq := httptest.NewRequest(http.MethodPut, "/auth/password", strings.NewReader(`{"current_password":"secret-password","new_password":"new-secret"}`))
+	changeReq.Header.Set("Content-Type", "application/json")
+	changeReq.AddCookie(cookies[0])
+	changeRec := httptest.NewRecorder()
+	manager.ServeHTTP(changeRec, changeReq)
+	if changeRec.Code != http.StatusOK {
+		t.Fatalf("password change status = %d, want %d; body=%s", changeRec.Code, http.StatusOK, changeRec.Body.String())
+	}
+
+	oldLoginReq := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"password":"secret-password"}`))
+	oldLoginReq.Header.Set("Content-Type", "application/json")
+	oldLoginRec := httptest.NewRecorder()
+	manager.ServeHTTP(oldLoginRec, oldLoginReq)
+	if oldLoginRec.Code != http.StatusUnauthorized {
+		t.Fatalf("old password login status = %d, want %d", oldLoginRec.Code, http.StatusUnauthorized)
+	}
+
+	newLoginReq := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"password":"new-secret"}`))
+	newLoginReq.Header.Set("Content-Type", "application/json")
+	newLoginRec := httptest.NewRecorder()
+	manager.ServeHTTP(newLoginRec, newLoginReq)
+	if newLoginRec.Code != http.StatusOK {
+		t.Fatalf("new password login status = %d, want %d; body=%s", newLoginRec.Code, http.StatusOK, newLoginRec.Body.String())
+	}
+}
+
 type fakeUserStore struct {
 	user serverusers.User
 	err  error
