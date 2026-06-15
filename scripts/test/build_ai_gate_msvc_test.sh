@@ -7,10 +7,11 @@ OUT_DIR="${REPO_ROOT}/dist/msvc-test"
 ARTIFACT="${OUT_DIR}/ai-gate_0.0.0-dev_linux_amd64.msvc"
 
 rm -rf "${OUT_DIR}"
+cd "${REPO_ROOT}"
 bash "${REPO_ROOT}/scripts/release/build_ai_gate_msvc.sh" \
   --target linux/amd64 \
   --version 0.0.0-dev \
-  --output "${OUT_DIR}"
+  --output "dist/msvc-test"
 
 test -f "${ARTIFACT}"
 LIST_FILE="${OUT_DIR}/artifact-list.txt"
