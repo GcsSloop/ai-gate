@@ -40,11 +40,19 @@ vi.mock("./features/settings/SettingsPage", () => ({
 }));
 
 vi.mock("./features/stats/StatsPage", () => ({
-  StatsPage: () => <div>stats-page</div>,
+  StatsPage: ({ serverMode }: { serverMode?: boolean }) => <div>stats-page:{String(serverMode)}</div>,
 }));
 
 vi.mock("./features/tooling/ToolingPage", () => ({
   ToolingPage: ({ mode }: { mode: string }) => <div>tooling-page:{mode}</div>,
+}));
+
+vi.mock("./features/server-users/ServerUsersPage", () => ({
+  ServerUsersPage: () => <div>server-users-page</div>,
+}));
+
+vi.mock("./features/server-users/UserPoolPage", () => ({
+  UserPoolPage: () => <div>user-pool-page</div>,
 }));
 
 vi.mock("./lib/desktop-shell", () => ({
@@ -91,6 +99,7 @@ describe("App", () => {
   });
 
   afterEach(() => {
+    window.history.pushState({}, "", "/");
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
       value: "visible",
@@ -341,6 +350,72 @@ describe("App", () => {
     expect(await screen.findByText("tooling-page:mcp")).toBeInTheDocument();
   });
 
+  it("hides tooling tabs and places server users after accounts in server admin mode", async () => {
+    window.history.pushState({}, "", "/ai-gate/webui/");
+    vi.mocked(loadDesktopShellContext).mockResolvedValue({
+      backend_addr: "127.0.0.1:6789",
+      backend_api_base: "/ai-gate/api",
+      launch_at_login: false,
+      silent_start: false,
+      close_to_tray: true,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/ai-gate/auth/session") {
+          return Promise.resolve(new Response(JSON.stringify({ authenticated: true, role: "admin" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "/ai-gate/api/settings/proxy/status") {
+          return Promise.resolve(new Response(JSON.stringify({ enabled: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        if (url === "/ai-gate/api/settings/app") {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                launch_at_login: false,
+                silent_start: false,
+                close_to_tray: true,
+                show_proxy_switch_on_home: true,
+                show_home_update_indicator: false,
+                proxy_host: "127.0.0.1",
+                proxy_port: 6789,
+                auto_failover_enabled: false,
+                auto_backup_interval_hours: 24,
+                backup_retention_count: 10,
+                audit_limit_message: 200,
+                audit_limit_function_call: 100,
+                audit_limit_function_call_output: 100,
+                audit_limit_reasoning: 40,
+                audit_limit_custom_tool_call: 100,
+                audit_limit_custom_tool_call_output: 100,
+                language: "zh-CN",
+                theme_mode: "system",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url === "/ai-gate/api/accounts") {
+          return Promise.resolve(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+    vi.mocked(subscribeDesktopBackendStateChanged).mockResolvedValue(() => {});
+
+    render(<App />);
+
+    expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
+    const tabs = screen.getAllByRole("tab").map((tab) => tab.getAttribute("aria-label"));
+    expect(tabs).toEqual(["账户", "服务用户", "统计", "设置"]);
+    expect(screen.queryByRole("tab", { name: "Skill" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "MCP" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "统计" }));
+    expect(screen.getByText("stats-page:true")).toBeInTheDocument();
+  });
+
   it("checks for home updates every hour when the indicator is enabled", async () => {
     vi.useFakeTimers();
     mockedUpdateService.check.mockResolvedValue({ supported: true, update: null });
@@ -451,7 +526,7 @@ describe("App", () => {
 
     expect(await screen.findByText(/accounts-sync:0/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "统计" }));
-    expect(screen.getByText("stats-page")).toBeInTheDocument();
+    expect(screen.getByText("stats-page:false")).toBeInTheDocument();
   });
 
   it("renders accounts, stats, and settings as shared text tabs", async () => {

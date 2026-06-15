@@ -171,6 +171,28 @@ func TestDashboardHandlerBuildsCalendarAlignedFilter(t *testing.T) {
 	}
 }
 
+func TestDashboardHandlerBuildsServerUserFilter(t *testing.T) {
+	t.Parallel()
+
+	stub := &dashboardUsageStub{
+		summary: usage.EventSummary{RequestCount: 1},
+	}
+	handler := api.NewDashboardHandler(stub)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/summary?range=24h&server_user_id=42", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /dashboard/summary status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if stub.lastFilter.ServerUserID == nil {
+		t.Fatalf("ServerUserID is nil, want 42")
+	}
+	if *stub.lastFilter.ServerUserID != 42 {
+		t.Fatalf("ServerUserID = %d, want 42", *stub.lastFilter.ServerUserID)
+	}
+}
+
 func TestDashboardHandlerUsesPricingSettingsForCostCalculation(t *testing.T) {
 	stub := &dashboardUsageStub{
 		summary: usage.EventSummary{

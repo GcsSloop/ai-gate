@@ -630,11 +630,15 @@ function dashboardQuery(
   accountID?: number,
   model?: string,
   limit?: number,
+  serverUserID?: number,
 ): string {
   const params = new URLSearchParams();
   params.set("range", range);
   if (accountID && accountID > 0) {
     params.set("account_id", String(accountID));
+  }
+  if (serverUserID && serverUserID > 0) {
+    params.set("server_user_id", String(serverUserID));
   }
   if (model && model.trim() !== "") {
     params.set("model", model.trim());
@@ -649,9 +653,10 @@ export async function getDashboardSummary(
   range: DashboardRangeKey = "24h",
   accountID?: number,
   model?: string,
+  serverUserID?: number,
 ): Promise<UsageDashboardSummary> {
   const response = await fetch(
-    apiPath(`/dashboard/summary?${dashboardQuery(range, accountID, model)}`),
+    apiPath(`/dashboard/summary?${dashboardQuery(range, accountID, model, undefined, serverUserID)}`),
   );
   if (!response.ok) {
     throw new Error("failed to load dashboard summary");
@@ -663,9 +668,10 @@ export async function getDashboardTrends(
   range: DashboardRangeKey = "24h",
   accountID?: number,
   model?: string,
+  serverUserID?: number,
 ): Promise<UsageTrendPoint[]> {
   const response = await fetch(
-    apiPath(`/dashboard/trends?${dashboardQuery(range, accountID, model)}`),
+    apiPath(`/dashboard/trends?${dashboardQuery(range, accountID, model, undefined, serverUserID)}`),
   );
   if (!response.ok) {
     throw new Error("failed to load dashboard trends");
@@ -678,10 +684,11 @@ export async function getDashboardRecentEvents(
   accountID?: number,
   model?: string,
   limit = 20,
+  serverUserID?: number,
 ): Promise<UsageEventRecord[]> {
   const response = await fetch(
     apiPath(
-      `/dashboard/recent-events?${dashboardQuery(range, accountID, model, limit)}`,
+      `/dashboard/recent-events?${dashboardQuery(range, accountID, model, limit, serverUserID)}`,
     ),
   );
   if (!response.ok) {
@@ -694,10 +701,11 @@ export async function getDashboardModelDistribution(
   range: DashboardRangeKey = "24h",
   accountID?: number,
   model?: string,
+  serverUserID?: number,
 ): Promise<UsageModelDistributionPoint[]> {
   const response = await fetch(
     apiPath(
-      `/dashboard/model-distribution?${dashboardQuery(range, accountID, model)}`,
+      `/dashboard/model-distribution?${dashboardQuery(range, accountID, model, undefined, serverUserID)}`,
     ),
   );
   if (!response.ok) {

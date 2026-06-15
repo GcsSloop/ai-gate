@@ -8,11 +8,13 @@ import {
   type UsageModelDistributionPoint,
   type UsageEventRecord,
   type UsageTrendPoint,
+  type ServerUser,
   getDashboardModelDistribution,
   getDashboardRecentEvents,
   getDashboardSummary,
   getDashboardTrends,
   listAccounts,
+  listServerUsers,
 } from "../../lib/api";
 import type { AppLanguage, Translator } from "../../lib/i18n";
 import { ModelDistributionChart, TokenTrendChart } from "./StatsCharts";
@@ -20,6 +22,7 @@ import { ModelDistributionChart, TokenTrendChart } from "./StatsCharts";
 type StatsPageProps = {
   language: AppLanguage;
   t: Translator;
+  serverMode?: boolean;
 };
 
 type RangeOption = DashboardRangeKey;
@@ -54,13 +57,15 @@ function eventStatusColor(status: string): string {
   return "default";
 }
 
-export function StatsPage({ language, t }: StatsPageProps) {
+export function StatsPage({ language, t, serverMode = false }: StatsPageProps) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [rangeHours, setRangeHours] = useState<RangeOption>("24h");
   const [accountID, setAccountID] = useState<number | undefined>(undefined);
+  const [serverUserID, setServerUserID] = useState<number | undefined>(undefined);
   const [model, setModel] = useState("");
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
+  const [serverUsers, setServerUsers] = useState<ServerUser[]>([]);
   const [summary, setSummary] = useState<UsageDashboardSummary | null>(null);
   const [trends, setTrends] = useState<UsageTrendPoint[]>([]);
   const [modelDistribution, setModelDistribution] = useState<UsageModelDistributionPoint[]>([]);
@@ -79,17 +84,19 @@ export function StatsPage({ language, t }: StatsPageProps) {
       }
       setError(null);
       try {
-        const [accountList, nextSummary, nextTrends, nextModelDistribution, nextEvents] = await Promise.all([
+        const [accountList, serverUserList, nextSummary, nextTrends, nextModelDistribution, nextEvents] = await Promise.all([
           listAccounts(),
-          getDashboardSummary(rangeHours, accountID, model),
-          getDashboardTrends(rangeHours, accountID, model),
-          getDashboardModelDistribution(rangeHours, accountID, model),
-          getDashboardRecentEvents(rangeHours, accountID, model, 20),
+          serverMode ? listServerUsers() : Promise.resolve([]),
+          getDashboardSummary(rangeHours, accountID, model, serverUserID),
+          getDashboardTrends(rangeHours, accountID, model, serverUserID),
+          getDashboardModelDistribution(rangeHours, accountID, model, serverUserID),
+          getDashboardRecentEvents(rangeHours, accountID, model, 20, serverUserID),
         ]);
         if (disposed) {
           return;
         }
         setAccounts(Array.isArray(accountList) ? accountList : []);
+        setServerUsers(Array.isArray(serverUserList) ? serverUserList : []);
         setSummary(nextSummary);
         setTrends(Array.isArray(nextTrends) ? nextTrends : []);
         setModelDistribution(Array.isArray(nextModelDistribution) ? nextModelDistribution : []);
@@ -111,7 +118,7 @@ export function StatsPage({ language, t }: StatsPageProps) {
     return () => {
       disposed = true;
     };
-  }, [accountID, model, rangeHours, t]);
+  }, [accountID, model, rangeHours, serverMode, serverUserID, t]);
 
   const accountNameByID = useMemo(() => {
     return new Map(accounts.map((account) => [account.id, account.account_name]));
@@ -164,11 +171,23 @@ export function StatsPage({ language, t }: StatsPageProps) {
           <Select
             allowClear
             placeholder={t("全部账户")}
+            aria-label={t("筛选账户")}
             className="stats-account-filter"
             value={accountID}
             onChange={(value) => setAccountID(value)}
             options={accounts.map((account) => ({ label: account.account_name, value: account.id }))}
           />
+          {serverMode ? (
+            <Select
+              allowClear
+              placeholder={t("全部用户")}
+              aria-label={t("筛选服务用户")}
+              className="stats-user-filter"
+              value={serverUserID}
+              onChange={(value) => setServerUserID(value)}
+              options={serverUsers.map((user) => ({ label: user.name || user.username || `#${user.id}`, value: user.id }))}
+            />
+          ) : null}
           <Input
             allowClear
             placeholder={t("筛选模型")}
