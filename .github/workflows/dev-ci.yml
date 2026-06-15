@@ -63,6 +63,8 @@ jobs:
           bash scripts/test/collect_release_assets_test.sh
           bash scripts/test/release_updater_manifest_test.sh
           bash scripts/test/package_local_release_test.sh
+          bash scripts/test/release_msvc_spub_test.sh
+          bash scripts/test/build_ai_gate_msvc_test.sh
 
       - name: Run frontend tests
         run: npm --prefix frontend run test
