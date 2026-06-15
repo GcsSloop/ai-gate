@@ -171,6 +171,46 @@ func TestDashboardHandlerBuildsCalendarAlignedFilter(t *testing.T) {
 	}
 }
 
+func TestDashboardHandlerBuildsYearlyCalendarAlignedFilter(t *testing.T) {
+	t.Setenv("TZ", "Asia/Shanghai")
+	now := time.Date(2026, 6, 16, 9, 30, 0, 0, time.FixedZone("CST", 8*3600))
+	previousLocal := time.Local
+	time.Local = now.Location()
+	defer func() {
+		time.Local = previousLocal
+	}()
+
+	stub := &dashboardUsageStub{
+		summary: usage.EventSummary{RequestCount: 1},
+	}
+	handler := api.NewDashboardHandler(stub)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/summary?range=1y", nil)
+	rec := httptest.NewRecorder()
+
+	restore := api.SetDashboardNowForTest(func() time.Time { return now })
+	defer restore()
+
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /dashboard/summary status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if stub.lastFilter.From == nil || stub.lastFilter.To == nil {
+		t.Fatalf("expected filter bounds to be set")
+	}
+	wantFrom := time.Date(2025, 6, 16, 16, 0, 0, 0, time.UTC)
+	wantTo := time.Date(2026, 6, 16, 16, 0, 0, 0, time.UTC)
+	if !stub.lastFilter.From.Equal(wantFrom) || !stub.lastFilter.To.Equal(wantTo) {
+		t.Fatalf("filter bounds = %v..%v, want %v..%v", stub.lastFilter.From, stub.lastFilter.To, wantFrom, wantTo)
+	}
+	if stub.lastFilter.BucketSize != 24*time.Hour {
+		t.Fatalf("BucketSize = %v, want %v", stub.lastFilter.BucketSize, 24*time.Hour)
+	}
+	if stub.lastFilter.BucketLocation != time.Local {
+		t.Fatalf("BucketLocation = %v, want time.Local", stub.lastFilter.BucketLocation)
+	}
+}
+
 func TestDashboardHandlerBuildsServerUserFilter(t *testing.T) {
 	t.Parallel()
 

@@ -623,7 +623,7 @@ export async function importSharedAccount(payload: string): Promise<void> {
   }
 }
 
-export type DashboardRangeKey = "24h" | "7d" | "30d";
+export type DashboardRangeKey = "24h" | "7d" | "30d" | "1y";
 
 function dashboardQuery(
   range: DashboardRangeKey = "24h",
