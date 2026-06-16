@@ -32,7 +32,6 @@ import (
 
 const officialCodexBaseURL = "https://chatgpt.com/backend-api/codex"
 const defaultCodexInstructions = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals. Be pragmatic, concise, and focus on completing the user's task."
-const thinResponsesOfficialLowRemainingThreshold = 3.0
 const thinResponsesCapacityCooldownWindow = 3 * time.Minute
 const thinResponsesRateLimitCooldownWindow = 1 * time.Minute
 const activeAccountFailoverRetryAttempts = 3
@@ -958,25 +957,7 @@ func (h *ResponsesHandler) skipReasonForThinCandidate(candidate routing.Candidat
 	if candidate.Account.RoutingCooldownActive(now) && !candidate.Account.IsActive {
 		return "routing_cooldown", true
 	}
-	if officialRemainingBelowThreshold(candidate) {
-		return "official_remaining_below_3pct", true
-	}
 	return "", false
-}
-
-func officialRemainingBelowThreshold(candidate routing.Candidate) bool {
-	if !usesOfficialCodexAdapter(candidate.Account) {
-		return false
-	}
-	primaryRemaining := 100 - candidate.Snapshot.PrimaryUsedPercent
-	secondaryRemaining := 100 - candidate.Snapshot.SecondaryUsedPercent
-	if candidate.Snapshot.PrimaryResetsAt != nil && primaryRemaining < thinResponsesOfficialLowRemainingThreshold {
-		return true
-	}
-	if candidate.Snapshot.SecondaryResetsAt != nil && secondaryRemaining < thinResponsesOfficialLowRemainingThreshold {
-		return true
-	}
-	return false
 }
 
 func shouldCooldownThinCandidate(candidate routing.Candidate, reason string) bool {
@@ -1034,7 +1015,7 @@ func (h *ResponsesHandler) publishAccountRoutingStateChanged() {
 func computeThinCandidateCooldownUntil(snapshot usage.Snapshot, reason string) *time.Time {
 	now := time.Now().UTC()
 	switch reason {
-	case "official_remaining_below_3pct", "usage_limited", "capacity_failed":
+	case "usage_limited", "capacity_failed":
 		resetAt := relevantOfficialResetAt(snapshot)
 		until := routing.ComputeCooldownUntil(now, routing.CooldownReasonCapacity, resetAt, thinResponsesCapacityCooldownWindow)
 		return &until
@@ -1058,17 +1039,7 @@ func latestRelevantResetAt(snapshot usage.Snapshot) *time.Time {
 }
 
 func relevantOfficialResetAt(snapshot usage.Snapshot) *time.Time {
-	var candidates []*time.Time
-	if snapshot.PrimaryResetsAt != nil && 100-snapshot.PrimaryUsedPercent < thinResponsesOfficialLowRemainingThreshold {
-		candidates = append(candidates, snapshot.PrimaryResetsAt)
-	}
-	if snapshot.SecondaryResetsAt != nil && 100-snapshot.SecondaryUsedPercent < thinResponsesOfficialLowRemainingThreshold {
-		candidates = append(candidates, snapshot.SecondaryResetsAt)
-	}
-	if len(candidates) == 0 {
-		return latestRelevantResetAt(snapshot)
-	}
-	return latestResetAtFor(candidates...)
+	return latestRelevantResetAt(snapshot)
 }
 
 func latestResetAtFor(candidates ...*time.Time) *time.Time {
