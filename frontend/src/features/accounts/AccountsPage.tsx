@@ -104,7 +104,6 @@ const statusTextMap: Record<string, string> = {
 };
 
 const routingCooldownTextMap: Record<string, string> = {
-  official_remaining_below_3pct: "路由冷却",
   usage_limited: "路由冷却",
   capacity_failed: "路由冷却",
   rate_limited: "路由冷却",

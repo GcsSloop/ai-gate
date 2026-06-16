@@ -1653,14 +1653,14 @@ func TestResponsesHandlerThinModeFailsOverAfterThirdPartyForbiddenQuotaError(t *
 	}
 }
 
-func TestResponsesHandlerThinModeSkipsOfficialBelowRemainingThreshold(t *testing.T) {
+func TestResponsesHandlerThinModeAttemptsOfficialWithLowWindowRemaining(t *testing.T) {
 	t.Parallel()
 
 	primaryCalls := 0
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		primaryCalls++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"resp_should_not_run","object":"response","status":"completed","output_text":"should-not-run"}`)
+		_, _ = io.WriteString(w, `{"id":"resp_low_remaining","object":"response","status":"completed","output_text":"low-remaining-primary"}`)
 	}))
 	defer primary.Close()
 
@@ -1762,14 +1762,14 @@ func TestResponsesHandlerThinModeSkipsOfficialBelowRemainingThreshold(t *testing
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"output_text":"threshold-fallback"`) {
-		t.Fatalf("body = %s, want threshold fallback output", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"output_text":"low-remaining-primary"`) {
+		t.Fatalf("body = %s, want primary output", rec.Body.String())
 	}
-	if primaryCalls != 0 {
-		t.Fatalf("primaryCalls = %d, want 0", primaryCalls)
+	if primaryCalls != 1 {
+		t.Fatalf("primaryCalls = %d, want 1", primaryCalls)
 	}
-	if secondaryCalls != 1 {
-		t.Fatalf("secondaryCalls = %d, want 1", secondaryCalls)
+	if secondaryCalls != 0 {
+		t.Fatalf("secondaryCalls = %d, want 0", secondaryCalls)
 	}
 }
 
