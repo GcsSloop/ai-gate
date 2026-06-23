@@ -189,19 +189,12 @@ func TestGatewayHandlerUsesAccountTLSVerificationBypass(t *testing.T) {
 	}
 }
 
-func TestGatewayHandlerInServerModeUsesOnlyAssignedUserAccounts(t *testing.T) {
+func TestGatewayHandlerInServerModeUsesGlobalAccountsWithoutAssignments(t *testing.T) {
 	t.Parallel()
 
 	var firstHits int
 	firstUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		firstHits++
-		http.Error(w, "first should not be used", http.StatusInternalServerError)
-	}))
-	defer firstUpstream.Close()
-
-	var secondHits int
-	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		secondHits++
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"object": "chat.completion",
@@ -210,6 +203,13 @@ func TestGatewayHandlerInServerModeUsesOnlyAssignedUserAccounts(t *testing.T) {
 				{"message": map[string]any{"role": "assistant", "content": "ok"}},
 			},
 		})
+	}))
+	defer firstUpstream.Close()
+
+	var secondHits int
+	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits++
+		http.Error(w, "lower-priority account should not be used", http.StatusInternalServerError)
 	}))
 	defer secondUpstream.Close()
 
@@ -246,12 +246,6 @@ func TestGatewayHandlerInServerModeUsesOnlyAssignedUserAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List accounts returned error: %v", err)
 	}
-	var assignedID int64
-	for _, account := range accountList {
-		if account.AccountName == "assigned" {
-			assignedID = account.ID
-		}
-	}
 
 	usageRepo := usage.NewSQLiteRepository(store.DB())
 	for _, account := range accountList {
@@ -280,22 +274,6 @@ func TestGatewayHandlerInServerModeUsesOnlyAssignedUserAccounts(t *testing.T) {
 		api.WithGatewayServerUsers(userRepo),
 	))
 
-	noPoolReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
-		"model":"gpt-test",
-		"messages":[{"role":"user","content":"ping"}]
-	}`))
-	noPoolReq.Header.Set("Content-Type", "application/json")
-	noPoolReq.Header.Set("Authorization", "Bearer "+created.Token)
-	noPoolRec := httptest.NewRecorder()
-	handler.ServeHTTP(noPoolRec, noPoolReq)
-	if noPoolRec.Code != http.StatusForbidden {
-		t.Fatalf("no pool status = %d, want %d; body=%s", noPoolRec.Code, http.StatusForbidden, noPoolRec.Body.String())
-	}
-
-	if err := userRepo.SetAccountAssignments(created.User.ID, []int64{assignedID}); err != nil {
-		t.Fatalf("SetAccountAssignments returned error: %v", err)
-	}
-
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
 		"model":"gpt-test",
 		"messages":[{"role":"user","content":"ping"}]
@@ -305,10 +283,220 @@ func TestGatewayHandlerInServerModeUsesOnlyAssignedUserAccounts(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("assigned pool status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		t.Fatalf("server gateway status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if firstHits != 0 || secondHits != 1 {
-		t.Fatalf("upstream hits first=%d second=%d, want only assigned second", firstHits, secondHits)
+	if firstHits != 1 || secondHits != 0 {
+		t.Fatalf("upstream hits first=%d second=%d, want only best global account", firstHits, secondHits)
+	}
+}
+
+func TestGatewayHandlerServerModeRemembersSuccessWithoutRoutingDBWrites(t *testing.T) {
+	t.Parallel()
+
+	hits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "chat.completion",
+			"model":  "gpt-test",
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "ok"}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	accountStore := &stickyResponsesAccounts{items: []accounts.Account{
+		{
+			ID:            1,
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "best",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       upstream.URL + "/v1",
+			CredentialRef: "sk-best",
+			Status:        accounts.StatusActive,
+			Priority:      100,
+		},
+	}}
+	usageStore := stickyResponsesUsage{snapshots: map[int64]usage.Snapshot{
+		1: {AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9},
+	}}
+	handler := api.WithServerGatewayAuth(
+		stickyResponsesUsers{user: serverusers.User{ID: 7, Name: "alice", Status: serverusers.StatusActive}},
+		api.NewGatewayHandler(accountStore, usageStore, noopResponsesRuns{}),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-test",
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer valid")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("server gateway status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if hits != 1 {
+		t.Fatalf("hits = %d, want 1", hits)
+	}
+	if accountStore.updateCalls != 0 {
+		t.Fatalf("Update calls = %d, want 0 routing DB writes in server mode", accountStore.updateCalls)
+	}
+	if accountStore.setActiveCalls != 0 {
+		t.Fatalf("SetActive calls = %d, want 0 routing DB writes in server mode", accountStore.setActiveCalls)
+	}
+}
+
+func TestGatewayHandlerServerModeUsesPreferredAccountFromAuthContext(t *testing.T) {
+	t.Parallel()
+
+	primaryHits := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		http.Error(w, "high-priority account should not be used while user route is locked", http.StatusInternalServerError)
+	}))
+	defer primary.Close()
+
+	secondaryHits := 0
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondaryHits++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "chat.completion",
+			"model":  "gpt-test",
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "preferred"}},
+			},
+		})
+	}))
+	defer secondary.Close()
+
+	accountStore := &stickyResponsesAccounts{items: []accounts.Account{
+		{
+			ID:            1,
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "best-global",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       primary.URL + "/v1",
+			CredentialRef: "sk-primary",
+			Status:        accounts.StatusActive,
+			Priority:      100,
+		},
+		{
+			ID:            2,
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "user-preferred",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       secondary.URL + "/v1",
+			CredentialRef: "sk-secondary",
+			Status:        accounts.StatusActive,
+			Priority:      1,
+		},
+	}}
+	usageStore := stickyResponsesUsage{snapshots: map[int64]usage.Snapshot{
+		1: {AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9},
+		2: {AccountID: 2, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.5},
+	}}
+	preferredID := int64(2)
+	handler := api.WithServerGatewayAuth(
+		stickyResponsesUsers{user: serverusers.User{ID: 7, Name: "alice", Status: serverusers.StatusActive, PreferredAccountID: &preferredID, RouteLocked: true}},
+		api.NewGatewayHandler(accountStore, usageStore, noopResponsesRuns{}),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-test",
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer valid")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("server gateway status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if primaryHits != 0 || secondaryHits != 1 {
+		t.Fatalf("upstream hits primary=%d secondary=%d, want only preferred account", primaryHits, secondaryHits)
+	}
+	if accountStore.setActiveCalls != 0 || accountStore.updateCalls != 0 {
+		t.Fatalf("routing DB writes update=%d setActive=%d, want none", accountStore.updateCalls, accountStore.setActiveCalls)
+	}
+}
+
+func TestGatewayHandlerServerModeAllowsManuallyPreferredLockedAccount(t *testing.T) {
+	t.Parallel()
+
+	primaryHits := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		http.Error(w, "automatic account should not be used when locked preferred account is manual", http.StatusInternalServerError)
+	}))
+	defer primary.Close()
+
+	lockedHits := 0
+	locked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lockedHits++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "chat.completion",
+			"model":  "gpt-test",
+			"choices": []map[string]any{
+				{"message": map[string]any{"role": "assistant", "content": "manual locked"}},
+			},
+		})
+	}))
+	defer locked.Close()
+
+	accountStore := &stickyResponsesAccounts{items: []accounts.Account{
+		{
+			ID:            1,
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "best-global",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       primary.URL + "/v1",
+			CredentialRef: "sk-primary",
+			Status:        accounts.StatusActive,
+			Priority:      100,
+		},
+		{
+			ID:            2,
+			ProviderType:  accounts.ProviderOpenAICompatible,
+			AccountName:   "manual-locked",
+			AuthMode:      accounts.AuthModeAPIKey,
+			BaseURL:       locked.URL + "/v1",
+			CredentialRef: "sk-locked",
+			Status:        accounts.StatusActive,
+			Priority:      1,
+			IsLocked:      true,
+		},
+	}}
+	usageStore := stickyResponsesUsage{snapshots: map[int64]usage.Snapshot{
+		1: {AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9},
+		2: {AccountID: 2, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.5},
+	}}
+	preferredID := int64(2)
+	handler := api.WithServerGatewayAuth(
+		stickyResponsesUsers{user: serverusers.User{ID: 7, Name: "alice", Status: serverusers.StatusActive, PreferredAccountID: &preferredID}},
+		api.NewGatewayHandler(accountStore, usageStore, noopResponsesRuns{}),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
+		"model":"gpt-test",
+		"messages":[{"role":"user","content":"ping"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer valid")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("server gateway status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if primaryHits != 0 || lockedHits != 1 {
+		t.Fatalf("upstream hits primary=%d locked=%d, want only manual locked account", primaryHits, lockedHits)
 	}
 }
 

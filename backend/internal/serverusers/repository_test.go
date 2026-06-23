@@ -1,11 +1,11 @@
 package serverusers_test
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/serverusers"
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
@@ -97,6 +97,38 @@ func TestRepositoryDisablesAndRotatesToken(t *testing.T) {
 	}
 }
 
+func TestRepositoryDeletesUser(t *testing.T) {
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := serverusers.NewSQLiteRepository(store.DB())
+	created, err := repo.Create("delete-me")
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if err := repo.Delete(created.User.ID); err != nil {
+		t.Fatalf("Delete returned error: %v", err)
+	}
+	users, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(users) != 0 {
+		t.Fatalf("users = %+v, want deleted user omitted", users)
+	}
+	if _, err := repo.Authenticate(created.Token); err == nil {
+		t.Fatal("Authenticate returned nil error for deleted user")
+	}
+	if err := repo.Delete(created.User.ID); err != sql.ErrNoRows {
+		t.Fatalf("Delete missing user error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestRepositoryAuthenticatesLoginByUsernameAndToken(t *testing.T) {
 	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
 	if err != nil {
@@ -127,7 +159,7 @@ func TestRepositoryAuthenticatesLoginByUsernameAndToken(t *testing.T) {
 	}
 }
 
-func TestRepositoryAssignsAccountPoolWithoutGlobalAccountMutation(t *testing.T) {
+func TestRepositoryThrottlesLastUsedAtWrites(t *testing.T) {
 	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
 	if err != nil {
 		t.Fatalf("Open returned error: %v", err)
@@ -136,90 +168,71 @@ func TestRepositoryAssignsAccountPoolWithoutGlobalAccountMutation(t *testing.T) 
 		_ = store.Close()
 	})
 
-	accountRepo := accounts.NewSQLiteRepository(store.DB())
-	createAccount := func(name string, priority int, active bool, locked bool) int64 {
-		t.Helper()
-		if err := accountRepo.Create(accounts.Account{
-			ProviderType:  accounts.ProviderOpenAICompatible,
-			AccountName:   name,
-			AuthMode:      accounts.AuthModeAPIKey,
-			CredentialRef: "sk-" + name,
-			BaseURL:       "https://example.invalid/v1",
-			Status:        accounts.StatusActive,
-			Priority:      priority,
-			IsActive:      active,
-			IsLocked:      locked,
-		}); err != nil {
-			t.Fatalf("Create(account %s) returned error: %v", name, err)
-		}
-		list, err := accountRepo.List()
-		if err != nil {
-			t.Fatalf("List accounts returned error: %v", err)
-		}
-		for _, account := range list {
-			if account.AccountName == name {
-				return account.ID
-			}
-		}
-		t.Fatalf("created account %s not found", name)
-		return 0
+	repo := serverusers.NewSQLiteRepository(store.DB())
+	created, err := repo.Create("alice")
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
 	}
-	firstID := createAccount("first", 100, true, false)
-	secondID := createAccount("second", 10, false, false)
+	first, err := repo.Authenticate(created.Token)
+	if err != nil {
+		t.Fatalf("first Authenticate returned error: %v", err)
+	}
+	if first.LastUsedAt == nil {
+		t.Fatal("first LastUsedAt = nil, want timestamp")
+	}
+	second, err := repo.Authenticate(created.Token)
+	if err != nil {
+		t.Fatalf("second Authenticate returned error: %v", err)
+	}
+	if second.LastUsedAt == nil || !second.LastUsedAt.Equal(*first.LastUsedAt) {
+		t.Fatalf("second LastUsedAt = %v, want unchanged %v", second.LastUsedAt, first.LastUsedAt)
+	}
+}
+
+func TestRepositoryPersistsRoutePreference(t *testing.T) {
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
 
 	repo := serverusers.NewSQLiteRepository(store.DB())
 	created, err := repo.Create("alice")
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
-	assigned, err := repo.ListAssignedAccounts(created.User.ID)
+	accountID := int64(42)
+	updated, err := repo.UpdateRoute(created.User.ID, &accountID, true)
 	if err != nil {
-		t.Fatalf("ListAssignedAccounts returned error: %v", err)
+		t.Fatalf("UpdateRoute returned error: %v", err)
 	}
-	if len(assigned) != 0 {
-		t.Fatalf("new user assigned accounts = %+v, want none", assigned)
+	if updated.PreferredAccountID == nil || *updated.PreferredAccountID != accountID || !updated.RouteLocked {
+		t.Fatalf("updated route = account:%v locked:%v, want account 42 locked", updated.PreferredAccountID, updated.RouteLocked)
 	}
 
-	if err := repo.SetAccountAssignments(created.User.ID, []int64{secondID, firstID}); err != nil {
-		t.Fatalf("SetAccountAssignments returned error: %v", err)
-	}
-	assigned, err = repo.ListAssignedAccounts(created.User.ID)
+	authenticated, err := repo.Authenticate(created.Token)
 	if err != nil {
-		t.Fatalf("ListAssignedAccounts returned error: %v", err)
+		t.Fatalf("Authenticate returned error: %v", err)
 	}
-	if len(assigned) != 2 {
-		t.Fatalf("assigned accounts = %+v, want two", assigned)
-	}
-	if assigned[0].AccountID != secondID || assigned[0].Position != 0 || assigned[1].AccountID != firstID || assigned[1].Position != 1 {
-		t.Fatalf("assigned accounts = %+v, want saved order second, first", assigned)
-	}
-	if !assigned[0].IsActive || !assigned[1].IsActive {
-		t.Fatalf("assigned accounts = %+v, want newly assigned accounts active by default", assigned)
-	}
-	if assigned[0].CredentialRef != "" || assigned[1].CredentialRef != "" {
-		t.Fatalf("assigned accounts leaked credentials: %+v", assigned)
+	if authenticated.PreferredAccountID == nil || *authenticated.PreferredAccountID != accountID || !authenticated.RouteLocked {
+		t.Fatalf("authenticated route = account:%v locked:%v, want account 42 locked", authenticated.PreferredAccountID, authenticated.RouteLocked)
 	}
 
-	if err := repo.UpdateAccountState(created.User.ID, firstID, serverusers.AccountStateUpdate{
-		Position: 0,
-		IsActive: true,
-		IsLocked: true,
-	}); err != nil {
-		t.Fatalf("UpdateAccountState returned error: %v", err)
-	}
-	assigned, err = repo.ListAssignedAccounts(created.User.ID)
+	users, err := repo.List()
 	if err != nil {
-		t.Fatalf("ListAssignedAccounts returned error: %v", err)
+		t.Fatalf("List returned error: %v", err)
 	}
-	if assigned[0].AccountID != firstID || !assigned[0].IsActive || !assigned[0].IsLocked {
-		t.Fatalf("assigned accounts after state update = %+v, want first active and locked first", assigned)
+	if users[0].PreferredAccountID == nil || *users[0].PreferredAccountID != accountID || !users[0].RouteLocked {
+		t.Fatalf("listed route = account:%v locked:%v, want account 42 locked", users[0].PreferredAccountID, users[0].RouteLocked)
 	}
 
-	globalFirst, err := accountRepo.GetByID(firstID)
+	cleared, err := repo.UpdateRoute(created.User.ID, nil, false)
 	if err != nil {
-		t.Fatalf("GetByID returned error: %v", err)
+		t.Fatalf("UpdateRoute clear returned error: %v", err)
 	}
-	if globalFirst.Priority != 100 || !globalFirst.IsActive || globalFirst.IsLocked {
-		t.Fatalf("global first account mutated = %+v, want original priority/active/locked", globalFirst)
+	if cleared.PreferredAccountID != nil || cleared.RouteLocked {
+		t.Fatalf("cleared route = account:%v locked:%v, want automatic route", cleared.PreferredAccountID, cleared.RouteLocked)
 	}
 }

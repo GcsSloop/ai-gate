@@ -78,6 +78,8 @@ var schemaStatements = []string{
 		token_hash TEXT NOT NULL UNIQUE,
 		role TEXT NOT NULL DEFAULT 'user',
 		status TEXT NOT NULL DEFAULT 'active',
+		preferred_account_id INTEGER,
+		route_locked INTEGER NOT NULL DEFAULT 0,
 		last_used_at DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,

@@ -21,6 +21,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
 	"github.com/gcssloop/codex-router/backend/internal/netproxy"
 	"github.com/gcssloop/codex-router/backend/internal/policy"
+	"github.com/gcssloop/codex-router/backend/internal/routing"
 	"github.com/gcssloop/codex-router/backend/internal/scheduler"
 	"github.com/gcssloop/codex-router/backend/internal/secrets"
 	"github.com/gcssloop/codex-router/backend/internal/serverauth"
@@ -54,6 +55,7 @@ type App struct {
 	store      *sqlite.Store
 	cancel     context.CancelFunc
 	background sync.WaitGroup
+	closeHooks []func()
 }
 
 type backgroundTask func(context.Context, time.Time)
@@ -102,6 +104,8 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	upstreamHTTPClient := netproxy.NewHTTPClient(settingsRepo)
 	conversationRepo := conversations.NewSQLiteRepository(store.DB())
 	serverUserRepo := serverusers.NewSQLiteRepository(store.DB())
+	gatewayUsageRepo := api.NewAsyncUsageStore(usageRepo, api.AsyncUsageStoreOptions{QueueSize: 8192})
+	serverUserSticky := routing.NewStickySelector(time.Minute, time.Now)
 	policyRepo := policy.NewMemoryRepository()
 	authConnector := auth.NewOAuthConnector(auth.Config{
 		ClientID:              "app_EMoamEEZ73f0CkXaXp7hrann",
@@ -201,20 +205,22 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/tooling/mcp/apply", toolingHandler)
 	gatewayHandler := api.NewGatewayHandler(
 		accountRepo,
-		usageRepo,
+		gatewayUsageRepo,
 		conversationRepo,
 		api.WithGatewaySettings(settingsRepo),
 		api.WithGatewayHTTPClient(upstreamHTTPClient),
 		api.WithGatewayStateEvents(stateEvents),
+		api.WithGatewayStickySelector(serverUserSticky),
 		api.WithGatewayServerUsers(serverUserRepo),
 	)
 	responsesHandler := api.NewResponsesHandler(
 		accountRepo,
-		usageRepo,
+		gatewayUsageRepo,
 		conversationRepo,
 		api.WithResponsesSettings(settingsRepo),
 		api.WithResponsesHTTPClient(upstreamHTTPClient),
 		api.WithResponsesStateEvents(stateEvents),
+		api.WithResponsesStickySelector(serverUserSticky),
 		api.WithResponsesServerUsers(serverUserRepo),
 	)
 	gatewayMux := http.NewServeMux()
@@ -261,10 +267,15 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 		mux.Handle(httpPrefix+"/auth/", withCORS(http.StripPrefix(httpPrefix+"/auth", authManager)))
 		apiHandler = authManager.RequireSession(apiHandler)
 		userAPIMux := http.NewServeMux()
-		meHandler := api.NewServerMeHandler(serverUserRepo)
+		meHandler := api.NewServerMeHandler(
+			serverUserRepo,
+			api.WithServerMeAccounts(accountRepo),
+			api.WithServerMeUsage(usageRepo),
+			api.WithServerMeStickySelector(serverUserSticky),
+		)
 		userAPIMux.Handle("/me", meHandler)
 		userAPIMux.Handle("/me/", meHandler)
-		userAPIHandler = authManager.RequireUserSession(http.StripPrefix(httpPrefix+"/api", userAPIMux))
+		userAPIHandler = authManager.RequireUserSessionOrToken(http.StripPrefix(httpPrefix+"/api", userAPIMux))
 	}
 	mux.Handle(httpPrefix+"/webui/", webuiHandler)
 	if cfg.ServerMode {
@@ -278,7 +289,13 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	}
 
 	appCtx, cancel := context.WithCancel(context.Background())
-	app := &App{listenAddr: cfg.ListenAddr, handler: mux, store: store, cancel: cancel}
+	app := &App{
+		listenAddr: cfg.ListenAddr,
+		handler:    mux,
+		store:      store,
+		cancel:     cancel,
+		closeHooks: []func(){gatewayUsageRepo.Close},
+	}
 
 	interval := cfg.SchedulerInterval
 	if interval <= 0 {
@@ -541,6 +558,11 @@ func (a *App) Close() error {
 		a.cancel()
 	}
 	a.background.Wait()
+	for _, closeHook := range a.closeHooks {
+		if closeHook != nil {
+			closeHook()
+		}
+	}
 	if a.store != nil {
 		return a.store.Close()
 	}

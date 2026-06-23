@@ -113,6 +113,16 @@ func (s fakeUserStore) AuthenticateLogin(username string, token string) (serveru
 	return s.user, nil
 }
 
+func (s fakeUserStore) Authenticate(token string) (serverusers.User, error) {
+	if s.err != nil {
+		return serverusers.User{}, s.err
+	}
+	if token != "agt-test" {
+		return serverusers.User{}, http.ErrNoCookie
+	}
+	return s.user, nil
+}
+
 func TestManagerUserLoginSessionAndAdminProtection(t *testing.T) {
 	manager := NewManagerWithUsers("secret-password", time.Minute, fakeUserStore{
 		user: serverusers.User{ID: 7, Username: "alice", Name: "alice", Role: serverusers.RoleUser, Status: serverusers.StatusActive},
@@ -165,5 +175,26 @@ func TestManagerUserLoginSessionAndAdminProtection(t *testing.T) {
 	userOnly.ServeHTTP(meRec, meReq)
 	if meRec.Code != http.StatusNoContent {
 		t.Fatalf("ordinary user /me status = %d, want %d", meRec.Code, http.StatusNoContent)
+	}
+}
+
+func TestManagerRequireUserSessionOrTokenAcceptsBearerToken(t *testing.T) {
+	manager := NewManagerWithUsers("secret-password", time.Minute, fakeUserStore{
+		user: serverusers.User{ID: 7, Username: "alice", Name: "alice", Role: serverusers.RoleUser, Status: serverusers.StatusActive},
+	})
+	userOnly := manager.RequireUserSessionOrToken(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session, ok := SessionFromContext(r.Context())
+		if !ok || session.UserID != 7 || session.Role != serverusers.RoleUser {
+			t.Fatalf("session from context = %+v, ok=%v; want user 7", session, ok)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me/upstreams", nil)
+	req.Header.Set("Authorization", "Bearer agt-test")
+	rec := httptest.NewRecorder()
+	userOnly.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("bearer token /me status = %d, want %d; body=%s", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
 }

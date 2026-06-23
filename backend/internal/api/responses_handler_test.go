@@ -16,6 +16,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/api"
 	"github.com/gcssloop/codex-router/backend/internal/conversations"
+	"github.com/gcssloop/codex-router/backend/internal/serverusers"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
@@ -1101,6 +1102,253 @@ func newResponsesHandlerTestHandler(t *testing.T, account accounts.Account) http
 	}
 
 	return api.NewResponsesHandler(accountRepo, usageRepo, conversations.NewSQLiteRepository(store.DB()))
+}
+
+func TestResponsesHandlerInServerModeUsesGlobalAccountsWithoutAssignments(t *testing.T) {
+	t.Parallel()
+
+	var firstHits int
+	firstUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_best","object":"response","status":"completed","output_text":"best"}`)
+	}))
+	defer firstUpstream.Close()
+
+	var secondHits int
+	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits++
+		http.Error(w, "lower-priority account should not be used", http.StatusInternalServerError)
+	}))
+	defer secondUpstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	accountRepo := accounts.NewSQLiteRepository(store.DB())
+	for _, account := range []accounts.Account{
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "best",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           firstUpstream.URL + "/v1",
+			CredentialRef:     "sk-best",
+			Status:            accounts.StatusActive,
+			Priority:          100,
+			SupportsResponses: true,
+		},
+		{
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "fallback",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           secondUpstream.URL + "/v1",
+			CredentialRef:     "sk-fallback",
+			Status:            accounts.StatusActive,
+			Priority:          1,
+			SupportsResponses: true,
+		},
+	} {
+		if err := accountRepo.Create(account); err != nil {
+			t.Fatalf("Create account returned error: %v", err)
+		}
+	}
+
+	accountList, err := accountRepo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	usageRepo := usage.NewSQLiteRepository(store.DB())
+	for _, account := range accountList {
+		if err := usageRepo.Save(usage.Snapshot{
+			AccountID:      account.ID,
+			Balance:        100,
+			QuotaRemaining: 100000,
+			RPMRemaining:   100,
+			TPMRemaining:   100000,
+			HealthScore:    0.9,
+		}); err != nil {
+			t.Fatalf("Save snapshot returned error: %v", err)
+		}
+	}
+
+	userRepo := serverusers.NewSQLiteRepository(store.DB())
+	created, err := userRepo.Create("alice")
+	if err != nil {
+		t.Fatalf("Create user returned error: %v", err)
+	}
+	handler := api.WithServerGatewayAuth(userRepo, api.NewResponsesHandler(
+		accountRepo,
+		usageRepo,
+		conversations.NewSQLiteRepository(store.DB()),
+		api.WithResponsesServerUsers(userRepo),
+	))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+created.Token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("server responses status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if firstHits != 1 || secondHits != 0 {
+		t.Fatalf("upstream hits first=%d second=%d, want only best global account", firstHits, secondHits)
+	}
+}
+
+func TestResponsesHandlerServerModeSticksToSuccessfulFailoverWithoutRoutingDBWrites(t *testing.T) {
+	t.Parallel()
+
+	primaryCalls := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"rate limit"}}`)
+	}))
+	defer primary.Close()
+
+	secondaryCalls := 0
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondaryCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_fallback","object":"response","status":"completed","output_text":"fallback"}`)
+	}))
+	defer secondary.Close()
+
+	accountStore := &stickyResponsesAccounts{items: []accounts.Account{
+		{
+			ID:                1,
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "primary-rate-limited",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           primary.URL + "/v1",
+			CredentialRef:     "sk-primary",
+			Status:            accounts.StatusActive,
+			Priority:          100,
+			SupportsResponses: true,
+		},
+		{
+			ID:                2,
+			ProviderType:      accounts.ProviderOpenAICompatible,
+			AccountName:       "secondary-success",
+			AuthMode:          accounts.AuthModeAPIKey,
+			BaseURL:           secondary.URL + "/v1",
+			CredentialRef:     "sk-secondary",
+			Status:            accounts.StatusActive,
+			Priority:          1,
+			SupportsResponses: true,
+		},
+	}}
+	usageStore := stickyResponsesUsage{snapshots: map[int64]usage.Snapshot{
+		1: {AccountID: 1, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.9},
+		2: {AccountID: 2, Balance: 100, QuotaRemaining: 100000, RPMRemaining: 100, TPMRemaining: 100000, HealthScore: 0.5},
+	}}
+	handler := api.WithServerGatewayAuth(
+		stickyResponsesUsers{user: serverusers.User{ID: 7, Name: "alice", Status: serverusers.StatusActive, CreatedAt: time.Now().UTC()}},
+		api.NewResponsesHandler(accountStore, usageStore, noopResponsesRuns{}),
+	)
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.4","input":"ping"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer valid")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want %d; body=%s", i+1, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"output_text":"fallback"`) {
+			t.Fatalf("request %d body = %s, want fallback response", i+1, rec.Body.String())
+		}
+	}
+
+	if primaryCalls != 1 {
+		t.Fatalf("primaryCalls = %d, want 1; successful fallback should be sticky", primaryCalls)
+	}
+	if secondaryCalls != 2 {
+		t.Fatalf("secondaryCalls = %d, want 2", secondaryCalls)
+	}
+	if accountStore.updateCalls != 0 {
+		t.Fatalf("Update calls = %d, want 0 routing DB writes in server mode", accountStore.updateCalls)
+	}
+	if accountStore.setActiveCalls != 0 {
+		t.Fatalf("SetActive calls = %d, want 0 routing DB writes in server mode", accountStore.setActiveCalls)
+	}
+}
+
+type stickyResponsesAccounts struct {
+	items          []accounts.Account
+	updateCalls    int
+	setActiveCalls int
+}
+
+func (s *stickyResponsesAccounts) List() ([]accounts.Account, error) {
+	items := make([]accounts.Account, len(s.items))
+	copy(items, s.items)
+	return items, nil
+}
+
+func (s *stickyResponsesAccounts) Update(accounts.Account) error {
+	s.updateCalls++
+	return nil
+}
+
+func (s *stickyResponsesAccounts) SetActive(int64) error {
+	s.setActiveCalls++
+	return nil
+}
+
+type stickyResponsesUsage struct {
+	snapshots map[int64]usage.Snapshot
+}
+
+func (s stickyResponsesUsage) GetLatest(accountID int64) (usage.Snapshot, error) {
+	if snapshot, ok := s.snapshots[accountID]; ok {
+		return snapshot, nil
+	}
+	return usage.Snapshot{AccountID: accountID, HealthScore: 1}, nil
+}
+
+func (s stickyResponsesUsage) Save(usage.Snapshot) error {
+	return nil
+}
+
+func (s stickyResponsesUsage) SaveEvent(usage.Event) error {
+	return nil
+}
+
+type stickyResponsesUsers struct {
+	user serverusers.User
+}
+
+func (s stickyResponsesUsers) Authenticate(token string) (serverusers.User, error) {
+	if token != "valid" {
+		return serverusers.User{}, sql.ErrNoRows
+	}
+	return s.user, nil
+}
+
+type noopResponsesRuns struct{}
+
+func (noopResponsesRuns) CreateConversation(conversations.Conversation) (int64, error) {
+	return 0, nil
+}
+
+func (noopResponsesRuns) CreateRun(conversations.Run) (int64, error) {
+	return 0, nil
+}
+
+func (noopResponsesRuns) AppendMessage(conversations.Message) error {
+	return nil
+}
+
+func (noopResponsesRuns) ListMessages(int64) ([]conversations.Message, error) {
+	return nil, nil
 }
 
 func TestResponsesHandlerThinModePassesThroughPreviousResponseID(t *testing.T) {
