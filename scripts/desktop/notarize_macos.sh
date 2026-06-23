@@ -73,6 +73,12 @@ else:
 PY
 }
 
+is_notary_agreement_error() {
+  local output="$1"
+
+  [[ "$output" == *"HTTP status code: 403"* && "$output" == *"required agreement"* ]]
+}
+
 sign_binary() {
   local path="$1"
 
@@ -201,12 +207,22 @@ else
   NOTARY_TARGET_PATH="$DMG_PATH"
 fi
 
-submit_output="$(xcrun notarytool submit "$NOTARY_TARGET_PATH" \
-  --key "$APPLE_API_KEY_PATH" \
-  --key-id "$APPLE_API_KEY_ID" \
-  --issuer "$APPLE_API_ISSUER" \
-  --wait \
-  --output-format json)"
+submit_output="$(
+  xcrun notarytool submit "$NOTARY_TARGET_PATH" \
+    --key "$APPLE_API_KEY_PATH" \
+    --key-id "$APPLE_API_KEY_ID" \
+    --issuer "$APPLE_API_ISSUER" \
+    --wait \
+    --output-format json 2>&1
+)" || {
+  if is_notary_agreement_error "$submit_output"; then
+    echo "Apple team agreement is missing or expired; skip notarization and continue release packaging."
+    echo "$submit_output"
+    exit 0
+  fi
+  echo "$submit_output"
+  exit 1
+}
 
 notary_id="$(extract_notary_field id "$submit_output")"
 notary_status="$(extract_notary_field status "$submit_output")"

@@ -107,6 +107,10 @@ if [[ "$1" == "notarytool" && "$2" == "submit" ]]; then
     Accepted)
       printf '{"id":"submission-123","status":"Accepted"}\n'
       ;;
+    AgreementRequired)
+      echo "Error: HTTP status code: 403. A required agreement is missing or has expired. This request requires an in-effect agreement that has not been signed or has expired." >&2
+      exit 1
+      ;;
     Invalid)
       printf '{"id":"submission-123","status":"Invalid"}\n'
       ;;
@@ -179,6 +183,28 @@ fi
 assert_contains "$log_invalid" "xcrun:notarytool submit"
 assert_contains "$log_invalid" "xcrun:notarytool log submission-123"
 assert_not_contains "$log_invalid" "stapler:"
+
+repo_agreement="$tmp_dir/repo-agreement"
+bin_agreement="$tmp_dir/bin-agreement"
+log_agreement="$tmp_dir/agreement.log"
+make_repo "$repo_agreement"
+make_fake_bin "$bin_agreement"
+make_fake_appdmg "$repo_agreement"
+
+(
+  cd "$repo_agreement"
+  CALL_LOG="$log_agreement" \
+  PATH="$bin_agreement:$PATH" \
+  APPLE_SIGNING_IDENTITY="Developer ID Application: Example Developer (TEAMID1234)" \
+  APPLE_API_KEY_PATH="$tmp_dir/AuthKey.p8" \
+  APPLE_API_KEY_ID="ABC123DEFG" \
+  APPLE_API_ISSUER="00000000-0000-0000-0000-000000000000" \
+  NOTARY_STATUS="AgreementRequired" \
+  bash scripts/desktop/notarize_macos.sh
+)
+
+assert_contains "$log_agreement" "xcrun:notarytool submit"
+assert_not_contains "$log_agreement" "stapler:"
 
 repo_accept="$tmp_dir/repo-accept"
 bin_accept="$tmp_dir/bin-accept"
