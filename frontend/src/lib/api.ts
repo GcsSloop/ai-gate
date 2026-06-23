@@ -126,9 +126,10 @@ export type ServerUser = {
   status: string;
   created_at: string;
   last_used_at?: string;
+  preferred_account_id?: number;
+  route_locked?: boolean;
   request_count?: number;
   total_tokens?: number;
-  assigned_accounts?: number;
 };
 
 export type CreatedServerUser = {
@@ -142,36 +143,68 @@ export type ServerMe = {
   total_tokens: number;
 };
 
-export type ServerAssignedAccount = {
-  user_id: number;
-  account_id: number;
-  account_name: string;
+export type ServerUpstreamAccount = {
+  id: number;
   provider_type: string;
-  source_icon?: string;
-  base_url?: string;
+  account_name: string;
+  source_icon?: "openai" | "claude_code" | "ppchat";
+  auth_mode: string;
+  base_url: string;
   status: string;
-  position: number;
-  is_active: boolean;
-  is_locked: boolean;
+  available: boolean;
+  current: boolean;
+  preferred: boolean;
+  account_locked: boolean;
   supports_responses: boolean;
-  cooldown_until?: string;
-  cooldown_reason?: string;
+  cooldown_remaining_seconds?: number;
+  routing_cooldown_remaining_seconds?: number;
+  routing_cooldown_reason?: string;
+  balance: number;
+  quota_remaining: number;
+  rpm_remaining: number;
+  tpm_remaining: number;
+  health_score: number;
+  recent_error_rate: number;
+  last_total_tokens: number;
+  last_input_tokens: number;
+  last_output_tokens: number;
+  model_context_window: number;
+  primary_used_percent: number;
+  secondary_used_percent: number;
+  primary_resets_at?: string;
+  secondary_resets_at?: string;
+  checked_at?: string;
+  stale?: boolean;
+  last_error?: string;
+  ppchat_today_used_quota?: number;
+  ppchat_today_added_quota?: number;
+  ppchat_today_remaining_quota?: number;
+  usage_display?: AccountUsageDisplay;
 };
 
-export type ServerUserAccountAssignment = {
-  account_id: number;
-  account_name: string;
-  provider_type: string;
-  source_icon?: string;
-  base_url?: string;
-  status: string;
-  assigned: boolean;
-  position: number;
-  is_active: boolean;
-  is_locked: boolean;
-  supports_responses: boolean;
-  cooldown_until?: string;
-  cooldown_reason?: string;
+export type ServerUpstreams = {
+  total_accounts: number;
+  available_accounts: number;
+  current_account_id?: number;
+  preferred_account_id?: number;
+  route_locked: boolean;
+  accounts: ServerUpstreamAccount[];
+};
+
+export type ServerRoutePayload = {
+  account_id?: number | null;
+  locked: boolean;
+};
+
+export type ServerRouteResponse = {
+  user?: ServerUser;
+  preferred_account_id?: number | null;
+  route_locked: boolean;
+};
+
+export type ServerUpstreamLockResponse = {
+  id: number;
+  account_locked: boolean;
 };
 
 export type UsageTrendPoint = {
@@ -523,6 +556,48 @@ export async function listAccountUsage(): Promise<AccountUsageRecord[]> {
   const response = await fetch(apiPath("/accounts/usage"));
   if (!response.ok) {
     throw new Error("failed to load account usage");
+  }
+  return response.json();
+}
+
+export async function getAccountUpstreams(id: number): Promise<ServerUpstreams> {
+  const response = await fetch(apiPath(`/accounts/${id}/upstreams`));
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to load account upstreams");
+  }
+  return response.json();
+}
+
+export async function updateAccountUpstreamRoute(
+  id: number,
+  payload: ServerRoutePayload,
+): Promise<ServerRouteResponse> {
+  const response = await fetch(apiPath(`/accounts/${id}/upstreams/route`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to update account upstream route");
+  }
+  return response.json();
+}
+
+export async function updateAccountUpstreamLock(
+  id: number,
+  upstreamAccountID: number,
+  locked: boolean,
+): Promise<ServerUpstreamLockResponse> {
+  const response = await fetch(apiPath(`/accounts/${id}/upstreams/${upstreamAccountID}/lock`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ locked }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to update account upstream lock");
   }
   return response.json();
 }
@@ -1183,6 +1258,17 @@ export async function disableServerUser(id: number): Promise<void> {
   }
 }
 
+export async function deleteServerUser(id: number): Promise<void> {
+  const response = await fetch(apiPath(`/server-users/${id}`), {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to delete server user");
+  }
+}
+
 export async function rotateServerUserToken(id: number): Promise<CreatedServerUser> {
   const response = await fetch(apiPath(`/server-users/${id}/rotate-token`), {
     method: "POST",
@@ -1194,27 +1280,6 @@ export async function rotateServerUserToken(id: number): Promise<CreatedServerUs
   return response.json();
 }
 
-export async function listServerUserAccounts(id: number): Promise<ServerUserAccountAssignment[]> {
-  const response = await fetch(apiPath(`/server-users/${id}/accounts`), { credentials: "include" });
-  if (!response.ok) {
-    throw new Error("failed to list server user accounts");
-  }
-  return response.json();
-}
-
-export async function setServerUserAccounts(id: number, accountIDs: number[]): Promise<void> {
-  const response = await fetch(apiPath(`/server-users/${id}/accounts`), {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ account_ids: accountIDs }),
-  });
-  if (!response.ok) {
-    const details = await response.text();
-    throw new Error(details || "failed to set server user accounts");
-  }
-}
-
 export async function getServerMe(): Promise<ServerMe> {
   const response = await fetch(apiPath("/me"), { credentials: "include" });
   if (!response.ok) {
@@ -1223,19 +1288,17 @@ export async function getServerMe(): Promise<ServerMe> {
   return response.json();
 }
 
-export async function listMyServerAccounts(): Promise<ServerAssignedAccount[]> {
-  const response = await fetch(apiPath("/me/accounts"), { credentials: "include" });
+export async function getServerUpstreams(): Promise<ServerUpstreams> {
+  const response = await fetch(apiPath("/me/upstreams"), { credentials: "include" });
   if (!response.ok) {
-    throw new Error("failed to list assigned accounts");
+    const details = await response.text();
+    throw new Error(details || "failed to load upstream accounts");
   }
   return response.json();
 }
 
-export async function updateMyServerAccountState(
-  accountID: number,
-  payload: { position: number; is_active: boolean; is_locked: boolean },
-): Promise<void> {
-  const response = await fetch(apiPath(`/me/accounts/${accountID}/state`), {
+export async function updateServerRoute(payload: ServerRoutePayload): Promise<ServerRouteResponse> {
+  const response = await fetch(apiPath("/me/route"), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -1243,8 +1306,26 @@ export async function updateMyServerAccountState(
   });
   if (!response.ok) {
     const details = await response.text();
-    throw new Error(details || "failed to update assigned account state");
+    throw new Error(details || "failed to update upstream route");
   }
+  return response.json();
+}
+
+export async function updateServerUpstreamLock(
+  accountID: number,
+  locked: boolean,
+): Promise<ServerUpstreamLockResponse> {
+  const response = await fetch(apiPath(`/me/upstreams/${accountID}/lock`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ locked }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(details || "failed to update upstream lock");
+  }
+  return response.json();
 }
 
 export async function enableProxy(): Promise<ProxyStatus> {
