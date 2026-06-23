@@ -13,6 +13,7 @@ import {
   openExternalUrl,
   writeDesktopClipboardText,
 } from "../../lib/desktop-shell";
+import { setAPIBase } from "../../lib/paths";
 import { AccountsPage } from "./AccountsPage";
 
 vi.mock("../../lib/desktop-shell", () => ({
@@ -35,7 +36,15 @@ function renderAccountsPage() {
 describe("AccountsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setAPIBase("/ai-router/api");
+    window.history.pushState({}, "", "/ai-router/webui/");
     vi.mocked(isDesktopShell).mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    window.history.pushState({}, "", "/");
+    setAPIBase("/ai-router/api");
+    vi.unstubAllGlobals();
   });
 
   it("supports official oauth branch and keeps local import as a separate branch", async () => {
@@ -740,6 +749,216 @@ describe("AccountsPage", () => {
     expect(within(detailModal).getByText("美元")).toBeInTheDocument();
     expect(within(detailModal).queryByText("5 小时剩余")).not.toBeInTheDocument();
     expect(within(detailModal).queryByText("1 周剩余")).not.toBeInTheDocument();
+  });
+
+  it("shows ai-gate upstream counts and toggles inline details", async () => {
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "t1",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "http://127.0.0.1:6791/ai-gate/v1",
+        account_driver: "builtin_api_key",
+        usage_driver: "",
+        usage_config_json: "",
+        status: "active",
+        is_active: false,
+        priority: 1,
+        supports_responses: true,
+        balance: 1,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const routeRequests: Array<{ account_id?: number | null; locked: boolean }> = [];
+    const lockRequests: Array<{ locked: boolean }> = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/1/upstreams" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              total_accounts: 3,
+              available_accounts: 2,
+              current_account_id: 11,
+              route_locked: false,
+              accounts: [
+                {
+                  id: 11,
+                  provider_type: "openai-compatible",
+                  account_name: "upstream-a",
+                  source_icon: "openai",
+                  auth_mode: "api_key",
+                  base_url: "https://up-a.example/v1",
+                  status: "active",
+                  available: true,
+                  current: true,
+                  preferred: false,
+                  account_locked: false,
+                  supports_responses: true,
+                  balance: 0,
+                  quota_remaining: 100,
+                  rpm_remaining: 0,
+                  tpm_remaining: 0,
+                  health_score: 0,
+                  recent_error_rate: 0,
+                  last_total_tokens: 0,
+                  last_input_tokens: 0,
+                  last_output_tokens: 0,
+                  model_context_window: 0,
+                  primary_used_percent: 0,
+                  secondary_used_percent: 0,
+                },
+                {
+                  id: 12,
+                  provider_type: "openai-compatible",
+                  account_name: "upstream-b",
+                  source_icon: "ppchat",
+                  auth_mode: "api_key",
+                  base_url: "https://code.ppchat.vip/v1",
+                  status: "active",
+                  available: true,
+                  current: false,
+                  preferred: false,
+                  account_locked: true,
+                  supports_responses: true,
+                  balance: 0,
+                  quota_remaining: -2,
+                  rpm_remaining: 0,
+                  tpm_remaining: 0,
+                  health_score: 0,
+                  recent_error_rate: 0,
+                  last_total_tokens: 0,
+                  last_input_tokens: 0,
+                  last_output_tokens: 0,
+                  model_context_window: 0,
+                  primary_used_percent: 0,
+                  secondary_used_percent: 0,
+                  ppchat_today_used_quota: 22,
+                  ppchat_today_added_quota: 20,
+                  ppchat_today_remaining_quota: -2,
+                },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/1/upstreams/route" &&
+        init?.method === "PUT"
+      ) {
+        routeRequests.push(JSON.parse(String(init.body)));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              preferred_account_id: routeRequests.at(-1)?.account_id,
+              route_locked: routeRequests.at(-1)?.locked,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (
+        url === "/ai-router/api/accounts/1/upstreams/12/lock" &&
+        init?.method === "PUT"
+      ) {
+        lockRequests.push(JSON.parse(String(init.body)));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 12,
+              account_locked: lockRequests.at(-1)?.locked,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    const card = (await screen.findByText("t1")).closest(".account-card-item");
+    expect(card).not.toBeNull();
+    await waitFor(() => {
+      expect(within(card as HTMLElement).getByText("可用/全部")).toBeInTheDocument();
+      expect(within(card as HTMLElement).getByText("2/3")).toBeInTheDocument();
+    });
+    expect(
+      within(card as HTMLElement).getByRole("img", { name: "AI Gate" }),
+    ).toBeInTheDocument();
+    expect(within(card as HTMLElement).queryByText("余额")).not.toBeInTheDocument();
+
+    fireEvent.click(card as HTMLElement);
+    expect(await screen.findByText("upstream-a")).toBeInTheDocument();
+    expect(screen.getByText("https://up-a.example/v1")).toBeInTheDocument();
+    expect(screen.getByText("当前使用中")).toBeInTheDocument();
+    const ppchatRow = screen
+      .getByText("upstream-b")
+      .closest(".account-remote-upstream-row") as HTMLElement;
+    expect(ppchatRow).not.toBeNull();
+    expect(within(ppchatRow).getByText("1D")).toBeInTheDocument();
+    expect(within(ppchatRow).getByText("0%")).toBeInTheDocument();
+    expect(within(ppchatRow).getByText("已锁定")).toBeInTheDocument();
+
+    fireEvent.mouseEnter(ppchatRow);
+    fireEvent.click(
+      within(ppchatRow).getByRole("button", { name: "启用-upstream-b" }),
+    );
+    await waitFor(() => {
+      expect(routeRequests).toContainEqual({ account_id: 12, locked: false });
+    });
+    fireEvent.click(
+      within(ppchatRow).getByRole("button", { name: "解除锁定-upstream-b" }),
+    );
+    await waitFor(() => {
+      expect(lockRequests).toContainEqual({ locked: false });
+    });
+    expect(routeRequests).toEqual([{ account_id: 12, locked: false }]);
+
+    fireEvent.click(card as HTMLElement);
+    await waitFor(() => {
+      expect(screen.queryByText("upstream-a")).not.toBeInTheDocument();
+    });
   });
 
   it("confirms before sharing and only copies after explicit approval", async () => {
@@ -1933,6 +2152,94 @@ describe("AccountsPage", () => {
     await waitFor(() => {
       expect(refreshDesktopTrayState).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("hides global activation state in server webui", async () => {
+    window.history.pushState({}, "", "/ai-gate/webui/");
+    setAPIBase("/ai-gate/api");
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "server-active",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://ai.nodeseek.in",
+        status: "active",
+        is_active: true,
+        priority: 2,
+        balance: 226.31,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+      {
+        id: 2,
+        provider_type: "openai-compatible",
+        account_name: "server-standby",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://code.ppchat.vip/v1",
+        status: "active",
+        is_active: false,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 0,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-gate/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (
+        url === "/ai-gate/api/accounts/usage" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = renderAccountsPage();
+
+    expect(await screen.findByText("server-active")).toBeInTheDocument();
+    expect(screen.queryByText("当前使用中")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "设为激活-server-standby" })).not.toBeInTheDocument();
+    expect(container.querySelector(".active-account-card")).toBeNull();
   });
 
   it("toggles account lock state and only shows lock marker for locked accounts", async () => {

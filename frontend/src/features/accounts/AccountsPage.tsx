@@ -65,6 +65,7 @@ import {
   createAccount,
   completeOfficialAuthDevice,
   deleteAccount,
+  getAccountUpstreams,
   startOfficialAuth,
   getLuaUsageScript,
   importCurrentCodexAuth,
@@ -78,13 +79,19 @@ import {
   testAccount,
   testLuaUsage,
   updateAccount,
+  updateAccountUpstreamLock,
+  updateAccountUpstreamRoute,
   type AccountRecord,
   type AccountTestResult,
   type OfficialAuthSession,
+  type ServerUpstreamAccount,
+  type ServerUpstreams,
 } from "../../lib/api";
 import { writeClipboardText } from "../../lib/clipboard";
 import { openExternalUrl, refreshDesktopTrayState } from "../../lib/desktop-shell";
 import type { AppLanguage, Translator } from "../../lib/i18n";
+import { isServerWebUI } from "../../lib/paths";
+import sourceAIGateIcon from "../../assets/aigate_1024_1024.png";
 import sourceClaudeCodeIcon from "../../assets/providers/claude-code.png";
 import sourceOpenAIIcon from "../../assets/providers/openai.png";
 import sourcePPChatIcon from "../../assets/providers/ppchat.png";
@@ -116,13 +123,16 @@ const authModeTextMap: Record<string, string> = {
   codex_local_import: "本地导入",
 };
 
-type SourceIcon = "openai" | "claude_code" | "ppchat";
+type SourceIcon = "openai" | "claude_code" | "ppchat" | "aigate";
 
 const sourceIconMap: Record<SourceIcon, { label: string; icon: string }> = {
   openai: { label: "OpenAI", icon: sourceOpenAIIcon },
   claude_code: { label: "Claude Code", icon: sourceClaudeCodeIcon },
   ppchat: { label: "PPChat", icon: sourcePPChatIcon },
+  aigate: { label: "AI Gate", icon: sourceAIGateIcon },
 };
+
+const selectableSourceIcons: SourceIcon[] = ["openai", "claude_code", "ppchat"];
 
 const TEST_MODEL_SUGGESTIONS = [
   "gpt-5.5",
@@ -815,6 +825,87 @@ function isPPChatAccount(record: AccountRecord): boolean {
   );
 }
 
+function isPPChatUpstream(account: ServerUpstreamAccount): boolean {
+  return (
+    normalizeSourceIcon(account.source_icon) === "ppchat" ||
+    /ppchat\.vip/i.test(account.base_url)
+  );
+}
+
+function isRemoteUpstreamStatusSelectable(account: ServerUpstreamAccount): boolean {
+  return account.status !== "disabled" && account.status !== "invalid";
+}
+
+function canManuallySelectRemoteUpstream(account: ServerUpstreamAccount): boolean {
+  return isRemoteUpstreamStatusSelectable(account);
+}
+
+function isAIGateAccount(record: AccountRecord): boolean {
+  const raw = (record.base_url || "").trim();
+  if (raw === "") {
+    return false;
+  }
+  try {
+    const parsed = new URL(raw);
+    return parsed.pathname.split("/").filter(Boolean).includes("ai-gate");
+  } catch {
+    return /(^|\/)ai-gate(\/|$)/i.test(raw);
+  }
+}
+
+function getDisplaySourceIcon(record: AccountRecord): SourceIcon {
+  return isAIGateAccount(record) ? "aigate" : normalizeSourceIcon(record.source_icon);
+}
+
+function isInteractiveTarget(
+  target: EventTarget | null,
+  root?: Element | null,
+): boolean {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+  const interactive = target.closest(
+    "button,a,input,textarea,select,[role='button'],[data-no-row-toggle='true']",
+  );
+  return Boolean(interactive && interactive !== root);
+}
+
+function formatRemoteUpstreamUsage(
+  account: ServerUpstreamAccount,
+  language: AppLanguage,
+): string {
+  const display = account.usage_display?.summary;
+  if (display?.label || display?.value) {
+    return `${display.label ?? ""} ${display.value ?? ""}`.trim();
+  }
+  if (account.balance > 0) {
+    return `${language === "en-US" ? "Balance" : "余额"} ${formatUsageAmount(language, account.balance)}`;
+  }
+  if (account.quota_remaining > 0) {
+    return `${language === "en-US" ? "Quota" : "额度"} ${formatUsageAmount(language, account.quota_remaining)}`;
+  }
+  return language === "en-US" ? "Usage unknown" : "用量未知";
+}
+
+function buildRemoteUpstreamUsageWindow(
+  account: ServerUpstreamAccount,
+  language: AppLanguage,
+) {
+  const addedQuota = account.ppchat_today_added_quota ?? 0;
+  if (isPPChatUpstream(account) && addedQuota > 0) {
+    return {
+      label: "1D",
+      remainingPercent: clampPercent(
+        ((account.ppchat_today_remaining_quota ?? 0) /
+          Math.max(addedQuota, 1)) *
+          100,
+      ),
+      resetLabel: formatTomorrowMidnight(language),
+    };
+  }
+  return null;
+}
+
 function buildGenericUsageWindows(
   record: AccountRecord,
   language: AppLanguage,
@@ -963,6 +1054,12 @@ type AccountCardRenderOptions = {
   style?: CSSProperties;
 };
 
+type RemoteUpstreamsState = {
+  loading: boolean;
+  data?: ServerUpstreams;
+  error?: string;
+};
+
 type SortableAccountCardProps = {
   id: number;
   record: AccountRecord;
@@ -1051,6 +1148,12 @@ export function AccountsPage({
   const [visibleActionAccountID, setVisibleActionAccountID] = useState<
     number | null
   >(null);
+  const [remoteUpstreamsByAccountID, setRemoteUpstreamsByAccountID] = useState<
+    Record<number, RemoteUpstreamsState>
+  >({});
+  const [expandedRemoteAccountID, setExpandedRemoteAccountID] = useState<
+    number | null
+  >(null);
 
   const [thirdPartyForm] = Form.useForm();
   const [officialForm] = Form.useForm();
@@ -1061,6 +1164,7 @@ export function AccountsPage({
   const editBaseURL = Form.useWatch("base_url", editForm);
   const accountsRef = useRef<AccountRecord[]>([]);
   const dragSnapshotRef = useRef<AccountRecord[] | null>(null);
+  const serverWebUI = isServerWebUI();
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 4 },
@@ -1200,6 +1304,7 @@ export function AccountsPage({
     accountsRef.current = accountItems;
     setAccounts(accountItems);
     void refreshUsage();
+    void refreshRemoteUpstreams(accountItems);
   }
 
   async function refreshUsage() {
@@ -1225,6 +1330,56 @@ export function AccountsPage({
     } catch {
       // Keep base account list responsive even when usage endpoint is unavailable.
     }
+  }
+
+  async function refreshRemoteUpstreams(accountItems: AccountRecord[]) {
+    const aiGateAccounts = accountItems.filter(isAIGateAccount);
+    const aiGateIDs = new Set(aiGateAccounts.map((item) => item.id));
+    setRemoteUpstreamsByAccountID((previous) => {
+      const next: Record<number, RemoteUpstreamsState> = {};
+      for (const account of aiGateAccounts) {
+        next[account.id] = {
+          loading: true,
+          data: previous[account.id]?.data,
+          error: undefined,
+        };
+      }
+      return next;
+    });
+    setExpandedRemoteAccountID((current) =>
+      current !== null && aiGateIDs.has(current) ? current : null,
+    );
+    await Promise.all(
+      aiGateAccounts.map(async (account) => {
+        try {
+          const data = await getAccountUpstreams(account.id);
+          setRemoteUpstreamsByAccountID((previous) => {
+            if (!accountsRef.current.some((item) => item.id === account.id && isAIGateAccount(item))) {
+              return previous;
+            }
+            return {
+              ...previous,
+              [account.id]: { loading: false, data },
+            };
+          });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : t("无法读取上游状态");
+          setRemoteUpstreamsByAccountID((previous) => {
+            if (!accountsRef.current.some((item) => item.id === account.id && isAIGateAccount(item))) {
+              return previous;
+            }
+            return {
+              ...previous,
+              [account.id]: { loading: false, error: message },
+            };
+          });
+          setExpandedRemoteAccountID((current) =>
+            current === account.id ? null : current,
+          );
+        }
+      }),
+    );
   }
 
   async function handleCreateThirdParty(values: {
@@ -1696,6 +1851,112 @@ export function AccountsPage({
     }
   }
 
+  async function handleUpdateRemoteUpstreamRoute(
+    account: AccountRecord,
+    upstream: ServerUpstreamAccount,
+    locked: boolean,
+  ) {
+    if (!canManuallySelectRemoteUpstream(upstream)) {
+      return;
+    }
+    try {
+      const response = await updateAccountUpstreamRoute(account.id, {
+        account_id: upstream.id,
+        locked,
+      });
+      const preferredAccountID = response.preferred_account_id ?? upstream.id;
+      setRemoteUpstreamsByAccountID((previous) => {
+        const state = previous[account.id];
+        if (!state?.data) {
+          return previous;
+        }
+        return {
+          ...previous,
+          [account.id]: {
+            ...state,
+            data: {
+              ...state.data,
+              current_account_id: preferredAccountID,
+              preferred_account_id: preferredAccountID,
+              route_locked: response.route_locked,
+              accounts: state.data.accounts.map((item) => ({
+                ...item,
+                current: item.id === preferredAccountID,
+                preferred: item.id === preferredAccountID,
+              })),
+            },
+          },
+        };
+      });
+      void messageApi.success(
+        language === "en-US"
+          ? locked
+            ? `Locked upstream ${upstream.account_name}`
+            : `Enabled upstream ${upstream.account_name}`
+          : locked
+            ? `已锁定上游账户 ${upstream.account_name}`
+            : `已启用上游账户 ${upstream.account_name}`,
+      );
+    } catch (error) {
+      void messageApi.error(
+        error instanceof Error ? t(error.message) : t("更新上游路由失败"),
+      );
+    }
+  }
+
+  async function handleUpdateRemoteUpstreamLock(
+    account: AccountRecord,
+    upstream: ServerUpstreamAccount,
+    locked: boolean,
+  ) {
+    try {
+      const response = await updateAccountUpstreamLock(account.id, upstream.id, locked);
+      setRemoteUpstreamsByAccountID((previous) => {
+        const state = previous[account.id];
+        if (!state?.data) {
+          return previous;
+        }
+        return {
+          ...previous,
+          [account.id]: {
+            ...state,
+            data: {
+              ...state.data,
+              available_accounts: state.data.accounts.reduce((count, item) => {
+                if (item.id === upstream.id) {
+                  return count + (locked ? 0 : isRemoteUpstreamStatusSelectable(item) ? 1 : 0);
+                }
+                return count + (item.available ? 1 : 0);
+              }, 0),
+              accounts: state.data.accounts.map((item) =>
+                item.id === upstream.id
+                  ? {
+                      ...item,
+                      account_locked: response.account_locked,
+                      available: !response.account_locked && isRemoteUpstreamStatusSelectable(item),
+                    }
+                  : item,
+              ),
+            },
+          },
+        };
+      });
+      void messageApi.success(
+        language === "en-US"
+          ? locked
+            ? `Locked upstream account ${upstream.account_name}`
+            : `Unlocked upstream account ${upstream.account_name}`
+          : locked
+            ? `已锁定上游账户 ${upstream.account_name}`
+            : `已解除锁定上游账户 ${upstream.account_name}`,
+      );
+    } catch (error) {
+      void messageApi.error(
+        error instanceof Error ? t(error.message) : t("更新上游锁定状态失败"),
+      );
+    }
+  }
+
   async function handleShareAccount(record: AccountRecord) {
     await modal.confirm({
       title: t("分享账户"),
@@ -1855,8 +2116,12 @@ export function AccountsPage({
     options: AccountCardRenderOptions = {},
   ) {
     const actionsVisible = visibleActionAccountID === record.id;
-    const sourceIcon = sourceIconMap[normalizeSourceIcon(record.source_icon)];
+    const sourceIcon = sourceIconMap[getDisplaySourceIcon(record)];
     const usageHealthState = getUsageHealthState(record);
+    const aiGateAccount = isAIGateAccount(record);
+    const remoteState = remoteUpstreamsByAccountID[record.id];
+    const remoteUpstreams = remoteState?.data;
+    const remoteExpanded = expandedRemoteAccountID === record.id && Boolean(remoteUpstreams);
     const usageWindows = record.usage_display?.summary
       ? []
       : isOfficialAccount(record)
@@ -1887,13 +2152,24 @@ export function AccountsPage({
         : buildGenericUsageWindows(record, language);
     const usageAmount =
       usageWindows.length === 0 ? buildUsageAmount(record, language) : null;
+    const canToggleRemote = aiGateAccount && Boolean(remoteUpstreams) && !options.actionsDisabled;
+    const toggleRemote = () => {
+      if (!canToggleRemote) {
+        return;
+      }
+      setExpandedRemoteAccountID((current) => (current === record.id ? null : record.id));
+    };
 
     return (
       <div
         ref={options.cardRef}
-        className={`account-card-item ${record.is_active ? "active-account-card" : ""} ${options.className ?? ""}`.trim()}
+        className={`account-card-item ${record.is_active && !serverWebUI ? "active-account-card" : ""} ${aiGateAccount ? "has-remote-upstreams" : ""} ${remoteExpanded ? "is-remote-expanded" : ""} ${options.className ?? ""}`.trim()}
         style={options.style}
         data-actions-visible={actionsVisible ? "true" : "false"}
+        role={canToggleRemote ? "button" : undefined}
+        tabIndex={canToggleRemote ? 0 : undefined}
+        aria-expanded={canToggleRemote ? remoteExpanded : undefined}
+        aria-label={canToggleRemote ? `${remoteExpanded ? t("收起上游") : t("展开上游")}-${record.account_name}` : undefined}
         onFocus={options.actionsDisabled ? undefined : () => handleCardFocus(record.id)}
         onBlur={
           options.actionsDisabled
@@ -1907,6 +2183,28 @@ export function AccountsPage({
           options.actionsDisabled
             ? undefined
             : (event) => handleCardMouseLeave(record.id, event)
+        }
+        onClick={
+          canToggleRemote
+            ? (event) => {
+                if (!isInteractiveTarget(event.target, event.currentTarget)) {
+                  toggleRemote();
+                }
+              }
+            : undefined
+        }
+        onKeyDown={
+          canToggleRemote
+            ? (event) => {
+                if (isInteractiveTarget(event.target, event.currentTarget)) {
+                  return;
+                }
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  toggleRemote();
+                }
+              }
+            : undefined
         }
       >
         <Card variant="borderless" className="account-card-surface">
@@ -1928,6 +2226,7 @@ export function AccountsPage({
             <div className="account-main">
               <Avatar
                 src={sourceIcon.icon}
+                alt={sourceIcon.label}
                 size={36}
                 shape="square"
                 className="account-source-icon"
@@ -1947,7 +2246,7 @@ export function AccountsPage({
                       />
                     </Tooltip>
                   ) : null}
-                  {record.is_active ? (
+                  {record.is_active && !serverWebUI ? (
                     <Tag color="green">{t("当前使用中")}</Tag>
                   ) : null}
                 </div>
@@ -1973,57 +2272,74 @@ export function AccountsPage({
               </div>
             </div>
             <div className="account-side-slot">
-              <div
-                className={`account-usage-mini ${usageWindows.length === 0 ? "account-usage-mini-empty" : ""} ${usageWindows.length === 1 ? "account-usage-mini-single" : ""}`.trim()}
-              >
-                {usageAmount ? (
-                  <div className="account-usage-amount">
-                    <span className="account-usage-amount-label">
-                      {usageAmount.label}
-                    </span>
-                    <span className="account-usage-amount-value">
-                      {usageAmount.value}
+              {aiGateAccount ? (
+                <Tooltip
+                  title={remoteState?.error ? t("无法读取上游状态") : t("点击展开上游详情")}
+                  placement="top"
+                  getPopupContainer={() => document.body}
+                >
+                  <div className={`account-upstream-mini ${remoteState?.loading ? "is-loading" : ""}`.trim()}>
+                    <span className="account-upstream-mini-label">{t("可用/全部")}</span>
+                    <span className="account-upstream-mini-value">
+                      {remoteUpstreams ? `${remoteUpstreams.available_accounts}/${remoteUpstreams.total_accounts}` : "--"}
                     </span>
                   </div>
-                ) : null}
-                {usageWindows.map((item) => (
-                  <div className="account-usage-mini-row" key={item.label}>
-                    <div className="account-usage-mini-head">
-                      <span className="account-usage-mini-label">
-                        {item.label}
+                </Tooltip>
+              ) : (
+                <div
+                  className={`account-usage-mini ${usageWindows.length === 0 ? "account-usage-mini-empty" : ""} ${usageWindows.length === 1 ? "account-usage-mini-single" : ""}`.trim()}
+                >
+                  {usageAmount ? (
+                    <div className="account-usage-amount">
+                      <span className="account-usage-amount-label">
+                        {usageAmount.label}
                       </span>
-                      <span className="account-usage-mini-reset">
-                        {item.resetLabel || ""}
+                      <span className="account-usage-amount-value">
+                        {usageAmount.value}
                       </span>
-                      <span
-                        className={`account-usage-mini-value is-${getRemainingTone(item.remainingPercent)}`}
-                      >{`${Math.round(item.remainingPercent)}%`}</span>
                     </div>
-                    <div className="account-usage-mini-meter">
-                      <div
-                        className="account-usage-mini-track"
-                        aria-label={`${record.account_name}-${item.label}`}
-                      >
+                  ) : null}
+                  {usageWindows.map((item) => (
+                    <div className="account-usage-mini-row" key={item.label}>
+                      <div className="account-usage-mini-head">
+                        <span className="account-usage-mini-label">
+                          {item.label}
+                        </span>
+                        <span className="account-usage-mini-reset">
+                          {item.resetLabel || ""}
+                        </span>
+                        <span
+                          className={`account-usage-mini-value is-${getRemainingTone(item.remainingPercent)}`}
+                        >{`${Math.round(item.remainingPercent)}%`}</span>
+                      </div>
+                      <div className="account-usage-mini-meter">
                         <div
-                          className={`account-usage-mini-fill is-${getRemainingTone(item.remainingPercent)}`}
-                          style={{ width: `${item.remainingPercent}%` }}
-                        />
+                          className="account-usage-mini-track"
+                          aria-label={`${record.account_name}-${item.label}`}
+                        >
+                          <div
+                            className={`account-usage-mini-fill is-${getRemainingTone(item.remainingPercent)}`}
+                            style={{ width: `${item.remainingPercent}%` }}
+                          />
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
               <div className="account-actions">
-                <Button
-                  type="primary"
-                  className="account-enable-button"
-                  aria-label={`${t("设为激活")}-${record.account_name}`}
-                  icon={<CheckCircleOutlined />}
-                  disabled={record.is_active || options.actionsDisabled}
-                  onClick={() => void handleSetActive(record)}
-                >
-                  {t("启用")}
-                </Button>
+                {!serverWebUI ? (
+                  <Button
+                    type="primary"
+                    className="account-enable-button"
+                    aria-label={`${t("设为激活")}-${record.account_name}`}
+                    icon={<CheckCircleOutlined />}
+                    disabled={record.is_active || options.actionsDisabled}
+                    onClick={() => void handleSetActive(record)}
+                  >
+                    {t("启用")}
+                  </Button>
+                ) : null}
                 <Button
                   type="text"
                   className="account-action-button"
@@ -2089,6 +2405,85 @@ export function AccountsPage({
             </div>
           </div>
         </Card>
+        {remoteExpanded && remoteUpstreams ? (
+          <div className="account-remote-upstreams-panel" data-no-row-toggle="true">
+            <div className="account-remote-upstreams-list">
+              {remoteUpstreams.accounts.map((account) => {
+                const remoteUsageWindow = buildRemoteUpstreamUsageWindow(
+                  account,
+                  language,
+                );
+                return (
+                  <div
+                    className={account.current ? "account-remote-upstream-row is-current" : "account-remote-upstream-row"}
+                    key={account.id}
+                  >
+                    <div className="account-remote-upstream-main">
+                      <div className="account-remote-upstream-title">
+                        <Text strong>{account.account_name}</Text>
+                        {account.current ? <Tag color="green">{t("当前使用中")}</Tag> : null}
+                        {account.account_locked ? <Tag color="blue">{t("已锁定")}</Tag> : null}
+                        {!account.available && !account.account_locked ? <Tag>{t("不可用")}</Tag> : null}
+                      </div>
+                      <Text type="secondary" className="account-remote-upstream-url">
+                        {account.base_url || t("OpenAI 官方")}
+                      </Text>
+                    </div>
+                    <div className="account-remote-upstream-meta">
+                      {remoteUsageWindow ? (
+                        <div className="account-remote-upstream-usage-mini">
+                          <div className="account-usage-mini-head">
+                            <span className="account-usage-mini-label">
+                              {remoteUsageWindow.label}
+                            </span>
+                            <span className="account-usage-mini-reset">
+                              {remoteUsageWindow.resetLabel}
+                            </span>
+                            <span
+                              className={`account-usage-mini-value is-${getRemainingTone(remoteUsageWindow.remainingPercent)}`}
+                            >{`${Math.round(remoteUsageWindow.remainingPercent)}%`}</span>
+                          </div>
+                          <div className="account-usage-mini-meter">
+                            <div className="account-usage-mini-track">
+                              <div
+                                className={`account-usage-mini-fill is-${getRemainingTone(remoteUsageWindow.remainingPercent)}`}
+                                style={{ width: `${remoteUsageWindow.remainingPercent}%` }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <span>{formatRemoteUpstreamUsage(account, language)}</span>
+                  )}
+                      <span>{t(statusTextMap[account.status] ?? account.status)}</span>
+                    </div>
+                    <div className="account-remote-upstream-actions">
+                      <Button
+                        type="text"
+                        className="account-action-button"
+                        aria-label={`${t("启用")}-${account.account_name}`}
+                        icon={<CheckCircleOutlined />}
+                        disabled={!canManuallySelectRemoteUpstream(account) || (account.current && !remoteUpstreams.route_locked)}
+                        onClick={() => void handleUpdateRemoteUpstreamRoute(record, account, false)}
+                      />
+                      <Button
+                        type="text"
+                        className="account-action-button"
+                        aria-label={`${account.account_locked ? t("解除锁定") : t("锁定")}-${account.account_name}`}
+                        icon={account.account_locked ? <UnlockOutlined /> : <LockOutlined />}
+                        disabled={!isRemoteUpstreamStatusSelectable(account)}
+                        onClick={() => void handleUpdateRemoteUpstreamLock(record, account, !account.account_locked)}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+              {remoteUpstreams.accounts.length === 0 ? (
+                <Text type="secondary">{t("暂无上游账号")}</Text>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -2193,7 +2588,7 @@ export function AccountsPage({
                   <Descriptions.Item label={t("来源")}>
                     {
                       sourceIconMap[
-                        normalizeSourceIcon(detailAccount.source_icon)
+                        getDisplaySourceIcon(detailAccount)
                       ].label
                     }
                   </Descriptions.Item>
@@ -2469,7 +2864,7 @@ export function AccountsPage({
             rules={[{ required: true, message: t("请选择来源图标") }]}
           >
             <Select
-              options={(Object.keys(sourceIconMap) as SourceIcon[]).map(
+              options={selectableSourceIcons.map(
                 (key) => ({
                   value: key,
                   label: (

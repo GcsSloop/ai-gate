@@ -1,8 +1,9 @@
-import { CopyOutlined, PlusOutlined, ReloadOutlined, StopOutlined, TeamOutlined } from "@ant-design/icons";
+import { CopyOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, StopOutlined } from "@ant-design/icons";
 import { Alert, Button, Input, Modal, Space, Table, Tag, Typography, message } from "antd";
 import { useEffect, useState } from "react";
 
-import { createServerUser, disableServerUser, listServerUserAccounts, listServerUsers, rotateServerUserToken, setServerUserAccounts, type ServerUser, type ServerUserAccountAssignment } from "../../lib/api";
+import { createServerUser, deleteServerUser, disableServerUser, listServerUsers, rotateServerUserToken, type CreatedServerUser, type ServerUser } from "../../lib/api";
+import { writeClipboardText } from "../../lib/clipboard";
 
 type ServerUsersPageProps = {
   t: (value: string) => string;
@@ -12,12 +13,9 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
   const [users, setUsers] = useState<ServerUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState("");
-  const [issuedToken, setIssuedToken] = useState("");
-  const [assignmentUser, setAssignmentUser] = useState<ServerUser | null>(null);
-  const [assignments, setAssignments] = useState<ServerUserAccountAssignment[]>([]);
-  const [selectedAccountIDs, setSelectedAccountIDs] = useState<number[]>([]);
-  const [assignmentLoading, setAssignmentLoading] = useState(false);
+  const [issuedCredential, setIssuedCredential] = useState<CreatedServerUser | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+  const issuedToken = issuedCredential?.token ?? "";
 
   async function refresh() {
     setLoading(true);
@@ -39,56 +37,22 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
     }
     const created = await createServerUser(trimmed);
     setName("");
-    setIssuedToken(created.token);
+    setIssuedCredential(created);
     await refresh();
   }
 
   async function handleRotate(user: ServerUser) {
     const rotated = await rotateServerUserToken(user.id);
-    setIssuedToken(rotated.token);
+    setIssuedCredential(rotated);
     await refresh();
   }
 
-  async function copyToken() {
-    await navigator.clipboard.writeText(issuedToken);
-    void messageApi.success(t("令牌已复制"));
-  }
-
-  async function openAssignments(user: ServerUser) {
-    setAssignmentUser(user);
-    setAssignmentLoading(true);
-    try {
-      const items = await listServerUserAccounts(user.id);
-      setAssignments(items);
-      setSelectedAccountIDs(items.filter((item) => item.assigned).map((item) => item.account_id));
-    } finally {
-      setAssignmentLoading(false);
-    }
-  }
-
-  async function saveAssignments() {
-    if (!assignmentUser) {
+  async function copyIssuedImportPayload() {
+    if (!issuedCredential) {
       return;
     }
-    setAssignmentLoading(true);
-    try {
-      await setServerUserAccounts(assignmentUser.id, selectedAccountIDs);
-      setAssignmentUser(null);
-      setAssignments([]);
-      setSelectedAccountIDs([]);
-      await refresh();
-    } finally {
-      setAssignmentLoading(false);
-    }
-  }
-
-  function toggleSelectedAccount(accountID: number, checked: boolean) {
-    setSelectedAccountIDs((current) => {
-      if (checked) {
-        return current.includes(accountID) ? current : [...current, accountID];
-      }
-      return current.filter((value) => value !== accountID);
-    });
+    await writeClipboardText(buildServerUserImportPayload(issuedCredential));
+    void messageApi.success(t("AI Gate 导入配置已复制"));
   }
 
   return (
@@ -115,7 +79,11 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
           description={
             <Space.Compact className="server-users-token-row">
               <Input value={issuedToken} readOnly />
-              <Button icon={<CopyOutlined />} onClick={() => void copyToken()} />
+              <Button
+                aria-label={t("复制 AI Gate 导入配置")}
+                icon={<CopyOutlined />}
+                onClick={() => void copyIssuedImportPayload()}
+              />
             </Space.Compact>
           }
         />
@@ -134,19 +102,16 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
           },
           { title: t("请求数"), dataIndex: "request_count", align: "right" },
           { title: t("总 Tokens"), dataIndex: "total_tokens", align: "right" },
-          { title: t("账户池"), dataIndex: "assigned_accounts", align: "right", render: (value?: number) => value ?? 0 },
           {
             title: t("操作"),
             key: "actions",
             align: "right",
             render: (_: unknown, user: ServerUser) => (
               <Space>
-                <Button icon={<TeamOutlined />} aria-label={t("分配账户")} onClick={() => void openAssignments(user)}>
-                  {t("分配账户")}
-                </Button>
                 <Button icon={<ReloadOutlined />} onClick={() => void handleRotate(user)} />
                 <Button
                   danger
+                  aria-label={`${t("禁用用户")}-${user.name}`}
                   icon={<StopOutlined />}
                   disabled={user.status !== "active"}
                   onClick={() => {
@@ -160,38 +125,68 @@ export function ServerUsersPage({ t }: ServerUsersPageProps) {
                     });
                   }}
                 />
+                <Button
+                  danger
+                  aria-label={`${t("删除用户")}-${user.name}`}
+                  icon={<DeleteOutlined />}
+                  onClick={() => {
+                    Modal.confirm({
+                      title: t("删除用户"),
+                      content: user.name,
+                      okText: t("确认删除"),
+                      cancelText: t("取消"),
+                      okButtonProps: { danger: true },
+                      onOk: async () => {
+                        await deleteServerUser(user.id);
+                        if (issuedCredential?.user.id === user.id) {
+                          setIssuedCredential(null);
+                        }
+                        await refresh();
+                      },
+                    });
+                  }}
+                />
               </Space>
             ),
           },
         ]}
       />
-      <Modal
-        open={assignmentUser !== null}
-        title={assignmentUser ? `${t("分配账户")} · ${assignmentUser.name}` : t("分配账户")}
-        okText={t("保存")}
-        cancelText={t("取消")}
-        okButtonProps={{ "aria-label": t("保存") }}
-        confirmLoading={assignmentLoading}
-        onOk={() => void saveAssignments()}
-        onCancel={() => {
-          setAssignmentUser(null);
-          setAssignments([]);
-          setSelectedAccountIDs([]);
-        }}
-      >
-        <Space orientation="vertical" className="server-users-assignment-list">
-          {assignments.map((item) => (
-            <label key={item.account_id} className="server-users-assignment-row">
-              <Space>
-                <input type="checkbox" checked={selectedAccountIDs.includes(item.account_id)} aria-label={item.account_name} onChange={(event) => toggleSelectedAccount(item.account_id, event.target.checked)} />
-                <span>{item.account_name}</span>
-                <Tag>{item.provider_type}</Tag>
-                <Tag color={item.status === "active" ? "green" : "default"}>{item.status}</Tag>
-              </Space>
-            </label>
-          ))}
-        </Space>
-      </Modal>
     </div>
   );
+}
+
+function buildServerUserImportPayload(issued: CreatedServerUser): string {
+  return JSON.stringify(
+    {
+      kind: "aigate-account-share",
+      schema_version: 1,
+      exported_at: new Date().toISOString(),
+      account: {
+        provider_type: "openai-compatible",
+        account_name: issued.user.name || issued.user.username || "AI Gate Server",
+        source_icon: "",
+        auth_mode: "api_key",
+        base_url: serverGatewayBaseURL(),
+        credential_ref: issued.token,
+        account_driver: "builtin_api_key",
+        usage_driver: "",
+        usage_config_json: "",
+        supports_responses: true,
+        skip_tls_verify: false,
+      },
+    },
+    null,
+    2,
+  );
+}
+
+function serverGatewayBaseURL(): string {
+  if (typeof window === "undefined") {
+    return "/ai-gate/v1";
+  }
+  const pathname = window.location.pathname || "";
+  const webuiIndex = pathname.indexOf("/webui");
+  const routePrefix = webuiIndex > 0 ? pathname.slice(0, webuiIndex).replace(/\/+$/, "") : "/ai-gate";
+  const prefix = routePrefix || "/ai-gate";
+  return `${window.location.origin}${prefix}/v1`;
 }
