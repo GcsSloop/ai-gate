@@ -385,6 +385,128 @@ func TestAccountsHandler(t *testing.T) {
 	}
 }
 
+func TestAccountsHandlerFetchesAIGateUpstreams(t *testing.T) {
+	t.Parallel()
+
+	var upstreamRoutePayload map[string]any
+	var upstreamLockPayload map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agt-client" {
+			t.Fatalf("authorization = %q, want Bearer agt-client", got)
+		}
+		if r.Method == http.MethodPut && r.URL.Path == "/ai-gate/api/me/route" {
+			if err := json.NewDecoder(r.Body).Decode(&upstreamRoutePayload); err != nil {
+				t.Fatalf("decode upstream route payload: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"preferred_account_id":12,"route_locked":true}`)
+			return
+		}
+		if r.Method == http.MethodPut && r.URL.Path == "/ai-gate/api/me/upstreams/12/lock" {
+			if err := json.NewDecoder(r.Body).Decode(&upstreamLockPayload); err != nil {
+				t.Fatalf("decode upstream lock payload: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":12,"account_locked":true}`)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/ai-gate/api/me/upstreams" {
+			t.Fatalf("method/path = %s %q, want GET /ai-gate/api/me/upstreams", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"total_accounts": 3,
+			"available_accounts": 2,
+			"current_account_id": 11,
+			"route_locked": false,
+			"accounts": [
+				{"id": 11, "provider_type": "openai-compatible", "account_name": "upstream-a", "auth_mode": "api_key", "base_url": "https://up-a.example/v1", "status": "active", "available": true, "current": true, "preferred": false, "account_locked": false, "supports_responses": true, "balance": 0, "quota_remaining": 0},
+				{"id": 12, "provider_type": "openai-compatible", "account_name": "upstream-b", "auth_mode": "api_key", "base_url": "https://up-b.example/v1", "status": "disabled", "available": false, "current": false, "preferred": false, "account_locked": false, "supports_responses": true, "balance": 0, "quota_remaining": 0}
+			]
+		}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	if err := repo.Create(accounts.Account{
+		ProviderType:      accounts.ProviderOpenAICompatible,
+		AccountName:       "team-gate",
+		AuthMode:          accounts.AuthModeAPIKey,
+		BaseURL:           upstream.URL + "/ai-gate/v1",
+		CredentialRef:     "agt-client",
+		Status:            accounts.StatusActive,
+		SupportsResponses: true,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	handler := api.NewAccountsHandler(
+		repo,
+		nil,
+		auth.NewOAuthConnector(auth.Config{}),
+		auth.NewStateStore(5*time.Minute),
+		api.WithAccountsHTTPClient(upstream.Client()),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/accounts/1/upstreams", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts/1/upstreams status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, "agt-client") || strings.Contains(body, "credential_ref") {
+		t.Fatalf("GET /accounts/1/upstreams leaked credential: %s", body)
+	}
+	var payload struct {
+		TotalAccounts     int `json:"total_accounts"`
+		AvailableAccounts int `json:"available_accounts"`
+		Accounts          []struct {
+			AccountName string `json:"account_name"`
+			Current     bool   `json:"current"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if payload.TotalAccounts != 3 || payload.AvailableAccounts != 2 {
+		t.Fatalf("summary = %+v, want available 2 total 3", payload)
+	}
+	if len(payload.Accounts) != 2 || payload.Accounts[0].AccountName != "upstream-a" || !payload.Accounts[0].Current {
+		t.Fatalf("accounts = %+v, want upstream-a current first", payload.Accounts)
+	}
+
+	routeReq := httptest.NewRequest(http.MethodPut, "/accounts/1/upstreams/route", bytes.NewBufferString(`{"account_id":12,"locked":true}`))
+	routeReq.Header.Set("Content-Type", "application/json")
+	routeRec := httptest.NewRecorder()
+	handler.ServeHTTP(routeRec, routeReq)
+	if routeRec.Code != http.StatusOK {
+		t.Fatalf("PUT /accounts/1/upstreams/route status = %d, want %d; body=%s", routeRec.Code, http.StatusOK, routeRec.Body.String())
+	}
+	if upstreamRoutePayload["account_id"].(float64) != 12 || upstreamRoutePayload["locked"].(bool) != true {
+		t.Fatalf("upstream route payload = %+v, want account 12 locked", upstreamRoutePayload)
+	}
+
+	lockReq := httptest.NewRequest(http.MethodPut, "/accounts/1/upstreams/12/lock", bytes.NewBufferString(`{"locked":true}`))
+	lockRec := httptest.NewRecorder()
+	handler.ServeHTTP(lockRec, lockReq)
+	if lockRec.Code != http.StatusOK {
+		t.Fatalf("PUT /accounts/1/upstreams/12/lock status = %d, want %d; body=%s", lockRec.Code, http.StatusOK, lockRec.Body.String())
+	}
+	if upstreamLockPayload["locked"].(bool) != true {
+		t.Fatalf("upstream lock payload = %+v, want locked true", upstreamLockPayload)
+	}
+	if strings.Contains(lockRec.Body.String(), "agt-client") || strings.Contains(lockRec.Body.String(), "credential_ref") {
+		t.Fatalf("PUT /accounts/1/upstreams/12/lock leaked credential: %s", lockRec.Body.String())
+	}
+}
+
 func testJWT(t *testing.T, claims map[string]any) string {
 	t.Helper()
 	headerRaw, err := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})

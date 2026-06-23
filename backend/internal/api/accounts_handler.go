@@ -142,6 +142,12 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.listAccountsUsage(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/accounts":
 		h.listAccounts(w, r)
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/upstreams/route"):
+		h.updateAIGateAccountRoute(w, r)
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.Contains(r.URL.Path, "/upstreams/") && strings.HasSuffix(r.URL.Path, "/lock"):
+		h.updateAIGateUpstreamLock(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/upstreams"):
+		h.getAIGateAccountUpstreams(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts/auth/authorize":
 		h.createAuthSession(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/accounts/auth/device/complete":
@@ -799,6 +805,191 @@ func (h *AccountsHandler) shareAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"payload": string(payload)})
+}
+
+func (h *AccountsHandler) getAIGateAccountUpstreams(w http.ResponseWriter, r *http.Request) {
+	id, err := accountIDFromPath(strings.TrimSuffix(strings.TrimSuffix(r.URL.Path, "/upstreams"), "/"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	account, err := h.repo.GetByID(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	upstreamsURL, err := aiGateUpstreamsURL(account.BaseURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	token := strings.TrimSpace(account.CredentialRef)
+	if token == "" {
+		http.Error(w, "account credential is required", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamsURL, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-AI-Gate-Token", token)
+	resp, err := doAccountRequest(h.client, req, account)
+	if err != nil {
+		http.Error(w, "fetch ai-gate upstreams: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		details, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		http.Error(w, strings.TrimSpace(string(details)), resp.StatusCode)
+		return
+	}
+	var payload serverMeUpstreamsResponse
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	if err := decoder.Decode(&payload); err != nil {
+		http.Error(w, "decode ai-gate upstreams: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (h *AccountsHandler) updateAIGateAccountRoute(w http.ResponseWriter, r *http.Request) {
+	id, err := accountIDFromPath(strings.TrimSuffix(strings.TrimSuffix(r.URL.Path, "/upstreams/route"), "/"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	account, err := h.repo.GetByID(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	routeURL, err := aiGateRouteURL(account.BaseURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	token := strings.TrimSpace(account.CredentialRef)
+	if token == "" {
+		http.Error(w, "account credential is required", http.StatusBadRequest)
+		return
+	}
+	var payload struct {
+		AccountID *int64 `json:"account_id"`
+		Locked    bool   `json:"locked"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid route payload", http.StatusBadRequest)
+		return
+	}
+	if payload.AccountID != nil && *payload.AccountID <= 0 {
+		http.Error(w, "account_id must be positive", http.StatusBadRequest)
+		return
+	}
+	if payload.AccountID == nil && payload.Locked {
+		http.Error(w, "locked route requires account_id", http.StatusBadRequest)
+		return
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, routeURL, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-AI-Gate-Token", token)
+	resp, err := doAccountRequest(h.client, req, account)
+	if err != nil {
+		http.Error(w, "update ai-gate upstream route: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		details, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		http.Error(w, strings.TrimSpace(string(details)), resp.StatusCode)
+		return
+	}
+	var response map[string]any
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	if err := decoder.Decode(&response); err != nil {
+		http.Error(w, "decode ai-gate route response: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *AccountsHandler) updateAIGateUpstreamLock(w http.ResponseWriter, r *http.Request) {
+	id, upstreamAccountID, err := aiGateUpstreamLockIDsFromPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	account, err := h.repo.GetByID(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	routeURL, err := aiGateUpstreamLockURL(account.BaseURL, upstreamAccountID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	token := strings.TrimSpace(account.CredentialRef)
+	if token == "" {
+		http.Error(w, "account credential is required", http.StatusBadRequest)
+		return
+	}
+	var payload struct {
+		Locked bool `json:"locked"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid lock payload", http.StatusBadRequest)
+		return
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, routeURL, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-AI-Gate-Token", token)
+	resp, err := doAccountRequest(h.client, req, account)
+	if err != nil {
+		http.Error(w, "update ai-gate upstream lock: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		details, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		http.Error(w, strings.TrimSpace(string(details)), resp.StatusCode)
+		return
+	}
+	var response map[string]any
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	if err := decoder.Decode(&response); err != nil {
+		http.Error(w, "decode ai-gate upstream lock response: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *AccountsHandler) importSharedAccount(w http.ResponseWriter, r *http.Request) {
@@ -1620,6 +1811,26 @@ func accountIDFromPath(path string) (int64, error) {
 	return strconv.ParseInt(trimmed, 10, 64)
 }
 
+func aiGateUpstreamLockIDsFromPath(raw string) (int64, int64, error) {
+	trimmed := strings.Trim(strings.TrimPrefix(strings.TrimSpace(raw), "/accounts/"), "/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 4 || parts[1] != "upstreams" || parts[3] != "lock" {
+		return 0, 0, errors.New("invalid upstream lock path")
+	}
+	accountID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	upstreamAccountID, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	if accountID <= 0 || upstreamAccountID <= 0 {
+		return 0, 0, errors.New("account id must be positive")
+	}
+	return accountID, upstreamAccountID, nil
+}
+
 func parseSharedAccountPayload(raw string) (accountShareEnvelope, error) {
 	var envelope accountShareEnvelope
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &envelope); err != nil {
@@ -1689,6 +1900,43 @@ func validateAbsoluteBaseURL(raw string) error {
 		return errors.New("invalid base_url: missing host")
 	}
 	return nil
+}
+
+func aiGateUpstreamsURL(raw string) (string, error) {
+	return aiGateAPIURL(raw, "/api/me/upstreams")
+}
+
+func aiGateRouteURL(raw string) (string, error) {
+	return aiGateAPIURL(raw, "/api/me/route")
+}
+
+func aiGateUpstreamLockURL(raw string, accountID int64) (string, error) {
+	return aiGateAPIURL(raw, fmt.Sprintf("/api/me/upstreams/%d/lock", accountID))
+}
+
+func aiGateAPIURL(raw string, suffix string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", fmt.Errorf("invalid base_url: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("invalid base_url scheme: %q", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return "", errors.New("invalid base_url: missing host")
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for index, segment := range segments {
+		if segment != "ai-gate" {
+			continue
+		}
+		parsed.Path = "/" + strings.Join(segments[:index+1], "/") + suffix
+		parsed.RawPath = ""
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		return parsed.String(), nil
+	}
+	return "", errors.New("account is not an ai-gate upstream")
 }
 
 func validateUsageConfigJSON(raw string) error {
