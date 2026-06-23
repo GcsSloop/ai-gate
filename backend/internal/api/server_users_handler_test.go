@@ -6,10 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strconv"
 	"testing"
 
-	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/serverusers"
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 )
@@ -67,9 +65,29 @@ func TestServerUsersHandlerCreateListDisableAndRotate(t *testing.T) {
 	if rotated.Token == "" || rotated.Token == created.Token {
 		t.Fatalf("rotated token = %q, original token = %q", rotated.Token, created.Token)
 	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/server-users/1", nil)
+	deleteRec := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("DELETE /server-users/1 status = %d, want %d; body=%s", deleteRec.Code, http.StatusOK, deleteRec.Body.String())
+	}
+	listAfterDeleteReq := httptest.NewRequest(http.MethodGet, "/server-users", nil)
+	listAfterDeleteRec := httptest.NewRecorder()
+	handler.ServeHTTP(listAfterDeleteRec, listAfterDeleteReq)
+	if listAfterDeleteRec.Code != http.StatusOK {
+		t.Fatalf("GET /server-users after delete status = %d, want %d; body=%s", listAfterDeleteRec.Code, http.StatusOK, listAfterDeleteRec.Body.String())
+	}
+	var usersAfterDelete []serverusers.User
+	if err := json.Unmarshal(listAfterDeleteRec.Body.Bytes(), &usersAfterDelete); err != nil {
+		t.Fatalf("unmarshal users after delete: %v", err)
+	}
+	if len(usersAfterDelete) != 0 {
+		t.Fatalf("users after delete = %+v, want empty", usersAfterDelete)
+	}
 }
 
-func TestServerUsersHandlerManagesAccountAssignments(t *testing.T) {
+func TestServerUsersHandlerDoesNotExposeAccountAssignments(t *testing.T) {
 	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
 	if err != nil {
 		t.Fatalf("Open returned error: %v", err)
@@ -77,34 +95,6 @@ func TestServerUsersHandlerManagesAccountAssignments(t *testing.T) {
 	t.Cleanup(func() {
 		_ = store.Close()
 	})
-
-	accountRepo := accounts.NewSQLiteRepository(store.DB())
-	createAccount := func(name string) int64 {
-		t.Helper()
-		if err := accountRepo.Create(accounts.Account{
-			ProviderType:  accounts.ProviderOpenAICompatible,
-			AccountName:   name,
-			AuthMode:      accounts.AuthModeAPIKey,
-			CredentialRef: "sk-" + name,
-			BaseURL:       "https://example.invalid/v1",
-			Status:        accounts.StatusActive,
-		}); err != nil {
-			t.Fatalf("Create(account %s) returned error: %v", name, err)
-		}
-		accountsList, err := accountRepo.List()
-		if err != nil {
-			t.Fatalf("List accounts returned error: %v", err)
-		}
-		for _, account := range accountsList {
-			if account.AccountName == name {
-				return account.ID
-			}
-		}
-		t.Fatalf("created account %s not found", name)
-		return 0
-	}
-	firstID := createAccount("first")
-	secondID := createAccount("second")
 
 	repo := serverusers.NewSQLiteRepository(store.DB())
 	created, err := repo.Create("alice")
@@ -123,36 +113,23 @@ func TestServerUsersHandlerManagesAccountAssignments(t *testing.T) {
 	if err := json.Unmarshal(listBeforeRec.Body.Bytes(), &usersBefore); err != nil {
 		t.Fatalf("unmarshal users before: %v", err)
 	}
-	if len(usersBefore) != 1 || usersBefore[0].AssignedAccounts != 0 {
-		t.Fatalf("users before = %+v, want zero assigned accounts", usersBefore)
+	if len(usersBefore) != 1 {
+		t.Fatalf("users before = %+v, want one user", usersBefore)
 	}
 
-	assignReq := httptest.NewRequest(http.MethodPut, "/server-users/1/accounts", bytes.NewBufferString(`{"account_ids":[`+strconv.FormatInt(secondID, 10)+`,`+strconv.FormatInt(firstID, 10)+`]}`))
+	assignReq := httptest.NewRequest(http.MethodPut, "/server-users/1/accounts", bytes.NewBufferString(`{"account_ids":[1,2]}`))
 	assignReq.Header.Set("Content-Type", "application/json")
 	assignRec := httptest.NewRecorder()
 	handler.ServeHTTP(assignRec, assignReq)
-	if assignRec.Code != http.StatusOK {
-		t.Fatalf("PUT /server-users/1/accounts status = %d, want %d; body=%s", assignRec.Code, http.StatusOK, assignRec.Body.String())
+	if assignRec.Code != http.StatusNotFound {
+		t.Fatalf("PUT /server-users/1/accounts status = %d, want %d; body=%s", assignRec.Code, http.StatusNotFound, assignRec.Body.String())
 	}
 
 	accountsReq := httptest.NewRequest(http.MethodGet, "/server-users/1/accounts", nil)
 	accountsRec := httptest.NewRecorder()
 	handler.ServeHTTP(accountsRec, accountsReq)
-	if accountsRec.Code != http.StatusOK {
-		t.Fatalf("GET /server-users/1/accounts status = %d, want %d; body=%s", accountsRec.Code, http.StatusOK, accountsRec.Body.String())
-	}
-	var assignmentView []serverusers.AccountAssignment
-	if err := json.Unmarshal(accountsRec.Body.Bytes(), &assignmentView); err != nil {
-		t.Fatalf("unmarshal assignment view: %v", err)
-	}
-	if len(assignmentView) != 2 {
-		t.Fatalf("assignment view = %+v, want two accounts", assignmentView)
-	}
-	if !assignmentView[0].Assigned || !assignmentView[1].Assigned {
-		t.Fatalf("assignment view = %+v, want both assigned", assignmentView)
-	}
-	if assignmentView[0].AccountID != secondID || assignmentView[0].Position != 0 {
-		t.Fatalf("assignment view = %+v, want second account first", assignmentView)
+	if accountsRec.Code != http.StatusNotFound {
+		t.Fatalf("GET /server-users/1/accounts status = %d, want %d; body=%s", accountsRec.Code, http.StatusNotFound, accountsRec.Body.String())
 	}
 
 	listAfterReq := httptest.NewRequest(http.MethodGet, "/server-users", nil)
@@ -165,22 +142,7 @@ func TestServerUsersHandlerManagesAccountAssignments(t *testing.T) {
 	if err := json.Unmarshal(listAfterRec.Body.Bytes(), &usersAfter); err != nil {
 		t.Fatalf("unmarshal users after: %v", err)
 	}
-	if len(usersAfter) != 1 || usersAfter[0].ID != created.User.ID || usersAfter[0].AssignedAccounts != 2 {
-		t.Fatalf("users after = %+v, want two assigned accounts", usersAfter)
-	}
-
-	clearReq := httptest.NewRequest(http.MethodPut, "/server-users/1/accounts", bytes.NewBufferString(`{"account_ids":[]}`))
-	clearReq.Header.Set("Content-Type", "application/json")
-	clearRec := httptest.NewRecorder()
-	handler.ServeHTTP(clearRec, clearReq)
-	if clearRec.Code != http.StatusOK {
-		t.Fatalf("clear assignments status = %d, want %d; body=%s", clearRec.Code, http.StatusOK, clearRec.Body.String())
-	}
-	assigned, err := repo.ListAssignedAccounts(created.User.ID)
-	if err != nil {
-		t.Fatalf("ListAssignedAccounts returned error: %v", err)
-	}
-	if len(assigned) != 0 {
-		t.Fatalf("assigned after clear = %+v, want none", assigned)
+	if len(usersAfter) != 1 || usersAfter[0].ID != created.User.ID {
+		t.Fatalf("users after = %+v, want created user", usersAfter)
 	}
 }

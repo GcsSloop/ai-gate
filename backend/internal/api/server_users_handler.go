@@ -14,9 +14,8 @@ type ServerUsersStore interface {
 	Create(name string) (serverusers.CreatedUser, error)
 	List() ([]serverusers.User, error)
 	Disable(id int64) error
+	Delete(id int64) error
 	RotateToken(id int64) (serverusers.CreatedUser, error)
-	ListAccountAssignments(userID int64) ([]serverusers.AccountAssignment, error)
-	SetAccountAssignments(userID int64, accountIDs []int64) error
 }
 
 type ServerUsersHandler struct {
@@ -33,10 +32,8 @@ func (h *ServerUsersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.list(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/server-users":
 		h.create(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/server-users/") && strings.HasSuffix(r.URL.Path, "/accounts"):
-		h.listAccountAssignments(w, r)
-	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/server-users/") && strings.HasSuffix(r.URL.Path, "/accounts"):
-		h.setAccountAssignments(w, r)
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/server-users/") && countPathSegments(r.URL.Path) == 2:
+		h.delete(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/server-users/") && strings.HasSuffix(r.URL.Path, "/disable"):
 		h.disable(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/server-users/") && strings.HasSuffix(r.URL.Path, "/rotate-token"):
@@ -44,40 +41,6 @@ func (h *ServerUsersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
-}
-
-func (h *ServerUsersHandler) listAccountAssignments(w http.ResponseWriter, r *http.Request) {
-	id, ok := serverUserIDFromActionPath(r.URL.Path, "/accounts")
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	assignments, err := h.store.ListAccountAssignments(id)
-	if err != nil {
-		writeServerUserStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, assignments)
-}
-
-func (h *ServerUsersHandler) setAccountAssignments(w http.ResponseWriter, r *http.Request) {
-	id, ok := serverUserIDFromActionPath(r.URL.Path, "/accounts")
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	var payload struct {
-		AccountIDs []int64 `json:"account_ids"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "invalid server user account assignment payload", http.StatusBadRequest)
-		return
-	}
-	if err := h.store.SetAccountAssignments(id, payload.AccountIDs); err != nil {
-		writeServerUserStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"assigned": true})
 }
 
 func (h *ServerUsersHandler) list(w http.ResponseWriter) {
@@ -118,6 +81,19 @@ func (h *ServerUsersHandler) disable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"disabled": true})
 }
 
+func (h *ServerUsersHandler) delete(w http.ResponseWriter, r *http.Request) {
+	id, ok := serverUserIDFromPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if err := h.store.Delete(id); err != nil {
+		writeServerUserStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
 func (h *ServerUsersHandler) rotate(w http.ResponseWriter, r *http.Request) {
 	id, ok := serverUserIDFromActionPath(r.URL.Path, "/rotate-token")
 	if !ok {
@@ -130,6 +106,13 @@ func (h *ServerUsersHandler) rotate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, created)
+}
+
+func serverUserIDFromPath(path string) (int64, bool) {
+	trimmed := strings.TrimPrefix(path, "/server-users/")
+	trimmed = strings.Trim(trimmed, "/")
+	id, err := strconv.ParseInt(trimmed, 10, 64)
+	return id, err == nil && id > 0
 }
 
 func serverUserIDFromActionPath(path string, suffix string) (int64, bool) {
