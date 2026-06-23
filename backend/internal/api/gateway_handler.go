@@ -15,13 +15,10 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/providers"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/routing"
-	"github.com/gcssloop/codex-router/backend/internal/serverusers"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 	"github.com/gcssloop/codex-router/backend/internal/usage/normalize"
 )
-
-var errServerUserNoAssignedAccounts = errors.New("no upstream accounts assigned to this user")
 
 type GatewayAccounts interface {
 	List() ([]accounts.Account, error)
@@ -45,18 +42,14 @@ type GatewayRoutingSettings interface {
 	ListFailoverQueue() ([]int64, error)
 }
 
-type GatewayServerUsers interface {
-	ListAssignedAccounts(userID int64) ([]serverusers.AssignedAccount, error)
-}
-
 type GatewayHandler struct {
 	accounts      GatewayAccounts
 	usage         GatewayUsage
 	conversations GatewayRuns
 	settings      GatewayRoutingSettings
-	serverUsers   GatewayServerUsers
 	client        *http.Client
 	stateEvents   *StateEventBus
+	sticky        *routing.StickySelector
 }
 
 type GatewayHandlerOption func(*GatewayHandler)
@@ -81,9 +74,18 @@ func WithGatewayStateEvents(bus *StateEventBus) GatewayHandlerOption {
 	}
 }
 
-func WithGatewayServerUsers(repo GatewayServerUsers) GatewayHandlerOption {
+func WithGatewayStickySelector(sticky *routing.StickySelector) GatewayHandlerOption {
 	return func(handler *GatewayHandler) {
-		handler.serverUsers = repo
+		if sticky != nil {
+			handler.sticky = sticky
+		}
+	}
+}
+
+func WithGatewayServerUsers(_ any) GatewayHandlerOption {
+	return func(handler *GatewayHandler) {
+		// Deprecated: server user account pools were removed. Server users now
+		// share the global upstream account pool and are used only for auth/usage.
 	}
 }
 
@@ -93,6 +95,7 @@ func NewGatewayHandler(accounts GatewayAccounts, usage GatewayUsage, conversatio
 		usage:         usage,
 		conversations: conversations,
 		client:        http.DefaultClient,
+		sticky:        routing.NewStickySelector(time.Minute, time.Now),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -127,10 +130,6 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	candidates, err := h.candidatesForContext(r.Context(), accountList)
 	if err != nil {
-		if errors.Is(err, errServerUserNoAssignedAccounts) {
-			http.Error(w, err.Error(), http.StatusForbidden)
-			return
-		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -148,17 +147,20 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	stickyScope := gatewayStickyScope(r.Context(), "chat_completions")
 	executor := routing.NewExecutor(noopRunRecorder{}, func(ctx context.Context, candidate routing.Candidate) error {
 		account := candidate.Account
 		startedAt := time.Now()
 		logUpstreamSummary("gateway", conversationID, account, "/chat/completions", req.Model)
 		if err := ensureOfficialAccountSession(ctx, h.client, h.accounts, &account); err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "ensure_session", startedAt, err)
+			h.invalidateStickyOnFailover(stickyScope, account.ID, err)
 			return err
 		}
 		credential, err := resolveCredential(account)
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "resolve_credential", startedAt, err)
+			h.invalidateStickyOnFailover(stickyScope, account.ID, err)
 			return err
 		}
 
@@ -171,12 +173,14 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "build_request", startedAt, err)
+			h.invalidateStickyOnFailover(stickyScope, account.ID, err)
 			return err
 		}
 
 		resp, err := doAccountRequest(h.client, upstreamReq, account)
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
+			h.invalidateStickyOnFailover(stickyScope, account.ID, err)
 			return err
 		}
 		defer resp.Body.Close()
@@ -189,6 +193,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			upstreamErr := buildUpstreamStatusError(resp.StatusCode, responseBody)
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, upstreamErr)
+			h.invalidateStickyOnFailover(stickyScope, account.ID, upstreamErr)
 			return upstreamErr
 		}
 
@@ -198,12 +203,7 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, string(upstreamResponse))
 			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, "completed", parseChatCompletionsUsage(upstreamResponse, account.ID), startedAt)
-			if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
-				h.publishAccountRoutingStateChanged()
-			}
-			if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
-				h.publishAccountRoutingStateChanged()
-			}
+			h.recordSuccessfulRoute(ctx, stickyScope, account)
 		}
 		return err
 	})
@@ -233,6 +233,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	stickyScope := gatewayStickyScope(ctx, "chat_completions")
 
 	var lastErr error
 
@@ -256,6 +257,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "ensure_session", startedAt, err)
 			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 			lastErr = err
+			h.invalidateStickyOnFailover(stickyScope, account.ID, err)
 			if shouldFailoverOnGatewayStreamError(err) {
 				continue
 			}
@@ -267,6 +269,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "resolve_credential", startedAt, err)
 			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 			lastErr = err
+			h.invalidateStickyOnFailover(stickyScope, account.ID, err)
 			if shouldFailoverOnGatewayStreamError(err) {
 				continue
 			}
@@ -285,6 +288,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "build_request", startedAt, err)
 			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 			lastErr = err
+			h.invalidateStickyOnFailover(stickyScope, account.ID, err)
 			if shouldFailoverOnGatewayStreamError(err) {
 				continue
 			}
@@ -297,6 +301,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
 			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 			lastErr = err
+			h.invalidateStickyOnFailover(stickyScope, account.ID, err)
 			if shouldFailoverOnGatewayStreamError(err) {
 				continue
 			}
@@ -311,6 +316,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 				logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "read_response", startedAt, readErr)
 				persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(readErr)), usage.Snapshot{AccountID: account.ID}, startedAt)
 				lastErr = readErr
+				h.invalidateStickyOnFailover(stickyScope, account.ID, readErr)
 				if shouldFailoverOnGatewayStreamError(readErr) {
 					continue
 				}
@@ -321,6 +327,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "upstream_status", startedAt, err)
 			lastErr = err
+			h.invalidateStickyOnFailover(stickyScope, account.ID, err)
 			if shouldFailoverOnGatewayStreamError(err) {
 				continue
 			}
@@ -336,16 +343,12 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 		if err != nil {
 			logFailureSummary("gateway", conversationID, account.ID, account.AccountName, "read_stream", startedAt, err)
 			persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, runStatusForErrorClass(classifyRunError(err)), usage.Snapshot{AccountID: account.ID}, startedAt)
+			h.invalidateStickyOnFailover(stickyScope, account.ID, err)
 			return
 		}
 		logResultSummary("gateway", conversationID, account.ID, resp.StatusCode, startedAt, "")
 		persistUsageEvent(ctx, h.usage, account, "chat_completions", req.Model, "completed", collector.snapshotOrDefault(), startedAt)
-		if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
-			h.publishAccountRoutingStateChanged()
-		}
-		if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
-			h.publishAccountRoutingStateChanged()
-		}
+		h.recordSuccessfulRoute(ctx, stickyScope, account)
 		return
 	}
 
@@ -355,43 +358,7 @@ func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter,
 	http.Error(w, lastErr.Error(), http.StatusBadGateway)
 }
 
-func (h *GatewayHandler) candidatesForContext(ctx context.Context, accountList []accounts.Account) ([]routing.Candidate, error) {
-	if user, ok := ServerUserFromContext(ctx); ok {
-		if h.serverUsers == nil {
-			return nil, errors.New("server user account pool is not configured")
-		}
-		assigned, err := h.serverUsers.ListAssignedAccounts(user.ID)
-		if err != nil {
-			return nil, err
-		}
-		if len(assigned) == 0 {
-			return nil, errServerUserNoAssignedAccounts
-		}
-		byID := make(map[int64]accounts.Account, len(accountList))
-		for _, account := range accountList {
-			byID[account.ID] = account
-		}
-		candidates := make([]routing.Candidate, 0, len(assigned))
-		for _, item := range assigned {
-			account, ok := byID[item.AccountID]
-			if !ok {
-				continue
-			}
-			account.Priority = len(assigned) - item.Position
-			account.IsActive = item.IsActive
-			account.IsLocked = item.IsLocked
-			snapshot, err := h.usage.GetLatest(account.ID)
-			if err != nil {
-				snapshot = normalize.DefaultFallbackSnapshot(account.ID)
-			}
-			candidates = append(candidates, routing.Candidate{Account: account, Snapshot: snapshot})
-		}
-		if len(candidates) == 0 {
-			return nil, errServerUserNoAssignedAccounts
-		}
-		return candidates, nil
-	}
-
+func (h *GatewayHandler) candidatesForContext(_ context.Context, accountList []accounts.Account) ([]routing.Candidate, error) {
 	candidates := make([]routing.Candidate, 0, len(accountList))
 	for _, account := range accountList {
 		snapshot, err := h.usage.GetLatest(account.ID)
@@ -415,8 +382,8 @@ func (h *GatewayHandler) publishAccountRoutingStateChanged() {
 }
 
 func (h *GatewayHandler) orderedCandidates(ctx context.Context, candidates []routing.Candidate) ([]routing.Candidate, error) {
-	if user, ok := ServerUserFromContext(ctx); ok {
-		return routing.RotateCandidatesForUser(orderCandidatesByPriority(candidates), user.ID), nil
+	if serverUserFromContextExists(ctx) {
+		return orderServerUserCandidates(ctx, h.sticky, "chat_completions", candidates), nil
 	}
 	if !autoFailoverEnabled(h.settings) {
 		if candidate, ok := activeCandidate(candidates); ok {
@@ -425,6 +392,32 @@ func (h *GatewayHandler) orderedCandidates(ctx context.Context, candidates []rou
 		return orderCandidatesByPriority(candidates), nil
 	}
 	return expandActiveCandidateRetries(orderCandidatesActiveFirst(candidates), activeAccountFailoverRetryAttempts), nil
+}
+
+func (h *GatewayHandler) rememberSticky(scope string, accountID int64) {
+	if scope != "" {
+		h.sticky.Remember(scope, accountID)
+	}
+}
+
+func (h *GatewayHandler) recordSuccessfulRoute(ctx context.Context, scope string, account accounts.Account) {
+	if serverUserFromContextExists(ctx) {
+		h.rememberSticky(scope, account.ID)
+		return
+	}
+	if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
+		h.publishAccountRoutingStateChanged()
+	}
+	if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
+		h.publishAccountRoutingStateChanged()
+	}
+}
+
+func (h *GatewayHandler) invalidateStickyOnFailover(scope string, accountID int64, err error) {
+	if scope == "" || !shouldFailoverOnGatewayStreamError(err) {
+		return
+	}
+	h.sticky.Invalidate(scope, accountID)
 }
 
 func resolveCredential(account accounts.Account) (string, error) {

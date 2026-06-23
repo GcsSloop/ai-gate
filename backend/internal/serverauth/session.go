@@ -20,6 +20,10 @@ type UserStore interface {
 	AuthenticateLogin(username string, token string) (serverusers.User, error)
 }
 
+type TokenUserStore interface {
+	Authenticate(token string) (serverusers.User, error)
+}
+
 type PasswordStore interface {
 	LoadOrInitialize(initialPassword string) (string, error)
 	Save(password string) error
@@ -112,6 +116,41 @@ func (m *Manager) RequireUserSession(next http.Handler) http.Handler {
 			return
 		}
 		http.Error(w, "authentication required", http.StatusUnauthorized)
+	})
+}
+
+func (m *Manager) RequireUserSessionOrToken(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session, ok := m.sessionFromRequest(r)
+		if ok && session.Role == serverusers.RoleUser && session.UserID > 0 {
+			next.ServeHTTP(w, r.WithContext(ContextWithSession(r.Context(), session)))
+			return
+		}
+		if ok {
+			http.Error(w, "user session required", http.StatusForbidden)
+			return
+		}
+		token := bearerToken(r.Header.Get("Authorization"))
+		if token == "" {
+			token = strings.TrimSpace(r.Header.Get("X-AI-Gate-Token"))
+		}
+		tokenStore, tokenAuthEnabled := m.users.(TokenUserStore)
+		if token == "" || !tokenAuthEnabled {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		user, err := tokenStore.Authenticate(token)
+		if err != nil {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		session = Session{
+			Authenticated: true,
+			Role:          serverusers.RoleUser,
+			UserID:        user.ID,
+			Username:      user.Username,
+		}
+		next.ServeHTTP(w, r.WithContext(ContextWithSession(r.Context(), session)))
 	})
 }
 
@@ -299,6 +338,14 @@ func randomToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(raw[:]), nil
+}
+
+func bearerToken(header string) string {
+	fields := strings.Fields(strings.TrimSpace(header))
+	if len(fields) != 2 || !strings.EqualFold(fields[0], "bearer") {
+		return ""
+	}
+	return fields[1]
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

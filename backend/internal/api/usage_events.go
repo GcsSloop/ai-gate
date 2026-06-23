@@ -23,6 +23,20 @@ func (noopRunRecorder) CreateRun(_ conversations.Run) (int64, error) {
 	return 0, nil
 }
 
+type usageEventTask struct {
+	Account      accounts.Account
+	RequestKind  string
+	Model        string
+	Status       string
+	Snapshot     usage.Snapshot
+	ServerUserID *int64
+	LatencyMS    float64
+}
+
+type asyncUsageEventStore interface {
+	EnqueueUsageEvent(task usageEventTask) bool
+}
+
 func latestSnapshotOrEmpty(repo interface {
 	GetLatest(accountID int64) (usage.Snapshot, error)
 }, accountID int64) usage.Snapshot {
@@ -37,32 +51,54 @@ func persistUsageEvent(ctx context.Context, repo usageEventStore, account accoun
 	if account.ID == 0 {
 		return
 	}
+	task := usageEventTask{
+		Account:     account,
+		RequestKind: requestKind,
+		Model:       model,
+		Status:      status,
+		Snapshot:    snapshot,
+		LatencyMS:   time.Since(startedAt).Seconds() * 1000,
+	}
+	if user, ok := ServerUserFromContext(ctx); ok {
+		userID := user.ID
+		task.ServerUserID = &userID
+	}
+	if asyncRepo, ok := repo.(asyncUsageEventStore); ok {
+		asyncRepo.EnqueueUsageEvent(task)
+		return
+	}
+	persistUsageEventSync(repo, task)
+}
 
+func persistUsageEventSync(repo usageEventStore, task usageEventTask) (usage.Snapshot, bool) {
+	account := task.Account
 	before := latestSnapshotOrEmpty(repo, account.ID)
+	snapshot := task.Snapshot
 	snapshot.AccountID = account.ID
 	if snapshot.CheckedAt.IsZero() {
 		snapshot.CheckedAt = time.Now().UTC()
 	}
 	after := mergeUsageSnapshotWithLatest(repo, snapshot)
-	if status == "completed" && hasUsageDelta(after) {
+	if task.Status == "completed" && hasUsageDelta(after) {
 		_ = repo.Save(after)
 	}
 
 	event := usage.Event{
 		AccountID:     account.ID,
 		ProviderType:  string(account.ProviderType),
-		RequestKind:   requestKind,
-		Model:         model,
-		Status:        status,
+		RequestKind:   task.RequestKind,
+		Model:         task.Model,
+		Status:        task.Status,
 		InputTokens:   int64(after.LastInputTokens),
 		OutputTokens:  int64(after.LastOutputTokens),
 		TotalTokens:   int64(after.LastTotalTokens),
-		EstimatedCost: estimateModelCostUSD(model, after.LastInputTokens, after.LastOutputTokens),
-		LatencyMS:     time.Since(startedAt).Seconds() * 1000,
+		EstimatedCost: estimateModelCostUSD(task.Model, after.LastInputTokens, after.LastOutputTokens),
+		LatencyMS:     task.LatencyMS,
 		CreatedAt:     time.Now().UTC(),
 	}
-	if user, ok := ServerUserFromContext(ctx); ok {
-		event.ServerUserID = &user.ID
+	if task.ServerUserID != nil {
+		userID := *task.ServerUserID
+		event.ServerUserID = &userID
 	}
 	if before.Balance != 0 || after.Balance != 0 {
 		event.BalanceBefore = float64Ptr(before.Balance)
@@ -73,6 +109,7 @@ func persistUsageEvent(ctx context.Context, repo usageEventStore, account accoun
 		event.QuotaAfter = float64Ptr(after.QuotaRemaining)
 	}
 	_ = repo.SaveEvent(event)
+	return after, true
 }
 
 func mergeUsageSnapshotWithLatest(repo interface {

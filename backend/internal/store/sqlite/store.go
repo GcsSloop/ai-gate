@@ -127,6 +127,8 @@ func (s *Store) migrate() error {
 		{table: "accounts", name: "cooldown_reason", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "server_users", name: "username", definition: "TEXT NOT NULL DEFAULT ''"},
 		{table: "server_users", name: "role", definition: "TEXT NOT NULL DEFAULT 'user'"},
+		{table: "server_users", name: "preferred_account_id", definition: "INTEGER"},
+		{table: "server_users", name: "route_locked", definition: "INTEGER NOT NULL DEFAULT 0"},
 		{table: "app_settings", name: "show_home_update_indicator", definition: "INTEGER NOT NULL DEFAULT 1"},
 		{table: "app_settings", name: "status_refresh_interval_seconds", definition: "INTEGER NOT NULL DEFAULT 60"},
 		{table: "app_settings", name: "usage_request_timeout_seconds", definition: "INTEGER NOT NULL DEFAULT 15"},

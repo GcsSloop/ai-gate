@@ -24,7 +24,6 @@ import (
 	providercodex "github.com/gcssloop/codex-router/backend/internal/providers/codex"
 	provideropenai "github.com/gcssloop/codex-router/backend/internal/providers/openai"
 	"github.com/gcssloop/codex-router/backend/internal/routing"
-	"github.com/gcssloop/codex-router/backend/internal/serverusers"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 	"github.com/gcssloop/codex-router/backend/internal/usage/normalize"
@@ -59,18 +58,14 @@ type ResponsesRuns interface {
 	ListMessages(conversationID int64) ([]conversations.Message, error)
 }
 
-type ResponsesServerUsers interface {
-	ListAssignedAccounts(userID int64) ([]serverusers.AssignedAccount, error)
-}
-
 type ResponsesHandler struct {
 	accounts      ResponsesAccounts
 	usage         ResponsesUsage
 	conversations ResponsesRuns
 	settings      settings.ReadRepository
-	serverUsers   ResponsesServerUsers
 	client        *http.Client
 	stateEvents   *StateEventBus
+	sticky        *routing.StickySelector
 }
 
 type ResponsesHandlerOption func(*ResponsesHandler)
@@ -95,9 +90,18 @@ func WithResponsesStateEvents(bus *StateEventBus) ResponsesHandlerOption {
 	}
 }
 
-func WithResponsesServerUsers(repo ResponsesServerUsers) ResponsesHandlerOption {
+func WithResponsesStickySelector(sticky *routing.StickySelector) ResponsesHandlerOption {
 	return func(handler *ResponsesHandler) {
-		handler.serverUsers = repo
+		if sticky != nil {
+			handler.sticky = sticky
+		}
+	}
+}
+
+func WithResponsesServerUsers(_ any) ResponsesHandlerOption {
+	return func(handler *ResponsesHandler) {
+		// Deprecated: server user account pools were removed. Server users now
+		// share the global upstream account pool and are used only for auth/usage.
 	}
 }
 
@@ -113,6 +117,7 @@ func NewResponsesHandler(accounts ResponsesAccounts, usage ResponsesUsage, conve
 		usage:         usage,
 		conversations: conversations,
 		client:        http.DefaultClient,
+		sticky:        routing.NewStickySelector(time.Minute, time.Now),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -155,10 +160,6 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 func (h *ResponsesHandler) handleResponsesTransparentSubpath(w http.ResponseWriter, r *http.Request) {
 	account, err := h.selectThinGatewayAccount(r.Context())
 	if err != nil {
-		if errors.Is(err, errServerUserNoAssignedAccounts) {
-			http.Error(w, err.Error(), http.StatusForbidden)
-			return
-		}
 		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
 			writeThinGatewayUnsupported(w, err.Error())
 			return
@@ -202,10 +203,6 @@ func (h *ResponsesHandler) handleResponsesTransparentSubpath(w http.ResponseWrit
 func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Request, req gatewayopenai.ResponsesRequest, rawBody []byte) {
 	candidates, err := h.orderedThinGatewayCandidates(r.Context())
 	if err != nil {
-		if errors.Is(err, errServerUserNoAssignedAccounts) {
-			http.Error(w, err.Error(), http.StatusForbidden)
-			return
-		}
 		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
 			writeThinGatewayUnsupported(w, err.Error())
 			return
@@ -213,6 +210,8 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	stickyScope := gatewayStickyScope(r.Context(), "responses")
+	serverMode := serverUserFromContextExists(r.Context())
 	conversationID := int64(0)
 	var lastErr error
 	var fallbackStatusCode int
@@ -232,6 +231,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 			}
 			if reason, ok := h.skipReasonForThinCandidate(candidate); ok {
 				logThinGatewayCandidate(account, "skip", reason)
+				h.invalidateSticky(stickyScope, account.ID)
 				cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, reason)
 				if shouldCooldownThinCandidate(candidate, reason) {
 					changed, err := h.markThinCandidateCooldown(account, candidate.Snapshot, reason)
@@ -256,9 +256,11 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "ensure_session", startedAt, err)
 				lastErr = err
 				if shouldFailoverOnThinError(err) && attemptIndex+1 < maxAttempts {
+					h.invalidateStickyOnThinError(stickyScope, account.ID, err)
 					continue
 				}
 				if shouldFailoverOnThinError(err) {
+					h.invalidateStickyOnThinError(stickyScope, account.ID, err)
 					break
 				}
 				writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
@@ -272,9 +274,11 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "resolve_credential", startedAt, err)
 				lastErr = err
 				if shouldFailoverOnThinError(err) && attemptIndex+1 < maxAttempts {
+					h.invalidateStickyOnThinError(stickyScope, account.ID, err)
 					continue
 				}
 				if shouldFailoverOnThinError(err) {
+					h.invalidateStickyOnThinError(stickyScope, account.ID, err)
 					break
 				}
 				writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
@@ -289,6 +293,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 				logFailureSummary("responses", conversationID, account.ID, account.AccountName, "upstream_request", startedAt, err)
 				lastErr = err
 				if shouldFailoverOnThinError(err) {
+					h.invalidateStickyOnThinError(stickyScope, account.ID, err)
 					continue
 				}
 				writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, err)
@@ -303,9 +308,11 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 					logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_response", startedAt, readErr)
 					lastErr = readErr
 					if shouldFailoverOnThinError(readErr) && attemptIndex+1 < maxAttempts {
+						h.invalidateStickyOnThinError(stickyScope, account.ID, readErr)
 						continue
 					}
 					if shouldFailoverOnThinError(readErr) {
+						h.invalidateStickyOnThinError(stickyScope, account.ID, readErr)
 						break
 					}
 					writeThinGatewayFailure(w, req.Stream, http.StatusBadGateway, readErr)
@@ -318,8 +325,9 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 				persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
 
 				if shouldFailoverOnThinStatus(runStatus) {
+					h.invalidateStickyOnThinStatus(stickyScope, account.ID, runStatus)
 					cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, runStatus)
-					if shouldCooldownForRunStatus(runStatus) {
+					if shouldCooldownForRunStatus(runStatus) && !serverMode {
 						changed, err := h.markThinCandidateCooldown(account, candidate.Snapshot, runStatus)
 						if err != nil {
 							lastErr = err
@@ -364,6 +372,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 					logFailureSummary("responses", conversationID, account.ID, account.AccountName, "read_stream", startedAt, err)
 					persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatus, usage.Snapshot{AccountID: account.ID}, startedAt)
 					_ = resp.Body.Close()
+					h.invalidateStickyOnThinStatus(stickyScope, account.ID, runStatus)
 					writeThinGatewayFailure(w, true, http.StatusBadGateway, err)
 					return
 				}
@@ -371,12 +380,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 				logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, "")
 				collector.Save(h.usage)
 				persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatus, collector.snapshotOrDefault(), startedAt)
-				if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
-					h.publishAccountRoutingStateChanged()
-				}
-				if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
-					h.publishAccountRoutingStateChanged()
-				}
+				h.recordSuccessfulThinRoute(r.Context(), stickyScope, account)
 				return
 			}
 
@@ -399,12 +403,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 			result := parseResponsesJSONResponse(responseBody, account.ID)
 			logResultSummary("responses", conversationID, account.ID, resp.StatusCode, startedAt, result.Text)
 			persistUsageEvent(r.Context(), h.usage, account, "responses", req.Model, runStatus, result.Snapshot, startedAt)
-			if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
-				h.publishAccountRoutingStateChanged()
-			}
-			if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
-				h.publishAccountRoutingStateChanged()
-			}
+			h.recordSuccessfulThinRoute(r.Context(), stickyScope, account)
 			w.WriteHeader(resp.StatusCode)
 			_, _ = w.Write(responseBody)
 			return
@@ -515,12 +514,22 @@ func (h *ResponsesHandler) selectThinGatewayAccount(ctx context.Context) (accoun
 	if err != nil {
 		return accounts.Account{}, err
 	}
-	accountList, err = h.filterAccountsForServerUser(ctx, accountList)
-	if err != nil {
-		return accounts.Account{}, err
-	}
 	if len(accountList) == 0 {
-		return accounts.Account{}, errServerUserNoAssignedAccounts
+		return accounts.Account{}, errThinGatewayRequiresResponsesAccount
+	}
+	if serverUserFromContextExists(ctx) {
+		for _, candidate := range orderServerUserCandidates(ctx, h.sticky, "responses", h.buildCandidates(accountList)) {
+			if !routing.CanAttemptCandidate(candidate) {
+				logThinGatewayCandidate(candidate.Account, "skip", "account_locked")
+				continue
+			}
+			if candidate.Account.NativeResponsesCapable() {
+				logThinGatewayCandidate(candidate.Account, "select", "server_sticky_or_scored")
+				return candidate.Account, nil
+			}
+			logThinGatewayCandidate(candidate.Account, "skip", "supports_responses=false")
+		}
+		return accounts.Account{}, errThinGatewayRequiresResponsesAccount
 	}
 	if h.autoFailoverEnabled() {
 		ordered, err := settings.OrderCandidates(h.settings, h.buildCandidates(accountList))
@@ -574,16 +583,12 @@ func (h *ResponsesHandler) orderedThinGatewayCandidates(ctx context.Context) ([]
 	if err != nil {
 		return nil, err
 	}
-	accountList, err = h.filterAccountsForServerUser(ctx, accountList)
-	if err != nil {
-		return nil, err
-	}
 	if len(accountList) == 0 {
-		return nil, errServerUserNoAssignedAccounts
+		return nil, errThinGatewayRequiresResponsesAccount
 	}
 	candidates := h.buildCandidates(accountList)
-	if user, ok := ServerUserFromContext(ctx); ok {
-		return routing.RotateCandidatesForUser(orderCandidatesByPriority(candidates), user.ID), nil
+	if serverUserFromContextExists(ctx) {
+		return orderServerUserCandidates(ctx, h.sticky, "responses", candidates), nil
 	}
 	if !h.autoFailoverEnabled() {
 		for _, candidate := range candidates {
@@ -623,39 +628,6 @@ func (h *ResponsesHandler) nextThinFailoverTarget(candidates []routing.Candidate
 		return candidate, true
 	}
 	return routing.Candidate{}, false
-}
-
-func (h *ResponsesHandler) filterAccountsForServerUser(ctx context.Context, accountList []accounts.Account) ([]accounts.Account, error) {
-	user, ok := ServerUserFromContext(ctx)
-	if !ok {
-		return accountList, nil
-	}
-	if h.serverUsers == nil {
-		return nil, errors.New("server user account pool is not configured")
-	}
-	assigned, err := h.serverUsers.ListAssignedAccounts(user.ID)
-	if err != nil {
-		return nil, err
-	}
-	if len(assigned) == 0 {
-		return nil, errServerUserNoAssignedAccounts
-	}
-	byID := make(map[int64]accounts.Account, len(accountList))
-	for _, account := range accountList {
-		byID[account.ID] = account
-	}
-	filtered := make([]accounts.Account, 0, len(assigned))
-	for _, item := range assigned {
-		account, ok := byID[item.AccountID]
-		if !ok {
-			continue
-		}
-		account.Priority = len(assigned) - item.Position
-		account.IsActive = item.IsActive
-		account.IsLocked = item.IsLocked
-		filtered = append(filtered, account)
-	}
-	return filtered, nil
 }
 
 func copyResponseHeaders(dst, src http.Header) {
@@ -852,10 +824,6 @@ func (h *ResponsesHandler) handleModelDetail(w http.ResponseWriter, r *http.Requ
 func (h *ResponsesHandler) handleModelsPassthrough(w http.ResponseWriter, r *http.Request, endpointPath string) {
 	account, err := h.selectThinGatewayAccount(r.Context())
 	if err != nil {
-		if errors.Is(err, errServerUserNoAssignedAccounts) {
-			http.Error(w, err.Error(), http.StatusForbidden)
-			return
-		}
 		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
 			writeThinGatewayUnsupported(w, err.Error())
 			return
@@ -1010,6 +978,45 @@ func (h *ResponsesHandler) publishAccountRoutingStateChanged() {
 	if h.stateEvents != nil {
 		h.stateEvents.Publish(AccountRoutingStateChangedTopic)
 	}
+}
+
+func (h *ResponsesHandler) recordSuccessfulThinRoute(ctx context.Context, scope string, account accounts.Account) {
+	if serverUserFromContextExists(ctx) {
+		h.rememberSticky(scope, account.ID)
+		return
+	}
+	if changed, err := clearRoutingCooldownIfNeeded(h.accounts, account); err == nil && changed {
+		h.publishAccountRoutingStateChanged()
+	}
+	if changed, err := syncActiveAccount(h.accounts, account); err == nil && changed {
+		h.publishAccountRoutingStateChanged()
+	}
+}
+
+func (h *ResponsesHandler) rememberSticky(scope string, accountID int64) {
+	if scope != "" {
+		h.sticky.Remember(scope, accountID)
+	}
+}
+
+func (h *ResponsesHandler) invalidateSticky(scope string, accountID int64) {
+	if scope != "" {
+		h.sticky.Invalidate(scope, accountID)
+	}
+}
+
+func (h *ResponsesHandler) invalidateStickyOnThinError(scope string, accountID int64, err error) {
+	if scope == "" || !shouldFailoverOnThinError(err) {
+		return
+	}
+	h.sticky.Invalidate(scope, accountID)
+}
+
+func (h *ResponsesHandler) invalidateStickyOnThinStatus(scope string, accountID int64, status string) {
+	if scope == "" || !shouldFailoverOnThinStatus(status) {
+		return
+	}
+	h.sticky.Invalidate(scope, accountID)
 }
 
 func computeThinCandidateCooldownUntil(snapshot usage.Snapshot, reason string) *time.Time {

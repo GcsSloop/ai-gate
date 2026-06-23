@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,6 +14,8 @@ import (
 type Repository struct {
 	db *sql.DB
 }
+
+const lastUsedAtUpdateInterval = time.Minute
 
 func NewSQLiteRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
@@ -45,20 +48,15 @@ func (r *Repository) Create(name string) (CreatedUser, error) {
 func (r *Repository) List() ([]User, error) {
 	rows, err := r.db.Query(
 		`SELECT u.id, u.name, u.username, u.token_hash, u.role, u.status, u.created_at, u.last_used_at,
+			u.preferred_account_id, u.route_locked,
 			COALESCE(usage_stats.request_count, 0) AS request_count,
-			COALESCE(usage_stats.total_tokens, 0) AS total_tokens,
-			COALESCE(assignment_stats.assigned_accounts, 0) AS assigned_accounts
+			COALESCE(usage_stats.total_tokens, 0) AS total_tokens
 		 FROM server_users u
 		 LEFT JOIN (
 			SELECT server_user_id, COUNT(id) AS request_count, COALESCE(SUM(total_tokens), 0) AS total_tokens
 			FROM usage_events
 			GROUP BY server_user_id
 		 ) usage_stats ON usage_stats.server_user_id = u.id
-		 LEFT JOIN (
-			SELECT user_id, COUNT(account_id) AS assigned_accounts
-			FROM server_user_accounts
-			GROUP BY user_id
-		 ) assignment_stats ON assignment_stats.user_id = u.id
 		 ORDER BY u.id ASC`,
 	)
 	if err != nil {
@@ -68,9 +66,11 @@ func (r *Repository) List() ([]User, error) {
 	users := make([]User, 0)
 	for rows.Next() {
 		var user User
-		if err := rows.Scan(&user.ID, &user.Name, &user.Username, &user.TokenHash, &user.Role, &user.Status, &user.CreatedAt, nullTimeDest(&user.LastUsedAt), &user.RequestCount, &user.TotalTokens, &user.AssignedAccounts); err != nil {
+		var routeLocked int
+		if err := rows.Scan(&user.ID, &user.Name, &user.Username, &user.TokenHash, &user.Role, &user.Status, &user.CreatedAt, nullTimeDest(&user.LastUsedAt), nullInt64Dest(&user.PreferredAccountID), &routeLocked, &user.RequestCount, &user.TotalTokens); err != nil {
 			return nil, fmt.Errorf("scan server user: %w", err)
 		}
+		user.RouteLocked = routeLocked == 1
 		normalizeUserFields(&user)
 		users = append(users, user)
 	}
@@ -96,20 +96,20 @@ func (r *Repository) Get(id int64) (User, error) {
 func (r *Repository) Authenticate(token string) (User, error) {
 	hash := HashToken(token)
 	var user User
+	var routeLocked int
 	err := r.db.QueryRow(
-		`SELECT id, name, username, token_hash, role, status, created_at, last_used_at FROM server_users WHERE token_hash = ?`,
+		`SELECT id, name, username, token_hash, role, status, created_at, last_used_at, preferred_account_id, route_locked FROM server_users WHERE token_hash = ?`,
 		hash,
-	).Scan(&user.ID, &user.Name, &user.Username, &user.TokenHash, &user.Role, &user.Status, &user.CreatedAt, nullTimeDest(&user.LastUsedAt))
+	).Scan(&user.ID, &user.Name, &user.Username, &user.TokenHash, &user.Role, &user.Status, &user.CreatedAt, nullTimeDest(&user.LastUsedAt), nullInt64Dest(&user.PreferredAccountID), &routeLocked)
 	if err != nil {
 		return User{}, fmt.Errorf("select server user by token: %w", err)
 	}
+	user.RouteLocked = routeLocked == 1
 	normalizeUserFields(&user)
 	if user.Status != StatusActive {
 		return User{}, fmt.Errorf("server user is disabled")
 	}
-	now := time.Now().UTC()
-	_, _ = r.db.Exec(`UPDATE server_users SET last_used_at = ? WHERE id = ?`, now, user.ID)
-	user.LastUsedAt = &now
+	user.LastUsedAt = r.touchLastUsedAt(user.ID, user.LastUsedAt)
 	return user, nil
 }
 
@@ -120,24 +120,48 @@ func (r *Repository) AuthenticateLogin(username string, token string) (User, err
 	}
 	hash := HashToken(token)
 	var user User
+	var routeLocked int
 	err := r.db.QueryRow(
-		`SELECT id, name, username, token_hash, role, status, created_at, last_used_at
+		`SELECT id, name, username, token_hash, role, status, created_at, last_used_at, preferred_account_id, route_locked
 		 FROM server_users
 		 WHERE username = ? AND token_hash = ?`,
 		normalized,
 		hash,
-	).Scan(&user.ID, &user.Name, &user.Username, &user.TokenHash, &user.Role, &user.Status, &user.CreatedAt, nullTimeDest(&user.LastUsedAt))
+	).Scan(&user.ID, &user.Name, &user.Username, &user.TokenHash, &user.Role, &user.Status, &user.CreatedAt, nullTimeDest(&user.LastUsedAt), nullInt64Dest(&user.PreferredAccountID), &routeLocked)
 	if err != nil {
 		return User{}, fmt.Errorf("select server user by username and token: %w", err)
 	}
+	user.RouteLocked = routeLocked == 1
 	normalizeUserFields(&user)
 	if user.Status != StatusActive {
 		return User{}, fmt.Errorf("server user is disabled")
 	}
-	now := time.Now().UTC()
-	_, _ = r.db.Exec(`UPDATE server_users SET last_used_at = ? WHERE id = ?`, now, user.ID)
-	user.LastUsedAt = &now
+	user.LastUsedAt = r.touchLastUsedAt(user.ID, user.LastUsedAt)
 	return user, nil
+}
+
+func (r *Repository) touchLastUsedAt(userID int64, current *time.Time) *time.Time {
+	now := time.Now().UTC()
+	if current != nil && now.Sub(current.UTC()) < lastUsedAtUpdateInterval {
+		return current
+	}
+	_, _ = r.db.Exec(`UPDATE server_users SET last_used_at = ? WHERE id = ?`, now, userID)
+	return &now
+}
+
+func (r *Repository) UpdateRoute(id int64, accountID *int64, locked bool) (User, error) {
+	result, err := r.db.Exec(`UPDATE server_users SET preferred_account_id = ?, route_locked = ? WHERE id = ?`, nullInt64(accountID), boolToInt(locked), id)
+	if err != nil {
+		return User{}, fmt.Errorf("update server user route: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return User{}, fmt.Errorf("read updated server user route rows: %w", err)
+	}
+	if affected == 0 {
+		return User{}, sql.ErrNoRows
+	}
+	return r.Get(id)
 }
 
 func (r *Repository) Disable(id int64) error {
@@ -148,6 +172,21 @@ func (r *Repository) Disable(id int64) error {
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("read disabled server user rows: %w", err)
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *Repository) Delete(id int64) error {
+	result, err := r.db.Exec(`DELETE FROM server_users WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete server user: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read deleted server user rows: %w", err)
 	}
 	if affected == 0 {
 		return sql.ErrNoRows
@@ -183,181 +222,6 @@ func (r *Repository) RotateToken(id int64) (CreatedUser, error) {
 	return CreatedUser{}, sql.ErrNoRows
 }
 
-func (r *Repository) ListAssignedAccounts(userID int64) ([]AssignedAccount, error) {
-	rows, err := r.db.Query(
-		`SELECT sua.user_id, a.id, a.account_name, a.provider_type, a.source_icon, a.base_url,
-			a.status, sua.position, sua.is_active, sua.is_locked, a.supports_responses, a.cooldown_until, a.cooldown_reason
-		 FROM server_user_accounts sua
-		 JOIN accounts a ON a.id = sua.account_id
-		 WHERE sua.user_id = ?
-		 ORDER BY sua.position ASC, a.id ASC`,
-		userID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query assigned accounts: %w", err)
-	}
-	defer rows.Close()
-
-	assigned := make([]AssignedAccount, 0)
-	for rows.Next() {
-		var item AssignedAccount
-		var isActive int
-		var isLocked int
-		var supportsResponses int
-		var cooldown sql.NullTime
-		if err := rows.Scan(
-			&item.UserID,
-			&item.AccountID,
-			&item.AccountName,
-			&item.ProviderType,
-			&item.SourceIcon,
-			&item.BaseURL,
-			&item.Status,
-			&item.Position,
-			&isActive,
-			&isLocked,
-			&supportsResponses,
-			&cooldown,
-			&item.CooldownReason,
-		); err != nil {
-			return nil, fmt.Errorf("scan assigned account: %w", err)
-		}
-		item.IsActive = isActive == 1
-		item.IsLocked = isLocked == 1
-		item.SupportsResponses = supportsResponses == 1
-		if cooldown.Valid {
-			value := cooldown.Time.UTC()
-			item.CooldownUntil = &value
-		}
-		assigned = append(assigned, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate assigned accounts: %w", err)
-	}
-	return assigned, nil
-}
-
-func (r *Repository) ListAccountAssignments(userID int64) ([]AccountAssignment, error) {
-	rows, err := r.db.Query(
-		`SELECT a.id, a.account_name, a.provider_type, a.source_icon, a.base_url, a.status,
-			CASE WHEN sua.account_id IS NULL THEN 0 ELSE 1 END AS assigned,
-			COALESCE(sua.position, 0) AS position,
-			COALESCE(sua.is_active, 0) AS is_active,
-			COALESCE(sua.is_locked, 0) AS is_locked,
-			a.supports_responses, a.cooldown_until, a.cooldown_reason
-		 FROM accounts a
-		 LEFT JOIN server_user_accounts sua ON sua.account_id = a.id AND sua.user_id = ?
-		 ORDER BY assigned DESC, position ASC, a.id ASC`,
-		userID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query account assignments: %w", err)
-	}
-	defer rows.Close()
-
-	assignments := make([]AccountAssignment, 0)
-	for rows.Next() {
-		var item AccountAssignment
-		var assigned int
-		var isActive int
-		var isLocked int
-		var supportsResponses int
-		var cooldown sql.NullTime
-		if err := rows.Scan(
-			&item.AccountID,
-			&item.AccountName,
-			&item.ProviderType,
-			&item.SourceIcon,
-			&item.BaseURL,
-			&item.Status,
-			&assigned,
-			&item.Position,
-			&isActive,
-			&isLocked,
-			&supportsResponses,
-			&cooldown,
-			&item.CooldownReason,
-		); err != nil {
-			return nil, fmt.Errorf("scan account assignment: %w", err)
-		}
-		item.Assigned = assigned == 1
-		item.IsActive = isActive == 1
-		item.IsLocked = isLocked == 1
-		item.SupportsResponses = supportsResponses == 1
-		if cooldown.Valid {
-			value := cooldown.Time.UTC()
-			item.CooldownUntil = &value
-		}
-		assignments = append(assignments, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate account assignments: %w", err)
-	}
-	return assignments, nil
-}
-
-func (r *Repository) SetAccountAssignments(userID int64, accountIDs []int64) error {
-	tx, err := r.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin account assignment transaction: %w", err)
-	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	if _, err := tx.Exec(`DELETE FROM server_user_accounts WHERE user_id = ?`, userID); err != nil {
-		return fmt.Errorf("clear account assignments: %w", err)
-	}
-	now := time.Now().UTC()
-	seen := map[int64]bool{}
-	for position, accountID := range accountIDs {
-		if accountID <= 0 || seen[accountID] {
-			continue
-		}
-		seen[accountID] = true
-		if _, err := tx.Exec(
-			`INSERT INTO server_user_accounts (user_id, account_id, position, is_active, is_locked, created_at, updated_at)
-			 VALUES (?, ?, ?, 1, 0, ?, ?)`,
-			userID,
-			accountID,
-			position,
-			now,
-			now,
-		); err != nil {
-			return fmt.Errorf("insert account assignment: %w", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit account assignments: %w", err)
-	}
-	return nil
-}
-
-func (r *Repository) UpdateAccountState(userID int64, accountID int64, update AccountStateUpdate) error {
-	result, err := r.db.Exec(
-		`UPDATE server_user_accounts
-		 SET position = ?, is_active = ?, is_locked = ?, updated_at = ?
-		 WHERE user_id = ? AND account_id = ?`,
-		update.Position,
-		boolToInt(update.IsActive),
-		boolToInt(update.IsLocked),
-		time.Now().UTC(),
-		userID,
-		accountID,
-	)
-	if err != nil {
-		return fmt.Errorf("update assigned account state: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read assigned account state rows: %w", err)
-	}
-	if affected == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
-
 func HashToken(token string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
 	return hex.EncodeToString(sum[:])
@@ -383,6 +247,21 @@ func normalizeUserFields(user *User) {
 	}
 }
 
+func nullTimeDest(target **time.Time) any {
+	return &nullableTimeScanner{target: target}
+}
+
+func nullInt64(value *int64) any {
+	if value == nil || *value <= 0 {
+		return nil
+	}
+	return *value
+}
+
+func nullInt64Dest(target **int64) any {
+	return &nullableInt64Scanner{target: target}
+}
+
 func boolToInt(value bool) int {
 	if value {
 		return 1
@@ -390,8 +269,34 @@ func boolToInt(value bool) int {
 	return 0
 }
 
-func nullTimeDest(target **time.Time) any {
-	return &nullableTimeScanner{target: target}
+type nullableInt64Scanner struct {
+	target **int64
+}
+
+func (s *nullableInt64Scanner) Scan(value any) error {
+	if value == nil {
+		*s.target = nil
+		return nil
+	}
+	switch typed := value.(type) {
+	case int64:
+		copy := typed
+		*s.target = &copy
+	case int:
+		copy := int64(typed)
+		*s.target = &copy
+	case string:
+		parsed, err := strconv.ParseInt(typed, 10, 64)
+		if err != nil {
+			return err
+		}
+		*s.target = &parsed
+	case []byte:
+		return s.Scan(string(typed))
+	default:
+		return fmt.Errorf("unsupported nullable int64 type %T", value)
+	}
+	return nil
 }
 
 type nullableTimeScanner struct {
