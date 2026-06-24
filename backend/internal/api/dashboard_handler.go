@@ -23,8 +23,9 @@ func SetDashboardNowForTest(fn func() time.Time) func() {
 
 type DashboardUsageSummary interface {
 	SummarizeEvents(filter usage.EventFilter) (usage.EventSummary, error)
+	AnalyzeRequestQuality(filter usage.EventFilter) (usage.RequestQuality, error)
 	TrendEventsByHour(filter usage.EventFilter) ([]usage.TrendPoint, error)
-	ListRecentEvents(filter usage.EventFilter) ([]usage.Event, error)
+	ListRecentEventsPage(filter usage.EventFilter) (usage.EventPage, error)
 	ModelDistribution(filter usage.EventFilter) ([]usage.ModelDistributionPoint, error)
 }
 
@@ -71,6 +72,13 @@ func (h *DashboardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, summary)
+	case r.Method == http.MethodGet && r.URL.Path == "/dashboard/request-quality":
+		quality, err := h.usage.AnalyzeRequestQuality(filter)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, quality)
 	case r.Method == http.MethodGet && r.URL.Path == "/dashboard/trends":
 		trends, err := h.usage.TrendEventsByHour(filter)
 		if err != nil {
@@ -79,7 +87,7 @@ func (h *DashboardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, trends)
 	case r.Method == http.MethodGet && r.URL.Path == "/dashboard/recent-events":
-		events, err := h.usage.ListRecentEvents(filter)
+		events, err := h.usage.ListRecentEventsPage(filter)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -177,8 +185,21 @@ func dashboardEventFilter(r *http.Request) usage.EventFilter {
 			filter.Limit = limit
 		}
 	}
+	if raw := query.Get("page_size"); raw != "" {
+		if pageSize, err := strconv.Atoi(raw); err == nil && pageSize > 0 {
+			filter.Limit = pageSize
+		}
+	}
 	if filter.Limit == 0 {
 		filter.Limit = 20
+	}
+	if filter.Limit > 200 {
+		filter.Limit = 200
+	}
+	if raw := query.Get("page"); raw != "" {
+		if page, err := strconv.Atoi(raw); err == nil && page > 1 {
+			filter.Offset = (page - 1) * filter.Limit
+		}
 	}
 	return filter
 }

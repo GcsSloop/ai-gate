@@ -56,6 +56,9 @@ Minimal checks:
 3. Send one stream request to `POST /ai-router/api/responses` and verify the stream terminates with an upstream-aligned terminal event
 4. Switch between two official `auth.json` accounts and verify requests do not hang or lose terminal output
 5. From Codex CLI, run one short prompt and verify the router account list shows a run against the active account
+6. Verify stats quality and pagination APIs:
+   - `curl "http://127.0.0.1:6789/ai-router/api/dashboard/request-quality?range=24h"`
+   - `curl "http://127.0.0.1:6789/ai-router/api/dashboard/recent-events?range=24h&page=1&page_size=20"`
 
 Thin gateway notes:
 

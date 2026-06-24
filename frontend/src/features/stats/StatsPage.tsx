@@ -1,4 +1,4 @@
-import { Card, Empty, Input, Select, Segmented, Spin, Tag } from "antd";
+import { Card, Empty, Input, Pagination, Select, Segmented, Spin, Tag } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -7,10 +7,13 @@ import {
   type UsageDashboardSummary,
   type UsageModelDistributionPoint,
   type UsageEventRecord,
+  type UsageEventPage,
+  type UsageRequestQuality,
   type UsageTrendPoint,
   type ServerUser,
   getDashboardModelDistribution,
   getDashboardRecentEvents,
+  getDashboardRequestQuality,
   getDashboardSummary,
   getDashboardTrends,
   listAccounts,
@@ -47,6 +50,10 @@ function formatCurrency(language: AppLanguage, value: number): string {
   }).format(value);
 }
 
+function formatLatency(language: AppLanguage, value: number): string {
+  return `${new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(value)} ms`;
+}
+
 function eventStatusColor(status: string): string {
   if (status === "completed") {
     return "success";
@@ -67,14 +74,26 @@ export function StatsPage({ language, t, serverMode = false }: StatsPageProps) {
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [serverUsers, setServerUsers] = useState<ServerUser[]>([]);
   const [summary, setSummary] = useState<UsageDashboardSummary | null>(null);
+  const [requestQuality, setRequestQuality] = useState<UsageRequestQuality | null>(null);
   const [trends, setTrends] = useState<UsageTrendPoint[]>([]);
   const [modelDistribution, setModelDistribution] = useState<UsageModelDistributionPoint[]>([]);
   const [events, setEvents] = useState<UsageEventRecord[]>([]);
+  const [eventsPage, setEventsPage] = useState<Pick<UsageEventPage, "total" | "page" | "page_size">>({
+    total: 0,
+    page: 1,
+    page_size: 20,
+  });
   const [error, setError] = useState<string | null>(null);
   const hasLoadedRef = useRef(false);
+  const recentPageSize = 20;
+
+  useEffect(() => {
+    setEventsPage((current) => (current.page === 1 ? current : { ...current, page: 1 }));
+  }, [accountID, model, rangeHours, serverUserID]);
 
   useEffect(() => {
     let disposed = false;
+    const requestedPage = eventsPage.page;
 
     async function load() {
       if (hasLoadedRef.current) {
@@ -84,13 +103,14 @@ export function StatsPage({ language, t, serverMode = false }: StatsPageProps) {
       }
       setError(null);
       try {
-        const [accountList, serverUserList, nextSummary, nextTrends, nextModelDistribution, nextEvents] = await Promise.all([
+        const [accountList, serverUserList, nextSummary, nextQuality, nextTrends, nextModelDistribution, nextEventsPage] = await Promise.all([
           listAccounts(),
           serverMode ? listServerUsers() : Promise.resolve([]),
           getDashboardSummary(rangeHours, accountID, model, serverUserID),
+          getDashboardRequestQuality(rangeHours, accountID, model, serverUserID),
           getDashboardTrends(rangeHours, accountID, model, serverUserID),
           getDashboardModelDistribution(rangeHours, accountID, model, serverUserID),
-          getDashboardRecentEvents(rangeHours, accountID, model, 20, serverUserID),
+          getDashboardRecentEvents(rangeHours, accountID, model, requestedPage, recentPageSize, serverUserID),
         ]);
         if (disposed) {
           return;
@@ -98,9 +118,15 @@ export function StatsPage({ language, t, serverMode = false }: StatsPageProps) {
         setAccounts(Array.isArray(accountList) ? accountList : []);
         setServerUsers(Array.isArray(serverUserList) ? serverUserList : []);
         setSummary(nextSummary);
+        setRequestQuality(nextQuality);
         setTrends(Array.isArray(nextTrends) ? nextTrends : []);
         setModelDistribution(Array.isArray(nextModelDistribution) ? nextModelDistribution : []);
-        setEvents(Array.isArray(nextEvents) ? nextEvents : []);
+        setEvents(Array.isArray(nextEventsPage?.items) ? nextEventsPage.items : []);
+        setEventsPage({
+          total: nextEventsPage?.total ?? 0,
+          page: nextEventsPage?.page ?? requestedPage,
+          page_size: nextEventsPage?.page_size ?? recentPageSize,
+        });
         hasLoadedRef.current = true;
       } catch (loadError) {
         if (!disposed) {
@@ -118,7 +144,7 @@ export function StatsPage({ language, t, serverMode = false }: StatsPageProps) {
     return () => {
       disposed = true;
     };
-  }, [accountID, model, rangeHours, serverMode, serverUserID, t]);
+  }, [accountID, eventsPage.page, model, rangeHours, serverMode, serverUserID, t]);
 
   const accountNameByID = useMemo(() => {
     return new Map(accounts.map((account) => [account.id, account.account_name]));
@@ -148,6 +174,29 @@ export function StatsPage({ language, t, serverMode = false }: StatsPageProps) {
       label: t("预估费用"),
       value: summary ? formatCurrency(language, summary.estimated_cost) : "--",
       hint: t("按模型费率估算"),
+    },
+  ];
+
+  const qualityCards = [
+    {
+      label: t("平均延迟"),
+      value: requestQuality ? formatLatency(language, requestQuality.avg_latency_ms) : "--",
+      hint: requestQuality ? `${formatCompactNumber(language, requestQuality.request_count)} ${t("次请求")}` : "--",
+    },
+    {
+      label: t("P95 延迟"),
+      value: requestQuality ? formatLatency(language, requestQuality.p95_latency_ms) : "--",
+      hint: t("95% 请求不超过该值"),
+    },
+    {
+      label: t("P99 延迟"),
+      value: requestQuality ? formatLatency(language, requestQuality.p99_latency_ms) : "--",
+      hint: t("99% 请求不超过该值"),
+    },
+    {
+      label: t("最大 / 最小延迟"),
+      value: requestQuality ? `${formatLatency(language, requestQuality.max_latency_ms)} / ${formatLatency(language, requestQuality.min_latency_ms)}` : "--",
+      hint: t("筛选范围内的极值"),
     },
   ];
 
@@ -219,6 +268,16 @@ export function StatsPage({ language, t, serverMode = false }: StatsPageProps) {
             ))}
           </div>
 
+          <div className="stats-summary-grid stats-quality-grid">
+            {qualityCards.map((card) => (
+              <Card key={card.label} className="stats-summary-card stats-quality-card" variant="borderless">
+                <div className="stats-card-label">{card.label}</div>
+                <div className="stats-card-value">{card.value}</div>
+                <div className="stats-card-hint">{card.hint}</div>
+              </Card>
+            ))}
+          </div>
+
           <div className="stats-content-grid">
             <Card className={`stats-panel ${refreshing ? "stats-panel-refreshing" : ""}`} variant="borderless" title={t("Token 趋势")}>
               {trends.length === 0 ? (
@@ -241,26 +300,39 @@ export function StatsPage({ language, t, serverMode = false }: StatsPageProps) {
             {events.length === 0 ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("暂无最近记录")} />
             ) : (
-              <div className="stats-events-list">
-                {events.map((event) => (
-                  <div key={event.id} className="stats-event-row">
-                    <div className="stats-event-main">
-                      <div className="stats-event-title">
-                        <span>{event.model}</span>
-                        <Tag color={eventStatusColor(event.status)}>{event.status}</Tag>
+              <div className="stats-events-block">
+                <div className="stats-events-list">
+                  {events.map((event) => (
+                    <div key={event.id} className="stats-event-row">
+                      <div className="stats-event-main">
+                        <div className="stats-event-title">
+                          <span>{event.model}</span>
+                          <Tag color={eventStatusColor(event.status)}>{event.status}</Tag>
+                        </div>
+                        <div className="stats-event-meta">
+                          <span>{`${accountNameByID.get(event.account_id) ?? t("账户")} · #${event.account_id}`}</span>
+                          <span>{new Date(event.created_at).toLocaleString(language, { hour12: false })}</span>
+                          <span>{Math.round(event.latency_ms)} ms</span>
+                        </div>
                       </div>
-                      <div className="stats-event-meta">
-                        <span>{`${accountNameByID.get(event.account_id) ?? t("账户")} · #${event.account_id}`}</span>
-                        <span>{new Date(event.created_at).toLocaleString(language, { hour12: false })}</span>
-                        <span>{Math.round(event.latency_ms)} ms</span>
+                      <div className="stats-event-metrics">
+                        <span>{formatCompactNumber(language, event.total_tokens)} tok</span>
+                        <span>{formatCurrency(language, event.estimated_cost)}</span>
                       </div>
                     </div>
-                    <div className="stats-event-metrics">
-                      <span>{formatCompactNumber(language, event.total_tokens)} tok</span>
-                      <span>{formatCurrency(language, event.estimated_cost)}</span>
-                    </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
+                {eventsPage.total > eventsPage.page_size ? (
+                  <Pagination
+                    className="stats-events-pagination"
+                    size="small"
+                    current={eventsPage.page}
+                    pageSize={eventsPage.page_size}
+                    total={eventsPage.total}
+                    showSizeChanger={false}
+                    onChange={(page) => setEventsPage((current) => ({ ...current, page }))}
+                  />
+                ) : null}
               </div>
             )}
           </Card>

@@ -1650,6 +1650,10 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   gap: 12px;
 }
 
+.stats-quality-grid {
+  grid-template-columns: repeat(auto-fit, minmax(188px, 1fr));
+}
+
 .stats-summary-card,
 .stats-panel {
   border-radius: 16px;
@@ -1706,6 +1710,10 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   color: var(--text-secondary);
 }
 
+.stats-quality-card .stats-card-value {
+  font-size: 20px;
+}
+
 .stats-content-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.8fr) minmax(280px, 0.9fr);
@@ -1716,6 +1724,16 @@ html[data-theme-mode="dark"] .top-home-update-dot {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.stats-events-block {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.stats-events-pagination {
+  align-self: flex-end;
 }
 
 .stats-event-meta,

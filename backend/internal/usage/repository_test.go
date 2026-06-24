@@ -442,6 +442,147 @@ func TestSQLiteRepositorySaveEventListRecentAndSummarize(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryAnalyzesRequestQualityWithAccountFilter(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	from := time.Date(2026, 3, 15, 8, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+	for i := 1; i <= 100; i++ {
+		status := "completed"
+		if i > 95 {
+			status = "rate_limited"
+		}
+		if err := repo.SaveEvent(usage.Event{
+			AccountID:    9,
+			ProviderType: "openai",
+			RequestKind:  "responses",
+			Model:        "gpt-5.2",
+			Status:       status,
+			LatencyMS:    float64(i),
+			CreatedAt:    from.Add(time.Duration(i) * time.Minute),
+		}); err != nil {
+			t.Fatalf("SaveEvent(%d) returned error: %v", i, err)
+		}
+	}
+	if err := repo.SaveEvent(usage.Event{
+		AccountID:    7,
+		ProviderType: "openai",
+		RequestKind:  "chat_completions",
+		Model:        "gpt-5.2",
+		Status:       "completed",
+		LatencyMS:    9999,
+		CreatedAt:    from.Add(30 * time.Minute),
+	}); err != nil {
+		t.Fatalf("SaveEvent(other account) returned error: %v", err)
+	}
+
+	accountID := int64(9)
+	quality, err := repo.AnalyzeRequestQuality(usage.EventFilter{
+		From:      &from,
+		To:        &to,
+		AccountID: &accountID,
+	})
+	if err != nil {
+		t.Fatalf("AnalyzeRequestQuality returned error: %v", err)
+	}
+	if quality.RequestCount != 100 || quality.SuccessCount != 95 || quality.FailureCount != 5 {
+		t.Fatalf("quality counts = %+v, want 100/95/5", quality)
+	}
+	if quality.SuccessRate != 0.95 {
+		t.Fatalf("SuccessRate = %v, want 0.95", quality.SuccessRate)
+	}
+	if quality.AvgLatencyMS != 50.5 {
+		t.Fatalf("AvgLatencyMS = %v, want 50.5", quality.AvgLatencyMS)
+	}
+	if quality.P95LatencyMS != 95 || quality.P99LatencyMS != 99 {
+		t.Fatalf("percentiles = p95=%v p99=%v, want 95/99", quality.P95LatencyMS, quality.P99LatencyMS)
+	}
+	if quality.MinLatencyMS != 1 || quality.MaxLatencyMS != 100 {
+		t.Fatalf("min/max latency = %v/%v, want 1/100", quality.MinLatencyMS, quality.MaxLatencyMS)
+	}
+}
+
+func TestSQLiteRepositoryListRecentEventsPage(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	base := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	for i := 1; i <= 5; i++ {
+		if err := repo.SaveEvent(usage.Event{
+			AccountID:    9,
+			ProviderType: "openai",
+			RequestKind:  "responses",
+			Model:        "gpt-5.2",
+			Status:       "completed",
+			TotalTokens:  int64(i * 100),
+			LatencyMS:    float64(i * 10),
+			CreatedAt:    base.Add(time.Duration(i) * time.Minute),
+		}); err != nil {
+			t.Fatalf("SaveEvent(%d) returned error: %v", i, err)
+		}
+	}
+
+	accountID := int64(9)
+	page, err := repo.ListRecentEventsPage(usage.EventFilter{
+		AccountID: &accountID,
+		Limit:     2,
+		Offset:    2,
+	})
+	if err != nil {
+		t.Fatalf("ListRecentEventsPage returned error: %v", err)
+	}
+	if page.Total != 5 || page.Page != 2 || page.PageSize != 2 {
+		t.Fatalf("page metadata = %+v, want total=5 page=2 page_size=2", page)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("len(page.Items) = %d, want 2", len(page.Items))
+	}
+	if page.Items[0].TotalTokens != 300 || page.Items[1].TotalTokens != 200 {
+		t.Fatalf("page items = %+v, want second page in newest-first order", page.Items)
+	}
+}
+
+func TestSQLiteRepositoryListRecentEventsPageReturnsEmptyItemsSlice(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := usage.NewSQLiteRepository(store.DB())
+	page, err := repo.ListRecentEventsPage(usage.EventFilter{Limit: 20})
+	if err != nil {
+		t.Fatalf("ListRecentEventsPage returned error: %v", err)
+	}
+	if page.Items == nil {
+		t.Fatal("page.Items is nil, want empty slice for stable JSON array encoding")
+	}
+	if len(page.Items) != 0 || page.Total != 0 {
+		t.Fatalf("page = %+v, want empty result", page)
+	}
+}
+
 func TestSQLiteRepositoryTrendEventsByHour(t *testing.T) {
 	t.Parallel()
 

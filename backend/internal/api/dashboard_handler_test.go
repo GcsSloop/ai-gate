@@ -77,28 +77,73 @@ func TestDashboardHandlerTrends(t *testing.T) {
 func TestDashboardHandlerRecentEvents(t *testing.T) {
 	t.Parallel()
 
-	handler := api.NewDashboardHandler(&dashboardUsageStub{
-		recent: []usage.Event{
-			{ID: 2, AccountID: 9, Model: "gpt-5.2", Status: "completed", TotalTokens: 1500, EstimatedCost: 0.42, CreatedAt: time.Date(2026, 3, 15, 10, 5, 0, 0, time.UTC)},
+	stub := &dashboardUsageStub{
+		recentPage: usage.EventPage{
+			Items: []usage.Event{
+				{ID: 2, AccountID: 9, Model: "gpt-5.2", Status: "completed", TotalTokens: 1500, EstimatedCost: 0.42, CreatedAt: time.Date(2026, 3, 15, 10, 5, 0, 0, time.UTC)},
+			},
+			Total:    12,
+			Page:     2,
+			PageSize: 1,
 		},
-	})
+	}
+	handler := api.NewDashboardHandler(stub)
 
-	req := httptest.NewRequest(http.MethodGet, "/dashboard/recent-events?limit=20", nil)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/recent-events?page=2&page_size=1", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /dashboard/recent-events status = %d, want %d", rec.Code, http.StatusOK)
 	}
 
-	var got []usage.Event
+	var got usage.EventPage
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("len(got) = %d, want 1", len(got))
+	if got.Total != 12 || got.Page != 2 || got.PageSize != 1 {
+		t.Fatalf("page metadata = %+v, want total=12 page=2 page_size=1", got)
 	}
-	if got[0].ID != 2 || got[0].EstimatedCost != 0.42 {
-		t.Fatalf("recent = %+v", got[0])
+	if len(got.Items) != 1 {
+		t.Fatalf("len(got.Items) = %d, want 1", len(got.Items))
+	}
+	if got.Items[0].ID != 2 || got.Items[0].EstimatedCost != 0.42 {
+		t.Fatalf("recent = %+v", got.Items[0])
+	}
+	if stub.lastFilter.Limit != 1 || stub.lastFilter.Offset != 1 {
+		t.Fatalf("filter limit/offset = %d/%d, want 1/1", stub.lastFilter.Limit, stub.lastFilter.Offset)
+	}
+}
+
+func TestDashboardHandlerRequestQuality(t *testing.T) {
+	t.Parallel()
+
+	handler := api.NewDashboardHandler(&dashboardUsageStub{
+		quality: usage.RequestQuality{
+			RequestCount: 100,
+			SuccessCount: 95,
+			FailureCount: 5,
+			SuccessRate:  0.95,
+			AvgLatencyMS: 250,
+			P95LatencyMS: 800,
+			P99LatencyMS: 1200,
+			MinLatencyMS: 20,
+			MaxLatencyMS: 1600,
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/request-quality?range=24h&account_id=9", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /dashboard/request-quality status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var got usage.RequestQuality
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if got.SuccessRate != 0.95 || got.P95LatencyMS != 800 || got.P99LatencyMS != 1200 {
+		t.Fatalf("quality = %+v, want success_rate=0.95 p95=800 p99=1200", got)
 	}
 }
 
@@ -288,8 +333,9 @@ func TestDashboardHandlerDoesNotCompactEventsOnReadRequests(t *testing.T) {
 
 type dashboardUsageStub struct {
 	summary           usage.EventSummary
+	quality           usage.RequestQuality
 	trends            []usage.TrendPoint
-	recent            []usage.Event
+	recentPage        usage.EventPage
 	modelDistribution []usage.ModelDistributionPoint
 	lastFilter        usage.EventFilter
 	compactCalls      int
@@ -305,9 +351,14 @@ func (s *dashboardUsageStub) TrendEventsByHour(filter usage.EventFilter) ([]usag
 	return s.trends, nil
 }
 
-func (s *dashboardUsageStub) ListRecentEvents(filter usage.EventFilter) ([]usage.Event, error) {
+func (s *dashboardUsageStub) ListRecentEventsPage(filter usage.EventFilter) (usage.EventPage, error) {
 	s.lastFilter = filter
-	return s.recent, nil
+	return s.recentPage, nil
+}
+
+func (s *dashboardUsageStub) AnalyzeRequestQuality(filter usage.EventFilter) (usage.RequestQuality, error) {
+	s.lastFilter = filter
+	return s.quality, nil
 }
 
 func (s *dashboardUsageStub) ModelDistribution(filter usage.EventFilter) ([]usage.ModelDistributionPoint, error) {

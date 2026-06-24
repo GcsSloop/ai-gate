@@ -56,6 +56,7 @@ type EventFilter struct {
 	ServerUserID   *int64
 	Model          string
 	Limit          int
+	Offset         int
 	BucketSize     time.Duration
 	BucketLocation *time.Location
 	IncludeZeroes  bool
@@ -77,6 +78,25 @@ type EventSummary struct {
 	EstimatedCost float64 `json:"estimated_cost"`
 	BalanceDelta  float64 `json:"balance_delta"`
 	QuotaDelta    float64 `json:"quota_delta"`
+}
+
+type RequestQuality struct {
+	RequestCount int64   `json:"request_count"`
+	SuccessCount int64   `json:"success_count"`
+	FailureCount int64   `json:"failure_count"`
+	SuccessRate  float64 `json:"success_rate"`
+	AvgLatencyMS float64 `json:"avg_latency_ms"`
+	P95LatencyMS float64 `json:"p95_latency_ms"`
+	P99LatencyMS float64 `json:"p99_latency_ms"`
+	MinLatencyMS float64 `json:"min_latency_ms"`
+	MaxLatencyMS float64 `json:"max_latency_ms"`
+}
+
+type EventPage struct {
+	Items    []Event `json:"items"`
+	Total    int64   `json:"total"`
+	Page     int     `json:"page"`
+	PageSize int     `json:"page_size"`
 }
 
 type TrendPoint struct {
