@@ -3,6 +3,7 @@ package usage
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 )
@@ -16,7 +17,9 @@ type Repository interface {
 	SaveEvent(event Event) error
 	CompactEvents(now time.Time) error
 	ListRecentEvents(filter EventFilter) ([]Event, error)
+	ListRecentEventsPage(filter EventFilter) (EventPage, error)
 	SummarizeEvents(filter EventFilter) (EventSummary, error)
+	AnalyzeRequestQuality(filter EventFilter) (RequestQuality, error)
 	TrendEventsByHour(filter EventFilter) ([]TrendPoint, error)
 	ModelDistribution(filter EventFilter) ([]ModelDistributionPoint, error)
 }
@@ -324,6 +327,10 @@ func (r *SQLiteRepository) ListRecentEvents(filter EventFilter) ([]Event, error)
 		limit = 50
 	}
 	args = append(args, limit)
+	if filter.Offset > 0 {
+		query += ` OFFSET ?`
+		args = append(args, filter.Offset)
+	}
 
 	rows, err := r.db.Query(query, args...)
 	if err != nil {
@@ -363,6 +370,44 @@ func (r *SQLiteRepository) ListRecentEvents(filter EventFilter) ([]Event, error)
 	return events, nil
 }
 
+func (r *SQLiteRepository) ListRecentEventsPage(filter EventFilter) (EventPage, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	countQuery := `SELECT COUNT(*) FROM usage_events`
+	where, args := eventFilterWhere(filter)
+	countQuery += where
+	var total int64
+	if err := r.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return EventPage{}, fmt.Errorf("count recent usage events: %w", err)
+	}
+
+	filter.Limit = limit
+	filter.Offset = offset
+	items, err := r.ListRecentEvents(filter)
+	if err != nil {
+		return EventPage{}, err
+	}
+	if items == nil {
+		items = []Event{}
+	}
+	return EventPage{
+		Items:    items,
+		Total:    total,
+		Page:     offset/limit + 1,
+		PageSize: limit,
+	}, nil
+}
+
 func (r *SQLiteRepository) SummarizeEvents(filter EventFilter) (EventSummary, error) {
 	var summary EventSummary
 	rows, err := r.loadAggregateRows(filter)
@@ -381,6 +426,50 @@ func (r *SQLiteRepository) SummarizeEvents(filter EventFilter) (EventSummary, er
 		summary.EstimatedCost += calculateCost(filter, row)
 	}
 	return summary, nil
+}
+
+func (r *SQLiteRepository) AnalyzeRequestQuality(filter EventFilter) (RequestQuality, error) {
+	query := `SELECT status, latency_ms FROM usage_events`
+	where, args := eventFilterWhere(filter)
+	query += where + ` ORDER BY latency_ms ASC`
+
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return RequestQuality{}, fmt.Errorf("query request quality events: %w", err)
+	}
+	defer rows.Close()
+
+	var quality RequestQuality
+	latencies := make([]float64, 0)
+	var latencySum float64
+	for rows.Next() {
+		var status string
+		var latency float64
+		if err := rows.Scan(&status, &latency); err != nil {
+			return RequestQuality{}, fmt.Errorf("scan request quality event: %w", err)
+		}
+		quality.RequestCount++
+		if status == "completed" {
+			quality.SuccessCount++
+		} else {
+			quality.FailureCount++
+		}
+		latencies = append(latencies, latency)
+		latencySum += latency
+	}
+	if err := rows.Err(); err != nil {
+		return RequestQuality{}, fmt.Errorf("iterate request quality events: %w", err)
+	}
+	if quality.RequestCount == 0 {
+		return quality, nil
+	}
+	quality.SuccessRate = float64(quality.SuccessCount) / float64(quality.RequestCount)
+	quality.AvgLatencyMS = latencySum / float64(quality.RequestCount)
+	quality.MinLatencyMS = latencies[0]
+	quality.MaxLatencyMS = latencies[len(latencies)-1]
+	quality.P95LatencyMS = percentileNearestRank(latencies, 0.95)
+	quality.P99LatencyMS = percentileNearestRank(latencies, 0.99)
+	return quality, nil
 }
 
 func (r *SQLiteRepository) TrendEventsByHour(filter EventFilter) ([]TrendPoint, error) {
@@ -520,6 +609,20 @@ func sortModelDistribution(points []ModelDistributionPoint) {
 		}
 		return points[i].RequestCount > points[j].RequestCount
 	})
+}
+
+func percentileNearestRank(sortedValues []float64, percentile float64) float64 {
+	if len(sortedValues) == 0 {
+		return 0
+	}
+	rank := int(math.Ceil(percentile * float64(len(sortedValues))))
+	if rank < 1 {
+		rank = 1
+	}
+	if rank > len(sortedValues) {
+		rank = len(sortedValues)
+	}
+	return sortedValues[rank-1]
 }
 
 func (r *SQLiteRepository) loadAggregateRows(filter EventFilter) ([]RollupPoint, error) {

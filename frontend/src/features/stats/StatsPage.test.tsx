@@ -4,6 +4,7 @@ import { StatsPage } from "./StatsPage";
 
 vi.mock("../../lib/api", () => ({
   listAccounts: vi.fn(),
+  getDashboardRequestQuality: vi.fn(),
   getDashboardSummary: vi.fn(),
   getDashboardTrends: vi.fn(),
   getDashboardModelDistribution: vi.fn(),
@@ -11,7 +12,7 @@ vi.mock("../../lib/api", () => ({
   listServerUsers: vi.fn(),
 }));
 
-import { getDashboardModelDistribution, getDashboardRecentEvents, getDashboardSummary, getDashboardTrends, listAccounts, listServerUsers } from "../../lib/api";
+import { getDashboardModelDistribution, getDashboardRecentEvents, getDashboardRequestQuality, getDashboardSummary, getDashboardTrends, listAccounts, listServerUsers } from "../../lib/api";
 
 describe("StatsPage", () => {
   const t = (value: string) => value;
@@ -37,6 +38,17 @@ describe("StatsPage", () => {
       balance_delta: -4.5,
       quota_delta: -8000,
     } as never);
+    vi.mocked(getDashboardRequestQuality).mockResolvedValue({
+      request_count: 12,
+      success_count: 10,
+      failure_count: 2,
+      success_rate: 0.8333,
+      avg_latency_ms: 321.4,
+      p95_latency_ms: 880,
+      p99_latency_ms: 1200,
+      min_latency_ms: 90,
+      max_latency_ms: 1500,
+    } as never);
     vi.mocked(getDashboardTrends).mockResolvedValue([
       {
         bucket: "2026-03-15T09:00:00Z",
@@ -49,22 +61,27 @@ describe("StatsPage", () => {
         quota_delta: 0,
       },
     ] as never);
-    vi.mocked(getDashboardRecentEvents).mockResolvedValue([
-      {
-        id: 1,
-        account_id: 1,
-        provider_type: "openai-compatible",
-        request_kind: "responses",
-        model: "gpt-5.2",
-        status: "completed",
-        input_tokens: 1200,
-        output_tokens: 300,
-        total_tokens: 1500,
-        estimated_cost: 0.42,
-        latency_ms: 321,
-        created_at: "2026-03-15T10:05:00Z",
-      },
-    ] as never);
+    vi.mocked(getDashboardRecentEvents).mockResolvedValue({
+      items: [
+        {
+          id: 1,
+          account_id: 1,
+          provider_type: "openai-compatible",
+          request_kind: "responses",
+          model: "gpt-5.2",
+          status: "completed",
+          input_tokens: 1200,
+          output_tokens: 300,
+          total_tokens: 1500,
+          estimated_cost: 0.42,
+          latency_ms: 321,
+          created_at: "2026-03-15T10:05:00Z",
+        },
+      ],
+      total: 31,
+      page: 1,
+      page_size: 20,
+    } as never);
     vi.mocked(getDashboardModelDistribution).mockResolvedValue([
       { model: "gpt-5.2", request_count: 9 },
       { model: "gpt-5.4", request_count: 3 },
@@ -79,6 +96,12 @@ describe("StatsPage", () => {
     expect(screen.getByText("输入 Token")).toBeInTheDocument();
     expect(screen.getByText("输出 Token")).toBeInTheDocument();
     expect(screen.getByText("预估费用")).toBeInTheDocument();
+    expect(screen.queryByText("综合成功率")).not.toBeInTheDocument();
+    expect(screen.queryByText("83.3%")).not.toBeInTheDocument();
+    expect(screen.getByText("平均延迟")).toBeInTheDocument();
+    expect(screen.getByText("P95 延迟")).toBeInTheDocument();
+    expect(screen.getByText("P99 延迟")).toBeInTheDocument();
+    expect(screen.getByText("最大 / 最小延迟")).toBeInTheDocument();
     expect(screen.queryByText("余额变化")).not.toBeInTheDocument();
     expect(screen.getByText("US$1.23")).toBeInTheDocument();
     expect(screen.queryByText("总 Token")).not.toBeInTheDocument();
@@ -93,9 +116,10 @@ describe("StatsPage", () => {
 
     await waitFor(() => {
       expect(getDashboardSummary).toHaveBeenCalledWith("24h", undefined, "", undefined);
+      expect(getDashboardRequestQuality).toHaveBeenCalledWith("24h", undefined, "", undefined);
       expect(getDashboardTrends).toHaveBeenCalledWith("24h", undefined, "", undefined);
       expect(getDashboardModelDistribution).toHaveBeenCalledWith("24h", undefined, "", undefined);
-      expect(getDashboardRecentEvents).toHaveBeenCalledWith("24h", undefined, "", 20, undefined);
+      expect(getDashboardRecentEvents).toHaveBeenCalledWith("24h", undefined, "", 1, 20, undefined);
     });
   });
 
@@ -125,9 +149,10 @@ describe("StatsPage", () => {
 
     await waitFor(() => {
       expect(getDashboardSummary).toHaveBeenLastCalledWith("24h", undefined, "", 11);
+      expect(getDashboardRequestQuality).toHaveBeenLastCalledWith("24h", undefined, "", 11);
       expect(getDashboardTrends).toHaveBeenLastCalledWith("24h", undefined, "", 11);
       expect(getDashboardModelDistribution).toHaveBeenLastCalledWith("24h", undefined, "", 11);
-      expect(getDashboardRecentEvents).toHaveBeenLastCalledWith("24h", undefined, "", 20, 11);
+      expect(getDashboardRecentEvents).toHaveBeenLastCalledWith("24h", undefined, "", 1, 20, 11);
     });
   });
 
@@ -138,9 +163,21 @@ describe("StatsPage", () => {
 
     await waitFor(() => {
       expect(getDashboardSummary).toHaveBeenLastCalledWith("1y", undefined, "", undefined);
+      expect(getDashboardRequestQuality).toHaveBeenLastCalledWith("1y", undefined, "", undefined);
       expect(getDashboardTrends).toHaveBeenLastCalledWith("1y", undefined, "", undefined);
       expect(getDashboardModelDistribution).toHaveBeenLastCalledWith("1y", undefined, "", undefined);
-      expect(getDashboardRecentEvents).toHaveBeenLastCalledWith("1y", undefined, "", 20, undefined);
+      expect(getDashboardRecentEvents).toHaveBeenLastCalledWith("1y", undefined, "", 1, 20, undefined);
+    });
+  });
+
+  it("loads another recent events page through pagination", async () => {
+    render(<StatsPage language="zh-CN" t={t} />);
+
+    expect(await screen.findByText("最近记录")).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("2"));
+
+    await waitFor(() => {
+      expect(getDashboardRecentEvents).toHaveBeenLastCalledWith("24h", undefined, "", 2, 20, undefined);
     });
   });
 });

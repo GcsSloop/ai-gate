@@ -52,6 +52,13 @@ func TestNewApp(t *testing.T) {
 		t.Fatalf("GET /ai-router/api/accounts status = %d, want %d", apiRec.Code, http.StatusOK)
 	}
 
+	qualityReq := httptest.NewRequest(http.MethodGet, "/ai-router/api/dashboard/request-quality?range=24h", nil)
+	qualityRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(qualityRec, qualityReq)
+	if qualityRec.Code != http.StatusOK {
+		t.Fatalf("GET /ai-router/api/dashboard/request-quality status = %d, want %d; body=%s", qualityRec.Code, http.StatusOK, qualityRec.Body.String())
+	}
+
 	responsesReq := httptest.NewRequest(http.MethodPost, "/ai-router/api/responses", nil)
 	responsesRec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(responsesRec, responsesReq)

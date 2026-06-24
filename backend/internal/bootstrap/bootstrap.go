@@ -154,6 +154,7 @@ func NewApp(_ context.Context, cfg Config) (*App, error) {
 	apiMux.Handle("/monitoring/overview", api.NewMonitoringHandler(accountRepo, usageRepo))
 	dashboardHandler := api.NewDashboardHandler(usageRepo, api.WithDashboardStateEvents(stateEvents))
 	apiMux.Handle("/dashboard/summary", dashboardHandler)
+	apiMux.Handle("/dashboard/request-quality", dashboardHandler)
 	apiMux.Handle("/dashboard/trends", dashboardHandler)
 	apiMux.Handle("/dashboard/recent-events", dashboardHandler)
 	apiMux.Handle("/dashboard/model-distribution", dashboardHandler)

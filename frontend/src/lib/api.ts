@@ -111,6 +111,18 @@ export type UsageDashboardSummary = {
   quota_delta: number;
 };
 
+export type UsageRequestQuality = {
+  request_count: number;
+  success_count: number;
+  failure_count: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  p95_latency_ms: number;
+  p99_latency_ms: number;
+  min_latency_ms: number;
+  max_latency_ms: number;
+};
+
 export type ServerSession = {
   authenticated: boolean;
   role?: "admin" | "user";
@@ -240,6 +252,13 @@ export type UsageEventRecord = {
   quota_after?: number;
   latency_ms: number;
   created_at: string;
+};
+
+export type UsageEventPage = {
+  items: UsageEventRecord[];
+  total: number;
+  page: number;
+  page_size: number;
 };
 
 export type PricingRule = {
@@ -706,6 +725,8 @@ function dashboardQuery(
   model?: string,
   limit?: number,
   serverUserID?: number,
+  page?: number,
+  pageSize?: number,
 ): string {
   const params = new URLSearchParams();
   params.set("range", range);
@@ -721,6 +742,12 @@ function dashboardQuery(
   if (limit && limit > 0) {
     params.set("limit", String(limit));
   }
+  if (page && page > 0) {
+    params.set("page", String(page));
+  }
+  if (pageSize && pageSize > 0) {
+    params.set("page_size", String(pageSize));
+  }
   return params.toString();
 }
 
@@ -735,6 +762,21 @@ export async function getDashboardSummary(
   );
   if (!response.ok) {
     throw new Error("failed to load dashboard summary");
+  }
+  return response.json();
+}
+
+export async function getDashboardRequestQuality(
+  range: DashboardRangeKey = "24h",
+  accountID?: number,
+  model?: string,
+  serverUserID?: number,
+): Promise<UsageRequestQuality> {
+  const response = await fetch(
+    apiPath(`/dashboard/request-quality?${dashboardQuery(range, accountID, model, undefined, serverUserID)}`),
+  );
+  if (!response.ok) {
+    throw new Error("failed to load dashboard request quality");
   }
   return response.json();
 }
@@ -758,18 +800,28 @@ export async function getDashboardRecentEvents(
   range: DashboardRangeKey = "24h",
   accountID?: number,
   model?: string,
-  limit = 20,
+  page = 1,
+  pageSize = 20,
   serverUserID?: number,
-): Promise<UsageEventRecord[]> {
+): Promise<UsageEventPage> {
   const response = await fetch(
     apiPath(
-      `/dashboard/recent-events?${dashboardQuery(range, accountID, model, limit, serverUserID)}`,
+      `/dashboard/recent-events?${dashboardQuery(range, accountID, model, undefined, serverUserID, page, pageSize)}`,
     ),
   );
   if (!response.ok) {
     throw new Error("failed to load recent usage events");
   }
-  return response.json();
+  const payload = await response.json();
+  if (Array.isArray(payload)) {
+    return {
+      items: payload,
+      total: payload.length,
+      page,
+      page_size: pageSize,
+    };
+  }
+  return payload;
 }
 
 export async function getDashboardModelDistribution(
