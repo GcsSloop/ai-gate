@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accountdrv"
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
@@ -33,7 +34,7 @@ func TestOpenAIOfficialDriverFetchParsesUsageLimits(t *testing.T) {
 	driver := builtin.NewOpenAIOfficialDriver(http.DefaultClient)
 	result, err := driver.Fetch(context.Background(), accounts.Account{
 		ProviderType: accounts.ProviderOpenAIOfficial,
-		BaseURL:      server.URL,
+		BaseURL:      server.URL + "/backend-api/codex",
 	}, accountdrv.ResolvedCredential{
 		AccessToken: "at-token",
 		Metadata:    map[string]any{"account_id": "acct-1"},
@@ -64,6 +65,96 @@ func TestOpenAIOfficialDriverFetchParsesUsageLimits(t *testing.T) {
 	}
 	if got, ok := result.Meta["unlimited"].(bool); !ok || got {
 		t.Fatalf("meta.unlimited = %#v, want false", result.Meta["unlimited"])
+	}
+}
+
+func TestOpenAIOfficialDriverFetchParsesCurrentCodexRateLimits(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/wham/usage" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"plan_type":"pro",
+			"rate_limit":{
+				"allowed":true,
+				"limit_reached":false,
+				"primary_window":{
+					"used_percent":52,
+					"limit_window_seconds":18000,
+					"reset_after_seconds":3600,
+					"reset_at":1767205800
+				},
+				"secondary_window":{
+					"used_percent":51,
+					"limit_window_seconds":604800,
+					"reset_after_seconds":86400,
+					"reset_at":1783350300
+				}
+			},
+			"credits":{"has_credits":true,"unlimited":false,"balance":"0"},
+			"additional_rate_limits":[
+				{
+					"limit_name":"codex_other",
+					"metered_feature":"codex_other",
+					"rate_limit":{
+						"allowed":true,
+						"limit_reached":false,
+						"primary_window":{
+							"used_percent":88,
+							"limit_window_seconds":1800,
+							"reset_after_seconds":600,
+							"reset_at":1735693200
+						}
+					}
+				}
+			],
+			"rate_limit_reached_type":{"type":"workspace_member_usage_limit_reached"},
+			"rate_limit_reset_credits":{"available_count":1}
+		}`))
+	}))
+	defer server.Close()
+
+	driver := builtin.NewOpenAIOfficialDriver(http.DefaultClient)
+	result, err := driver.Fetch(context.Background(), accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		BaseURL:      server.URL + "/backend-api/codex",
+	}, accountdrv.ResolvedCredential{
+		AccessToken: "at-token",
+		Metadata:    map[string]any{"account_id": "acct-1"},
+	})
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+	if result.Limits.PrimaryUsedPercent == nil || *result.Limits.PrimaryUsedPercent != 52 {
+		t.Fatalf("PrimaryUsedPercent = %#v, want 52", result.Limits.PrimaryUsedPercent)
+	}
+	if result.Limits.SecondaryUsedPercent == nil || *result.Limits.SecondaryUsedPercent != 51 {
+		t.Fatalf("SecondaryUsedPercent = %#v, want 51", result.Limits.SecondaryUsedPercent)
+	}
+	if result.Limits.RPMRemaining == nil || *result.Limits.RPMRemaining != 48 {
+		t.Fatalf("RPMRemaining = %#v, want 48", result.Limits.RPMRemaining)
+	}
+	if result.Limits.TPMRemaining == nil || *result.Limits.TPMRemaining != 49 {
+		t.Fatalf("TPMRemaining = %#v, want 49", result.Limits.TPMRemaining)
+	}
+	wantPrimaryReset := time.Unix(1767205800, 0).UTC()
+	if result.Limits.PrimaryResetsAt == nil || !result.Limits.PrimaryResetsAt.Equal(wantPrimaryReset) {
+		t.Fatalf("PrimaryResetsAt = %#v, want %s", result.Limits.PrimaryResetsAt, wantPrimaryReset)
+	}
+	wantSecondaryReset := time.Unix(1783350300, 0).UTC()
+	if result.Limits.SecondaryResetsAt == nil || !result.Limits.SecondaryResetsAt.Equal(wantSecondaryReset) {
+		t.Fatalf("SecondaryResetsAt = %#v, want %s", result.Limits.SecondaryResetsAt, wantSecondaryReset)
+	}
+	if got, ok := result.Meta["plan_type"].(string); !ok || got != "pro" {
+		t.Fatalf("meta.plan_type = %#v, want pro", result.Meta["plan_type"])
+	}
+	reachedType, ok := result.Meta["rate_limit_reached_type"].(map[string]any)
+	if !ok || reachedType["type"] != "workspace_member_usage_limit_reached" {
+		t.Fatalf("meta.rate_limit_reached_type = %#v, want workspace_member_usage_limit_reached", result.Meta["rate_limit_reached_type"])
 	}
 }
 
