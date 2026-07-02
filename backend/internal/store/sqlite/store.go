@@ -159,6 +159,18 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(`UPDATE accounts SET status = 'active' WHERE status = 'cooldown'`); err != nil {
 		return fmt.Errorf("normalize account cooldown status: %w", err)
 	}
+	if _, err := s.db.Exec(`UPDATE accounts
+		SET is_active = 0
+		WHERE is_active = 1
+		  AND id NOT IN (
+			SELECT id
+			FROM accounts
+			WHERE is_active = 1
+			ORDER BY priority DESC, id ASC
+			LIMIT 1
+		  )`); err != nil {
+		return fmt.Errorf("normalize duplicate active accounts: %w", err)
+	}
 	if _, err := s.db.Exec(`UPDATE server_users SET username = name WHERE username = ''`); err != nil {
 		return fmt.Errorf("backfill server user usernames: %w", err)
 	}
