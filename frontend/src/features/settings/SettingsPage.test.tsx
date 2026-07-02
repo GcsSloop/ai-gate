@@ -48,6 +48,9 @@ describe("SettingsPage", () => {
 
   async function openBackupMenu(label = "备份操作 20260309-101500.000") {
     const trigger = await screen.findByRole("button", { name: label });
+    await waitFor(() => {
+      expect(trigger).not.toBeDisabled();
+    });
     await act(async () => {
       fireEvent.click(trigger);
     });
@@ -363,6 +366,12 @@ describe("SettingsPage", () => {
           body: JSON.stringify({ backup_id: "20260309-101500.000" }),
         }),
       );
+    });
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([input, init]) => String(input) === "/ai-router/api/settings/database/backups" && (!init?.method || init.method === "GET"))
+          .length,
+      ).toBeGreaterThanOrEqual(3);
     });
 
     await act(async () => {
