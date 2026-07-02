@@ -124,10 +124,18 @@ func parseOfficialRawUsage(raw []byte) (usagedrv.RawUsageResult, bool) {
 		return usagedrv.RawUsageResult{}, false
 	}
 
-	rateLimit, _ := payload["rate_limit"].(map[string]any)
-	primary, _ := rateLimit["primary_window"].(map[string]any)
-	secondary, _ := rateLimit["secondary_window"].(map[string]any)
-	credits, _ := payload["credits"].(map[string]any)
+	rateLimit := asMap(payload["rate_limit"])
+	credits := asMap(payload["credits"])
+	if rateLimits := asMap(payload["rate_limits"]); len(rateLimits) > 0 {
+		if len(rateLimit) == 0 {
+			rateLimit = rateLimits
+		}
+		if len(credits) == 0 {
+			credits = asMap(rateLimits["credits"])
+		}
+	}
+	primary := firstMap(rateLimit["primary_window"], rateLimit["primary"])
+	secondary := firstMap(rateLimit["secondary_window"], rateLimit["secondary"])
 
 	primaryUsed := asFloat(primary["used_percent"])
 	secondaryUsed := asFloat(secondary["used_percent"])
@@ -143,8 +151,17 @@ func parseOfficialRawUsage(raw []byte) (usagedrv.RawUsageResult, bool) {
 
 	primaryRemaining := maxFloat(100-primaryUsed, 0)
 	secondaryRemaining := maxFloat(100-secondaryUsed, 0)
-	primaryResetsAt := unixSecondsPtr(int64(asFloat(primary["reset_at"])))
-	secondaryResetsAt := unixSecondsPtr(int64(asFloat(secondary["reset_at"])))
+	primaryResetsAt := unixSecondsPtr(int64(firstFloat(primary["reset_at"], primary["resets_at"])))
+	secondaryResetsAt := unixSecondsPtr(int64(firstFloat(secondary["reset_at"], secondary["resets_at"])))
+	meta := map[string]any{
+		"allowed":       allowed,
+		"limit_reached": limitReached,
+		"has_credits":   hasCredits,
+		"unlimited":     unlimited,
+	}
+	copyMetaValue(meta, payload, "plan_type")
+	copyMetaValue(meta, payload, "rate_limit_reached_type")
+	copyMetaValue(meta, payload, "rate_limit_reset_credits")
 
 	return usagedrv.RawUsageResult{
 		Source:     "remote",
@@ -159,12 +176,7 @@ func parseOfficialRawUsage(raw []byte) (usagedrv.RawUsageResult, bool) {
 			PrimaryResetsAt:      primaryResetsAt,
 			SecondaryResetsAt:    secondaryResetsAt,
 		},
-		Meta: map[string]any{
-			"allowed":       allowed,
-			"limit_reached": limitReached,
-			"has_credits":   hasCredits,
-			"unlimited":     unlimited,
-		},
+		Meta: meta,
 	}, true
 }
 
@@ -197,6 +209,37 @@ func unixSecondsPtr(seconds int64) *time.Time {
 	}
 	value := time.Unix(seconds, 0).UTC()
 	return &value
+}
+
+func asMap(value any) map[string]any {
+	if typed, ok := value.(map[string]any); ok {
+		return typed
+	}
+	return nil
+}
+
+func firstMap(values ...any) map[string]any {
+	for _, value := range values {
+		if typed := asMap(value); len(typed) > 0 {
+			return typed
+		}
+	}
+	return nil
+}
+
+func firstFloat(values ...any) float64 {
+	for _, value := range values {
+		if parsed := asFloat(value); parsed != 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func copyMetaValue(meta map[string]any, payload map[string]any, key string) {
+	if value, ok := payload[key]; ok {
+		meta[key] = value
+	}
 }
 
 func asFloat(value any) float64 {

@@ -12,7 +12,7 @@ import (
 const (
 	// Codex ChatGPT backend gates some models (e.g. gpt-5.5) behind minimum Codex versions.
 	// Use a recent Codex CLI version string to avoid unnecessary model gating.
-	codexClientVersion = "0.125.0"
+	codexClientVersion = "0.142.5"
 	codexOriginator    = "codex_cli_rs"
 	codexUserAgent     = "codex_cli_rs/" + codexClientVersion + " (ai-gate)"
 )
@@ -62,15 +62,12 @@ func (a *Adapter) BuildResponsesEndpointRequest(ctx context.Context, credential 
 }
 
 func (a *Adapter) BuildUsageRequest(ctx context.Context, credential string, accountID string) (*http.Request, error) {
-	base, err := url.Parse(a.baseURL)
+	usageURL, err := a.buildUsageURL()
 	if err != nil {
 		return nil, err
 	}
-	base.Path = "/backend-api/wham/usage"
-	base.RawQuery = ""
-	base.Fragment = ""
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, usageURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +77,37 @@ func (a *Adapter) BuildUsageRequest(ctx context.Context, credential string, acco
 	req.Header.Set("originator", codexOriginator)
 	req.Header.Set("User-Agent", codexUserAgent)
 	return req, nil
+}
+
+func (a *Adapter) buildUsageURL() (string, error) {
+	base, err := url.Parse(a.baseURL)
+	if err != nil {
+		return "", err
+	}
+	base.RawQuery = ""
+	base.Fragment = ""
+
+	if isChatGPTUsageBase(base) {
+		base.Path = chatGPTBackendPath(base.Path) + "/wham/usage"
+		return base.String(), nil
+	}
+
+	base.Path = strings.TrimRight(base.Path, "/") + "/api/codex/usage"
+	return base.String(), nil
+}
+
+func isChatGPTUsageBase(base *url.URL) bool {
+	host := strings.ToLower(base.Hostname())
+	return host == "chatgpt.com" ||
+		host == "chat.openai.com" ||
+		strings.Contains(base.Path, "/backend-api")
+}
+
+func chatGPTBackendPath(path string) string {
+	if idx := strings.Index(path, "/backend-api"); idx >= 0 {
+		return path[:idx] + "/backend-api"
+	}
+	return "/backend-api"
 }
 
 func strconvTimeID() string {
