@@ -205,7 +205,7 @@ func (r *SQLiteRepository) Update(account Account) error {
 
 	_, err = r.db.Exec(
 		`UPDATE accounts
-		 SET account_name = ?, source_icon = ?, base_url = ?, credential_ref = ?, account_driver = ?, usage_driver = ?, usage_config_json = ?, status = ?, priority = ?, is_active = ?, is_locked = ?, supports_responses = ?, skip_tls_verify = ?, cooldown_until = ?, cooldown_reason = ?
+		 SET account_name = ?, source_icon = ?, base_url = ?, credential_ref = ?, account_driver = ?, usage_driver = ?, usage_config_json = ?, status = ?, priority = ?, is_locked = ?, supports_responses = ?, skip_tls_verify = ?, cooldown_until = ?, cooldown_reason = ?
 		 WHERE id = ?`,
 		account.AccountName,
 		account.SourceIcon,
@@ -216,7 +216,6 @@ func (r *SQLiteRepository) Update(account Account) error {
 		account.UsageConfigJSON,
 		account.Status,
 		account.Priority,
-		boolToInt(account.IsActive),
 		boolToInt(account.IsLocked),
 		boolToInt(account.SupportsResponses),
 		boolToInt(account.SkipTLSVerify),

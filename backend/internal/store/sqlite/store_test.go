@@ -94,6 +94,49 @@ func TestOpenAddsSnapshotMetadataColumns(t *testing.T) {
 	}
 }
 
+func TestOpenNormalizesDuplicateActiveAccounts(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "codex-router.sqlite")
+
+	store, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO accounts (provider_type, account_name, source_icon, auth_mode, credential_ref, base_url, status, priority, is_active, supports_responses)
+		VALUES
+			('openai-compatible', 'primary', 'openai', 'api_key', 'secret-a', 'https://a.example.test/v1', 'active', 10, 1, 1),
+			('openai-compatible', 'secondary', 'openai', 'api_key', 'secret-b', 'https://b.example.test/v1', 'active', 20, 1, 1)`); err != nil {
+		t.Fatalf("seed duplicate active accounts returned error: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	reopened, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = reopened.Close()
+	})
+
+	var activeCount int
+	if err := reopened.DB().QueryRow(`SELECT COUNT(*) FROM accounts WHERE is_active = 1`).Scan(&activeCount); err != nil {
+		t.Fatalf("count active accounts returned error: %v", err)
+	}
+	if activeCount != 1 {
+		t.Fatalf("active accounts = %d, want 1", activeCount)
+	}
+	var activeName string
+	if err := reopened.DB().QueryRow(`SELECT account_name FROM accounts WHERE is_active = 1`).Scan(&activeName); err != nil {
+		t.Fatalf("select active account returned error: %v", err)
+	}
+	if activeName != "secondary" {
+		t.Fatalf("active account = %q, want highest-priority secondary", activeName)
+	}
+}
+
 func TestOpenConfiguresSQLiteForBusyDesktopWorkload(t *testing.T) {
 	t.Parallel()
 

@@ -289,6 +289,68 @@ func TestSQLiteRepositorySetActiveKeepsSingleActiveAccount(t *testing.T) {
 	}
 }
 
+func TestSQLiteRepositoryUpdateDoesNotReactivateStaleAccount(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	for _, item := range []accounts.Account{
+		{ProviderType: accounts.ProviderOpenAICompatible, AccountName: "a", AuthMode: accounts.AuthModeAPIKey, CredentialRef: "sk-a", Priority: 2, Status: accounts.StatusActive},
+		{ProviderType: accounts.ProviderOpenAICompatible, AccountName: "b", AuthMode: accounts.AuthModeAPIKey, CredentialRef: "sk-b", Priority: 1, Status: accounts.StatusActive},
+	} {
+		if err := repo.Create(item); err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+	}
+
+	if err := repo.SetActive(1); err != nil {
+		t.Fatalf("SetActive(1) returned error: %v", err)
+	}
+	staleActive, err := repo.GetByID(1)
+	if err != nil {
+		t.Fatalf("GetByID returned error: %v", err)
+	}
+	if !staleActive.IsActive {
+		t.Fatal("stale account snapshot should start active")
+	}
+	if err := repo.SetActive(2); err != nil {
+		t.Fatalf("SetActive(2) returned error: %v", err)
+	}
+
+	staleActive.AccountName = "a-renamed"
+	if err := repo.Update(staleActive); err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+
+	items, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("List returned %d items, want 2", len(items))
+	}
+	byID := map[int64]accounts.Account{}
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	if byID[1].AccountName != "a-renamed" {
+		t.Fatalf("account id=1 name = %q, want a-renamed", byID[1].AccountName)
+	}
+	if byID[1].IsActive {
+		t.Fatal("stale update reactivated account id=1")
+	}
+	if !byID[2].IsActive {
+		t.Fatal("account id=2 should remain active")
+	}
+}
+
 func TestSQLiteRepositoryPersistsAccountLockState(t *testing.T) {
 	t.Parallel()
 
