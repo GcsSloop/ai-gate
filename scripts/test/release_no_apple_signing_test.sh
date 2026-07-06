@@ -32,5 +32,6 @@ assert_workflows_not_contains "security create-keychain"
 assert_workflows_not_contains "security import"
 assert_workflows_not_contains "security unlock-keychain"
 assert_workflows_not_contains "security set-key-partition-list"
+assert_workflows_not_contains "dist/**/*.dmg"
 
 echo "PASS: release_no_apple_signing_test"

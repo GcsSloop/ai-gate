@@ -307,6 +307,5 @@ bash scripts/desktop/collect_release_assets.sh
 
 产物会出现在 `release-assets/`：
 
-- `aigate-<tag>-macOS.dmg`
 - `aigate-<tag>-macOS.zip`
 - `aigate-<tag>-darwin-universal.app.tar.gz`
