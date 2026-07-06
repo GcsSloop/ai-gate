@@ -236,7 +236,6 @@ jobs:
           generate_release_notes: true
           files: |
             dist/**/*.zip
-            dist/**/*.dmg
             dist/**/*.msi
             dist/**/*.msi.sig
             dist/**/*.msvc

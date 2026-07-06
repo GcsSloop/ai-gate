@@ -267,6 +267,5 @@ bash scripts/desktop/collect_release_assets.sh
 
 Release assets are collected in `release-assets/`:
 
-- `aigate-<tag>-macOS.dmg`
 - `aigate-<tag>-macOS.zip`
 - `aigate-<tag>-darwin-universal.app.tar.gz`
