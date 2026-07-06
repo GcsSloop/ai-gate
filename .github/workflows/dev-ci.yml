@@ -55,8 +55,7 @@ jobs:
         run: |
           bash scripts/test/desktop_updater_config_test.sh
           bash scripts/test/go_test_with_retry_test.sh
-          bash scripts/test/notarize_macos_test.sh
-          bash scripts/test/release_apple_signing_test.sh
+          bash scripts/test/release_no_apple_signing_test.sh
           bash scripts/test/release_updater_signing_key_test.sh
           bash scripts/test/release_version_helpers_test.sh
           bash scripts/test/sync_release_metadata_test.sh

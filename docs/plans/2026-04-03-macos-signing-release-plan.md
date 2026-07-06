@@ -1,5 +1,7 @@
 # macOS Signing Release Implementation Plan
 
+> **2026-07-06 状态：已废弃。** CI release workflow 已移除 Apple certificate import、keychain setup、codesign/notarization 调用以及对应的 Apple secret 依赖。原 `scripts/test/release_apple_signing_test.sh` 已替换为 `scripts/test/release_no_apple_signing_test.sh`，用于防止 Apple 签名/公证逻辑重新出现在 GitHub Actions workflow 中。
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Make the release workflow import the Apple signing certificate into the macOS runner keychain so GitHub Actions can codesign and notarize release builds, then run the repository release loop.
