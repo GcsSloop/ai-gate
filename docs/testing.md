@@ -12,6 +12,26 @@ cd backend && go test ./...
 npm --prefix frontend test
 ```
 
+## Lua usage closed loop
+
+Platform-specific usage adapters are user-managed Lua scripts. Select the Lua
+driver, save the script under a shared key, and set the account usage config to
+`{"script":"managed:<key>"}`. The backend does not silently provide scripts for
+specific upstream domains.
+
+An adapter may return `usage_display.usage_windows` entries with `label`,
+`remaining_percent`, `remaining_value`, `total_value`, and `reset_label`. The
+account page and server user page render those entries as progress bars. This
+protocol is shared by server mode and the desktop client connected to it.
+
+For an isolated local check, run the backend on a separate loopback port with a
+temporary repository-local database, then call:
+
+```bash
+curl -X POST http://127.0.0.1:<port>/ai-router/api/accounts/usage/refresh
+curl http://127.0.0.1:<port>/ai-router/api/accounts/usage
+```
+
 ## Server mode
 
 Start server mode with a repo-local database and development password:

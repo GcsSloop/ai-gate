@@ -70,6 +70,13 @@ func TestAccountsHandlerManagedLuaScriptCRUD(t *testing.T) {
 		t.Fatalf("content = %q, want fetch_usage body", payload.Content)
 	}
 
+	missingReq := httptest.NewRequest(http.MethodGet, "/accounts/usage-scripts/stellaisle", nil)
+	missingRec := httptest.NewRecorder()
+	handler.ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("GET unmanaged stellaisle script status = %d, want %d body=%s", missingRec.Code, http.StatusNotFound, missingRec.Body.String())
+	}
+
 	listReq := httptest.NewRequest(http.MethodGet, "/accounts/usage-scripts", nil)
 	listRec := httptest.NewRecorder()
 	handler.ServeHTTP(listRec, listReq)

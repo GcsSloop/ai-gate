@@ -144,6 +144,15 @@ func TestServerMeHandlerReturnsSanitizedUpstreamsAndUpdatesRoute(t *testing.T) {
 		LastInputTokens:  40,
 		LastOutputTokens: 80,
 		CheckedAt:        time.Now().UTC(),
+		ProviderSnapshotJSON: `{
+				"display": {
+					"summary": {"label":"周额度","value":"$296.39 / $300.00"},
+					"usage_windows": [
+						{"label":"周额度","remaining_percent":98.8,"remaining_value":"$296.39","total_value":"$300.00"},
+						{"label":"总额度","remaining_percent":92.1,"remaining_value":"$8291.59","total_value":"$9000.00"}
+					]
+				}
+			}`,
 	}); err != nil {
 		t.Fatalf("Save usage returned error: %v", err)
 	}
@@ -189,18 +198,19 @@ func TestServerMeHandlerReturnsSanitizedUpstreamsAndUpdatesRoute(t *testing.T) {
 		CurrentAccountID  int64 `json:"current_account_id"`
 		RouteLocked       bool  `json:"route_locked"`
 		Accounts          []struct {
-			ID                        int64   `json:"id"`
-			AccountName               string  `json:"account_name"`
-			BaseURL                   string  `json:"base_url"`
-			Status                    string  `json:"status"`
-			Available                 bool    `json:"available"`
-			Current                   bool    `json:"current"`
-			Balance                   float64 `json:"balance"`
-			QuotaRemaining            float64 `json:"quota_remaining"`
-			LastTotalTokens           float64 `json:"last_total_tokens"`
-			PPChatTodayUsedQuota      float64 `json:"ppchat_today_used_quota"`
-			PPChatTodayAddedQuota     float64 `json:"ppchat_today_added_quota"`
-			PPChatTodayRemainingQuota float64 `json:"ppchat_today_remaining_quota"`
+			ID                        int64          `json:"id"`
+			AccountName               string         `json:"account_name"`
+			BaseURL                   string         `json:"base_url"`
+			Status                    string         `json:"status"`
+			Available                 bool           `json:"available"`
+			Current                   bool           `json:"current"`
+			Balance                   float64        `json:"balance"`
+			QuotaRemaining            float64        `json:"quota_remaining"`
+			LastTotalTokens           float64        `json:"last_total_tokens"`
+			PPChatTodayUsedQuota      float64        `json:"ppchat_today_used_quota"`
+			PPChatTodayAddedQuota     float64        `json:"ppchat_today_added_quota"`
+			PPChatTodayRemainingQuota float64        `json:"ppchat_today_remaining_quota"`
+			UsageDisplay              map[string]any `json:"usage_display"`
 		} `json:"accounts"`
 	}
 	if err := json.Unmarshal(upstreamsRec.Body.Bytes(), &upstreams); err != nil {
@@ -214,6 +224,10 @@ func TestServerMeHandlerReturnsSanitizedUpstreamsAndUpdatesRoute(t *testing.T) {
 	}
 	if upstreams.Accounts[1].PPChatTodayUsedQuota != 22 || upstreams.Accounts[1].PPChatTodayAddedQuota != 20 || upstreams.Accounts[1].PPChatTodayRemainingQuota != -2 {
 		t.Fatalf("ppchat upstream usage = %+v, want cached ppchat quota fields", upstreams.Accounts[1])
+	}
+	windows, ok := upstreams.Accounts[0].UsageDisplay["usage_windows"].([]any)
+	if !ok || len(windows) != 2 {
+		t.Fatalf("usage display windows = %#v, want weekly and total windows", upstreams.Accounts[0].UsageDisplay)
 	}
 
 	routeReq := httptest.NewRequest(http.MethodPut, "/me/route", bytes.NewBufferString(`{"account_id":1,"locked":true}`))

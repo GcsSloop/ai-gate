@@ -166,6 +166,57 @@ func (r *Runtime) registerHostAPI(L *golua.LState, ctx context.Context) error {
 		state.Push(resp)
 		return 1
 	}))
+	host.RawSetString("http_post", L.NewFunction(func(state *golua.LState) int {
+		arg := state.CheckTable(1)
+		urlValue := arg.RawGetString("url")
+		urlString, ok := urlValue.(golua.LString)
+		if !ok || strings.TrimSpace(string(urlString)) == "" {
+			state.RaiseError("http_post requires non-empty url")
+			return 0
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, string(urlString), strings.NewReader(stringValue(arg.RawGetString("body"))))
+		if err != nil {
+			state.RaiseError("http_post build request: %v", err)
+			return 0
+		}
+		if err := applyLuaRequestHeaders(request, arg.RawGetString("headers")); err != nil {
+			state.RaiseError("http_post headers: %v", err)
+			return 0
+		}
+		client := r.client
+		if client == nil {
+			client = http.DefaultClient
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			state.RaiseError("http_post request failed: %v", err)
+			return 0
+		}
+		defer response.Body.Close()
+		body, err := ioReadAll(response.Body)
+		if err != nil {
+			state.RaiseError("http_post read response: %v", err)
+			return 0
+		}
+		resp := state.NewTable()
+		resp.RawSetString("status", golua.LNumber(response.StatusCode))
+		resp.RawSetString("body", golua.LString(string(body)))
+		setCookies := state.NewTable()
+		for index, value := range response.Header.Values("Set-Cookie") {
+			setCookies.RawSetInt(index+1, golua.LString(value))
+		}
+		resp.RawSetString("set_cookies", setCookies)
+		respHeaders := state.NewTable()
+		for key, values := range response.Header {
+			if len(values) == 0 {
+				continue
+			}
+			respHeaders.RawSetString(key, golua.LString(values[0]))
+		}
+		resp.RawSetString("headers", respHeaders)
+		state.Push(resp)
+		return 1
+	}))
 	host.RawSetString("json_decode", L.NewFunction(func(state *golua.LState) int {
 		raw := state.CheckString(1)
 		var decoded any
@@ -213,6 +264,40 @@ func (r *Runtime) registerHostAPI(L *golua.LState, ctx context.Context) error {
 	}))
 	L.SetGlobal("host", host)
 	return nil
+}
+
+func stringValue(value golua.LValue) string {
+	if value == golua.LNil {
+		return ""
+	}
+	if text, ok := value.(golua.LString); ok {
+		return string(text)
+	}
+	return value.String()
+}
+
+func applyLuaRequestHeaders(request *http.Request, value golua.LValue) error {
+	if value == golua.LNil {
+		return nil
+	}
+	headersTable, ok := value.(*golua.LTable)
+	if !ok {
+		return fmt.Errorf("headers must be table")
+	}
+	var headerErr error
+	headersTable.ForEach(func(key golua.LValue, value golua.LValue) {
+		if headerErr != nil {
+			return
+		}
+		keyString, keyOK := key.(golua.LString)
+		valueString, valueOK := value.(golua.LString)
+		if !keyOK || !valueOK {
+			headerErr = fmt.Errorf("header names and values must be strings")
+			return
+		}
+		request.Header.Set(string(keyString), string(valueString))
+	})
+	return headerErr
 }
 
 func buildLuaContext(L *golua.LState, account accounts.Account, credential accountdrv.ResolvedCredential, config map[string]any) (golua.LValue, error) {
