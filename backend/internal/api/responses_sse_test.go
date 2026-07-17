@@ -13,6 +13,19 @@ type disconnectAfterResponsesCompletedWriter struct {
 	completedEventDone bool
 }
 
+type responseCompletedThenErrorReader struct {
+	payload []byte
+	sent    bool
+}
+
+func (r *responseCompletedThenErrorReader) Read(destination []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(destination, r.payload), nil
+	}
+	return 0, errors.New("upstream stream reset after response.completed")
+}
+
 func (w *disconnectAfterResponsesCompletedWriter) Header() http.Header {
 	if w.header == nil {
 		w.header = make(http.Header)
@@ -91,6 +104,18 @@ func TestCopyResponseStreamWithObserverIgnoresDisconnectAfterResponsesCompleted(
 		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\"}}\n\n"+
 			"data: [DONE]\n\n",
 	), nil)
+	if err != nil {
+		t.Fatalf("copyResponseStreamWithObserver returned error: %v, want success after terminal response", err)
+	}
+}
+
+func TestCopyResponseStreamWithObserverIgnoresReadErrorAfterResponsesCompleted(t *testing.T) {
+	t.Parallel()
+
+	w := &disconnectAfterResponsesCompletedWriter{}
+	err := copyResponseStreamWithObserver(w, &responseCompletedThenErrorReader{payload: []byte(
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\"}}\n\n",
+	)}, nil)
 	if err != nil {
 		t.Fatalf("copyResponseStreamWithObserver returned error: %v, want success after terminal response", err)
 	}

@@ -693,6 +693,9 @@ func copyResponseStreamWithObserver(w http.ResponseWriter, body io.Reader, obser
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
+			if terminalResponseCompleted {
+				return nil
+			}
 			return err
 		}
 
