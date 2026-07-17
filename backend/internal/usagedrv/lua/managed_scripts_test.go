@@ -216,9 +216,18 @@ end
 func TestLuaDriverUsesManagedStellaisleLoginCookieForSubscription17(t *testing.T) {
 	t.Parallel()
 
+	loginAttempts := 0
 	client := &http.Client{Transport: managedScriptRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/user/login":
+			loginAttempts++
+			if loginAttempts == 1 {
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Header:     http.Header{"Retry-After": []string{"0"}},
+					Body:       io.NopCloser(strings.NewReader(`{"error":"rate limited"}`)),
+				}, nil
+			}
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Fatalf("read login body: %v", err)
@@ -276,7 +285,10 @@ func TestLuaDriverUsesManagedStellaisleLoginCookieForSubscription17(t *testing.T
   local login = ctx.host.http_post({
     url = base .. "/api/user/login?turnstile=",
     headers = { ["Accept"] = "application/json", ["Content-Type"] = "application/json" },
-    body = ctx.host.json_encode({ username = credentials.username, password = credentials.password })
+    body = ctx.host.json_encode({ username = credentials.username, password = credentials.password }),
+    retry_on_429 = true,
+    retry_count = 2,
+    retry_delay_ms = 0
   })
   local login_payload = ctx.host.json_decode(login.body)
   local cookie_parts = {}
@@ -328,6 +340,9 @@ end
 	}
 	if result.Limits.Balance == nil || *result.Limits.Balance != 300 {
 		t.Fatalf("Balance = %#v, want 300", result.Limits.Balance)
+	}
+	if loginAttempts != 2 {
+		t.Fatalf("login attempts = %d, want one retry after 429", loginAttempts)
 	}
 	if result.Limits.QuotaRemaining == nil || *result.Limits.QuotaRemaining != 296.392276 {
 		t.Fatalf("QuotaRemaining = %#v, want 296.392276", result.Limits.QuotaRemaining)

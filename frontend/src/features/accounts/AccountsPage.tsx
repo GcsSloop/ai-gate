@@ -493,6 +493,7 @@ return {
 
 ## host API
 - \`ctx.host.http_post({ url = "...", headers = { ["Content-Type"] = "application/json" }, body = "{}" })\`
+- \`http_post\` 可按需设置 \`retry_on_429 = true\`、\`retry_count\` 和 \`retry_delay_ms\`，仅对明确允许重试的 POST 生效。
 - \`ctx.host.http_get({ url = "...", headers = { Authorization = "Bearer xxx" } })\`
 - \`ctx.host.json_decode(raw)\`
 - \`ctx.host.json_encode(value)\`

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -174,30 +175,59 @@ func (r *Runtime) registerHostAPI(L *golua.LState, ctx context.Context) error {
 			state.RaiseError("http_post requires non-empty url")
 			return 0
 		}
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, string(urlString), strings.NewReader(stringValue(arg.RawGetString("body"))))
-		if err != nil {
-			state.RaiseError("http_post build request: %v", err)
-			return 0
-		}
-		if err := applyLuaRequestHeaders(request, arg.RawGetString("headers")); err != nil {
-			state.RaiseError("http_post headers: %v", err)
-			return 0
-		}
 		client := r.client
 		if client == nil {
 			client = http.DefaultClient
 		}
-		response, err := client.Do(request)
-		if err != nil {
-			state.RaiseError("http_post request failed: %v", err)
-			return 0
+		retryCount := 1
+		if luaBoolValue(arg.RawGetString("retry_on_429")) {
+			retryCount = luaIntValue(arg.RawGetString("retry_count"), 3)
+			if retryCount < 1 {
+				retryCount = 1
+			}
+			if retryCount > 5 {
+				retryCount = 5
+			}
 		}
-		defer response.Body.Close()
-		body, err := ioReadAll(response.Body)
-		if err != nil {
-			state.RaiseError("http_post read response: %v", err)
-			return 0
+		bodyText := stringValue(arg.RawGetString("body"))
+		var response *http.Response
+		var body []byte
+		for attempt := 0; attempt < retryCount; attempt++ {
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, string(urlString), strings.NewReader(bodyText))
+			if err != nil {
+				state.RaiseError("http_post build request: %v", err)
+				return 0
+			}
+			if err := applyLuaRequestHeaders(request, arg.RawGetString("headers")); err != nil {
+				state.RaiseError("http_post headers: %v", err)
+				return 0
+			}
+			response, err = client.Do(request)
+			if err != nil {
+				state.RaiseError("http_post request failed: %v", err)
+				return 0
+			}
+			body, err = ioReadAll(response.Body)
+			response.Body.Close()
+			if err != nil {
+				state.RaiseError("http_post read response: %v", err)
+				return 0
+			}
+			if response.StatusCode != http.StatusTooManyRequests || attempt+1 >= retryCount {
+				break
+			}
+			if delay := luaRetryDelayMilliseconds(arg, response.Header); delay > 0 {
+				timer := time.NewTimer(time.Duration(delay) * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					state.RaiseError("http_post retry interrupted: %v", ctx.Err())
+					return 0
+				case <-timer.C:
+				}
+			}
 		}
+
 		resp := state.NewTable()
 		resp.RawSetString("status", golua.LNumber(response.StatusCode))
 		resp.RawSetString("body", golua.LString(string(body)))
@@ -274,6 +304,30 @@ func stringValue(value golua.LValue) string {
 		return string(text)
 	}
 	return value.String()
+}
+
+func luaBoolValue(value golua.LValue) bool {
+	boolean, ok := value.(golua.LBool)
+	return ok && bool(boolean)
+}
+
+func luaIntValue(value golua.LValue, fallback int) int {
+	number, ok := value.(golua.LNumber)
+	if !ok {
+		return fallback
+	}
+	return int(number)
+}
+
+func luaRetryDelayMilliseconds(arg *golua.LTable, headers http.Header) int {
+	if value := luaIntValue(arg.RawGetString("retry_delay_ms"), -1); value >= 0 {
+		return value
+	}
+	seconds, err := strconv.Atoi(strings.TrimSpace(headers.Get("Retry-After")))
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	return seconds * 1000
 }
 
 func applyLuaRequestHeaders(request *http.Request, value golua.LValue) error {

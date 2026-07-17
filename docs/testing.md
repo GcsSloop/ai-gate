@@ -24,6 +24,10 @@ An adapter may return `usage_display.usage_windows` entries with `label`,
 account page and server user page render those entries as progress bars. This
 protocol is shared by server mode and the desktop client connected to it.
 
+For login-style POST requests that may be rate limited, a script can opt in to
+bounded retry with `retry_on_429 = true`, `retry_count`, and `retry_delay_ms`.
+Ordinary POST requests are not retried by default.
+
 For an isolated local check, run the backend on a separate loopback port with a
 temporary repository-local database, then call:
 
