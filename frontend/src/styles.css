@@ -3462,8 +3462,25 @@ body[data-theme-mode="dark"] .ant-modal-confirm .ant-modal-confirm-body > .antic
     align-items: stretch;
   }
 
+  .account-remote-upstream-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
   .user-upstream-usage {
     text-align: left;
+  }
+
+  .account-remote-upstream-meta {
+    text-align: left;
+  }
+
+  .account-remote-upstream-actions {
+    position: static;
+    justify-content: flex-start;
+    transform: none;
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .user-upstream-actions {
