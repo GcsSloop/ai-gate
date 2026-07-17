@@ -873,6 +873,16 @@ func TestAccountsHandlerListAccountsDefaultsBuiltInDrivers(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Create nodeseek returned error: %v", err)
 	}
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "team4",
+		AuthMode:      accounts.AuthModeAPIKey,
+		CredentialRef: "sk-test",
+		BaseURL:       "https://code.xxcd.top/v1",
+		Status:        accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create code.xxcd.top account returned error: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/accounts", nil)
 	rec := httptest.NewRecorder()
@@ -905,6 +915,12 @@ func TestAccountsHandlerListAccountsDefaultsBuiltInDrivers(t *testing.T) {
 	}
 	if listed[2]["usage_config_json"] != `{"script":"managed:ai.nodeseek.in"}` {
 		t.Fatalf("nodeseek usage_config_json = %v, want managed script config", listed[2]["usage_config_json"])
+	}
+	if listed[3]["usage_driver"] != "" {
+		t.Fatalf("code.xxcd.top usage_driver = %v, want empty without built-in script", listed[3]["usage_driver"])
+	}
+	if listed[3]["usage_config_json"] != "" {
+		t.Fatalf("code.xxcd.top usage_config_json = %v, want empty without built-in script", listed[3]["usage_config_json"])
 	}
 }
 
