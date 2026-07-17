@@ -1,9 +1,42 @@
 package api
 
 import (
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 )
+
+type disconnectAfterResponsesCompletedWriter struct {
+	header             http.Header
+	completedLineSeen  bool
+	completedEventDone bool
+}
+
+func (w *disconnectAfterResponsesCompletedWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *disconnectAfterResponsesCompletedWriter) Write(payload []byte) (int, error) {
+	line := string(payload)
+	if strings.Contains(line, `"type":"response.completed"`) {
+		w.completedLineSeen = true
+		return len(payload), nil
+	}
+	if w.completedLineSeen && line == "\n" {
+		w.completedEventDone = true
+		return len(payload), nil
+	}
+	if w.completedEventDone && strings.Contains(line, "data: [DONE]") {
+		return 0, errors.New("client disconnected after response.completed")
+	}
+	return len(payload), nil
+}
+
+func (w *disconnectAfterResponsesCompletedWriter) WriteHeader(int) {}
 
 func TestConsumeResponsesStreamErrorsWhenEOFBeforeCompleted(t *testing.T) {
 	t.Parallel()
@@ -50,3 +83,15 @@ func TestConsumeResponsesStreamAcceptsDataWithoutSpaceAndCRLF(t *testing.T) {
 	}
 }
 
+func TestCopyResponseStreamWithObserverIgnoresDisconnectAfterResponsesCompleted(t *testing.T) {
+	t.Parallel()
+
+	w := &disconnectAfterResponsesCompletedWriter{}
+	err := copyResponseStreamWithObserver(w, strings.NewReader(
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\"}}\n\n"+
+			"data: [DONE]\n\n",
+	), nil)
+	if err != nil {
+		t.Fatalf("copyResponseStreamWithObserver returned error: %v, want success after terminal response", err)
+	}
+}
