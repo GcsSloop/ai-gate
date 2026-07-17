@@ -665,6 +665,7 @@ func copyResponseStreamWithObserver(w http.ResponseWriter, body io.Reader, obser
 	flusher, _ := w.(http.Flusher)
 	reader := bufio.NewReader(body)
 	var dataLines []string
+	terminalResponseCompleted := false
 
 	flush := func() {
 		if len(dataLines) == 0 {
@@ -673,11 +674,19 @@ func copyResponseStreamWithObserver(w http.ResponseWriter, body io.Reader, obser
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
 
-		if payload != "" && payload != "[DONE]" && observe != nil {
+		if payload != "" && payload != "[DONE]" {
 			var frame map[string]any
 			if err := json.Unmarshal([]byte(payload), &frame); err == nil {
-				observe(frame)
+				if observe != nil {
+					observe(frame)
+				}
+				if frameType, _ := unwrapResponsesFrame(frame)["type"].(string); frameType == "response.completed" {
+					terminalResponseCompleted = true
+				}
 			}
+		}
+		if payload == "[DONE]" {
+			terminalResponseCompleted = true
 		}
 	}
 
@@ -689,6 +698,9 @@ func copyResponseStreamWithObserver(w http.ResponseWriter, body io.Reader, obser
 
 		if len(line) > 0 {
 			if _, writeErr := w.Write(line); writeErr != nil {
+				if terminalResponseCompleted {
+					return nil
+				}
 				return writeErr
 			}
 			if flusher != nil {
