@@ -252,7 +252,7 @@ describe("AccountsPage", () => {
     expect(screen.queryByText("总计")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "编辑-team4" }));
     const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
-    expect(within(editModal).getByText("Lua Usage 配置")).toBeInTheDocument();
+    expect(await within(editModal).findByText("Lua Usage 配置")).toBeInTheDocument();
     await waitFor(() => {
       expect(within(editModal).getByDisplayValue(/simple_usage/)).toBeInTheDocument();
     });
