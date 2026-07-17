@@ -50,10 +50,19 @@ export type AccountUsageDisplayMetric = {
   tone?: string;
 };
 
+export type AccountUsageDisplayWindow = {
+  label?: string;
+  remaining_percent?: number;
+  remaining_value?: string;
+  total_value?: string;
+  reset_label?: string;
+};
+
 export type AccountUsageDisplay = {
   summary?: AccountUsageDisplayMetric;
   detail_stats?: AccountUsageDisplayMetric[];
   detail_items?: AccountUsageDisplayMetric[];
+  usage_windows?: AccountUsageDisplayWindow[];
 };
 
 export type AccountUsageRecord = {

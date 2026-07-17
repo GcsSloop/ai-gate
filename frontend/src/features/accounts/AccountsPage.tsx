@@ -489,7 +489,10 @@ return {
 - \`ctx.credential.metadata\`
 - \`ctx.config\`：来自 \`usage_config_json\`
 
+需要用户名密码登录的适配器，可将账户凭据保存为 JSON：\`{"username":"...","password":"..."}\`；凭据仍由账户本地加密存储。
+
 ## host API
+- \`ctx.host.http_post({ url = "...", headers = { ["Content-Type"] = "application/json" }, body = "{}" })\`
 - \`ctx.host.http_get({ url = "...", headers = { Authorization = "Bearer xxx" } })\`
 - \`ctx.host.json_decode(raw)\`
 - \`ctx.host.json_encode(value)\`
@@ -887,13 +890,28 @@ function formatRemoteUpstreamUsage(
   return language === "en-US" ? "Usage unknown" : "用量未知";
 }
 
-function buildRemoteUpstreamUsageWindow(
+function buildRemoteUpstreamUsageWindows(
   account: ServerUpstreamAccount,
   language: AppLanguage,
 ) {
+  const customWindows = account.usage_display?.usage_windows
+    ?.filter((item) => typeof item.remaining_percent === "number")
+    .map((item) => ({
+      label: item.label || (language === "en-US" ? "Usage" : "用量"),
+      remainingPercent: clampPercent(item.remaining_percent ?? 0),
+      valueLabel:
+        item.remaining_value && item.total_value
+          ? `${item.remaining_value} / ${item.total_value}`
+          : undefined,
+      resetLabel:
+        item.remaining_value && item.total_value ? "" : item.reset_label || "",
+    })) ?? [];
+  if (customWindows.length > 0) {
+    return customWindows;
+  }
   const addedQuota = account.ppchat_today_added_quota ?? 0;
   if (isPPChatUpstream(account) && addedQuota > 0) {
-    return {
+    return [{
       label: "1D",
       remainingPercent: clampPercent(
         ((account.ppchat_today_remaining_quota ?? 0) /
@@ -901,9 +919,9 @@ function buildRemoteUpstreamUsageWindow(
           100,
       ),
       resetLabel: formatTomorrowMidnight(language),
-    };
+    }];
   }
-  return null;
+  return [];
 }
 
 function buildGenericUsageWindows(
@@ -1614,7 +1632,7 @@ export function AccountsPage({
       source_icon: normalizeSourceIcon(account.source_icon),
       base_url: account.base_url,
       credential_ref: "",
-      usage_driver: account.usage_driver === "lua" ? "lua" : "",
+      usage_driver: account.usage_driver === "lua" ? account.usage_driver : "",
       skip_tls_verify: account.skip_tls_verify ?? false,
     });
     testForm.setFieldsValue({
@@ -2122,7 +2140,23 @@ export function AccountsPage({
     const remoteState = remoteUpstreamsByAccountID[record.id];
     const remoteUpstreams = remoteState?.data;
     const remoteExpanded = expandedRemoteAccountID === record.id && Boolean(remoteUpstreams);
-    const usageWindows = record.usage_display?.summary
+    const customUsageWindows = record.usage_display?.usage_windows
+      ?.filter((item) => typeof item.remaining_percent === "number")
+      .map((item) => ({
+        label: item.label || "Usage",
+        remainingPercent: clampPercent(item.remaining_percent ?? 0),
+        valueLabel:
+          item.remaining_value && item.total_value
+            ? `${item.remaining_value} / ${item.total_value}`
+            : undefined,
+        resetLabel:
+          item.remaining_value && item.total_value
+            ? ""
+            : item.reset_label || "",
+      })) ?? [];
+    const usageWindows = customUsageWindows.length > 0
+      ? customUsageWindows
+      : record.usage_display?.summary
       ? []
       : isOfficialAccount(record)
       ? [
@@ -2310,7 +2344,7 @@ export function AccountsPage({
                         </span>
                         <span
                           className={`account-usage-mini-value is-${getRemainingTone(item.remainingPercent)}`}
-                        >{`${Math.round(item.remainingPercent)}%`}</span>
+                        >{item.valueLabel ?? `${Math.round(item.remainingPercent)}%`}</span>
                       </div>
                       <div className="account-usage-mini-meter">
                         <div
@@ -2409,7 +2443,7 @@ export function AccountsPage({
           <div className="account-remote-upstreams-panel" data-no-row-toggle="true">
             <div className="account-remote-upstreams-list">
               {remoteUpstreams.accounts.map((account) => {
-                const remoteUsageWindow = buildRemoteUpstreamUsageWindow(
+                const remoteUsageWindows = buildRemoteUpstreamUsageWindows(
                   account,
                   language,
                 );
@@ -2430,27 +2464,34 @@ export function AccountsPage({
                       </Text>
                     </div>
                     <div className="account-remote-upstream-meta">
-                      {remoteUsageWindow ? (
-                        <div className="account-remote-upstream-usage-mini">
-                          <div className="account-usage-mini-head">
-                            <span className="account-usage-mini-label">
-                              {remoteUsageWindow.label}
-                            </span>
-                            <span className="account-usage-mini-reset">
-                              {remoteUsageWindow.resetLabel}
-                            </span>
-                            <span
-                              className={`account-usage-mini-value is-${getRemainingTone(remoteUsageWindow.remainingPercent)}`}
-                            >{`${Math.round(remoteUsageWindow.remainingPercent)}%`}</span>
-                          </div>
-                          <div className="account-usage-mini-meter">
-                            <div className="account-usage-mini-track">
-                              <div
-                                className={`account-usage-mini-fill is-${getRemainingTone(remoteUsageWindow.remainingPercent)}`}
-                                style={{ width: `${remoteUsageWindow.remainingPercent}%` }}
-                              />
+                      {remoteUsageWindows.length > 0 ? (
+                        <div className="account-remote-upstream-usage-windows">
+                          {remoteUsageWindows.map((remoteUsageWindow) => (
+                            <div className="account-remote-upstream-usage-mini" key={remoteUsageWindow.label}>
+                              <div className="account-usage-mini-head">
+                                <span className="account-usage-mini-label">
+                                  {remoteUsageWindow.label}
+                                </span>
+                                <span className="account-usage-mini-reset">
+                                  {remoteUsageWindow.resetLabel}
+                                </span>
+                                <span
+                                  className={`account-usage-mini-value is-${getRemainingTone(remoteUsageWindow.remainingPercent)}`}
+                                >{remoteUsageWindow.valueLabel ?? `${Math.round(remoteUsageWindow.remainingPercent)}%`}</span>
+                              </div>
+                              <div className="account-usage-mini-meter">
+                                <div
+                                  className="account-usage-mini-track"
+                                  aria-label={`${account.account_name}-${remoteUsageWindow.label}`}
+                                >
+                                  <div
+                                    className={`account-usage-mini-fill is-${getRemainingTone(remoteUsageWindow.remainingPercent)}`}
+                                    style={{ width: `${remoteUsageWindow.remainingPercent}%` }}
+                                  />
+                                </div>
+                              </div>
                             </div>
-                          </div>
+                          ))}
                         </div>
                       ) : (
                         <span>{formatRemoteUpstreamUsage(account, language)}</span>

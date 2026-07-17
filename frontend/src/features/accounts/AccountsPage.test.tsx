@@ -167,6 +167,98 @@ describe("AccountsPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps platform Lua scripts user-managed for code.xxcd.top", async () => {
+    const account = {
+      id: 8,
+      provider_type: "openai-compatible",
+      account_name: "team4",
+      source_icon: "openai",
+      auth_mode: "api_key",
+      base_url: "https://code.xxcd.top",
+      account_driver: "builtin_api_key",
+      usage_driver: "lua",
+      usage_config_json: '{"script":"managed:lab.sansi.io"}',
+      status: "active",
+      priority: 1,
+      is_active: true,
+      balance: 15,
+      quota_remaining: 6,
+      rpm_remaining: 0,
+      tpm_remaining: 0,
+      health_score: 1,
+      recent_error_rate: 0,
+      last_total_tokens: 0,
+      last_input_tokens: 0,
+      last_output_tokens: 0,
+      model_context_window: 0,
+      primary_used_percent: 0,
+      secondary_used_percent: 0,
+      usage_display: {
+        summary: { label: "今日额度", value: "$8.000 / $15.000" },
+        usage_windows: [
+          {
+            label: "周额度",
+            remaining_percent: 98.8,
+            remaining_value: "$296.39",
+            total_value: "$300.00",
+            reset_label: "周期",
+          },
+          {
+            label: "总额度",
+            remaining_percent: 92.1,
+            remaining_value: "$8291.59",
+            total_value: "$9000.00",
+            reset_label: "总计",
+          },
+        ],
+      },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts") {
+        return Promise.resolve(
+          new Response(JSON.stringify([account]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url === "/ai-router/api/accounts/usage") {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url === "/ai-router/api/accounts/usage-scripts") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ items: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("team4")).toBeInTheDocument();
+    expect(await screen.findByText("$296.39 / $300.00")).toBeInTheDocument();
+    expect(await screen.findByText("$8291.59 / $9000.00")).toBeInTheDocument();
+    expect(screen.queryByText("周期")).not.toBeInTheDocument();
+    expect(screen.queryByText("总计")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "编辑-team4" }));
+    const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
+    expect(within(editModal).getByText("Lua Usage 配置")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(within(editModal).getByDisplayValue(/simple_usage/)).toBeInTheDocument();
+    });
+    expect(within(editModal).queryByDisplayValue(/lab\.sansi\.io/)).not.toBeInTheDocument();
+  });
+
   it("does not open browser when oauth authorize response misses device code", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -845,6 +937,12 @@ describe("AccountsPage", () => {
                   model_context_window: 0,
                   primary_used_percent: 0,
                   secondary_used_percent: 0,
+                  usage_display: {
+                    usage_windows: [
+                      { label: "周额度", remaining_percent: 98.8, remaining_value: "$296.39", total_value: "$300.00" },
+                      { label: "总额度", remaining_percent: 92.1, remaining_value: "$8291.59", total_value: "$9000.00" },
+                    ],
+                  },
                 },
                 {
                   id: 12,
@@ -932,6 +1030,10 @@ describe("AccountsPage", () => {
     expect(await screen.findByText("upstream-a")).toBeInTheDocument();
     expect(screen.getByText("https://up-a.example/v1")).toBeInTheDocument();
     expect(screen.getByText("当前使用中")).toBeInTheDocument();
+    expect(screen.getByText("$296.39 / $300.00")).toBeInTheDocument();
+    expect(screen.getByText("$8291.59 / $9000.00")).toBeInTheDocument();
+    expect(screen.getByLabelText("upstream-a-周额度")).toBeInTheDocument();
+    expect(screen.getByLabelText("upstream-a-总额度")).toBeInTheDocument();
     const ppchatRow = screen
       .getByText("upstream-b")
       .closest(".account-remote-upstream-row") as HTMLElement;

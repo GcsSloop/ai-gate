@@ -215,6 +215,48 @@
   text-align: right;
 }
 
+.user-upstream-usage-windows {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  text-align: left;
+}
+
+.user-upstream-usage-window {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.user-upstream-usage-window-head {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.user-upstream-usage-window-head > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-upstream-usage-window-track {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-secondary) 18%, transparent);
+}
+
+.user-upstream-usage-window-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: #4f8f68;
+  transition: width 180ms ease;
+}
+
 .user-upstream-actions {
   justify-content: flex-end;
 }
@@ -2753,6 +2795,11 @@ html[data-theme-mode="dark"] .stats-chart-shell {
 .account-remote-upstream-usage-mini {
   display: grid;
   gap: 4px;
+}
+
+.account-remote-upstream-usage-windows {
+  display: grid;
+  gap: 6px;
 }
 
 .account-remote-upstream-actions {
