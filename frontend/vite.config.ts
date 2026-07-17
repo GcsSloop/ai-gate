@@ -6,6 +6,7 @@ export default defineConfig(({ mode }) => {
   const isServerBuild = mode === "server" || process.env.AI_GATE_SERVER_BUILD === "1";
   const webuiBase = isDesktopBuild ? "./" : isServerBuild ? "/ai-gate/webui/" : "/ai-router/webui/";
   const apiPrefix = isServerBuild ? "/ai-gate/api" : "/ai-router/api";
+  const devBackend = process.env.CODEX_ROUTER_DEV_BACKEND || "http://127.0.0.1:6789";
 
   return {
     base: webuiBase,
@@ -28,7 +29,7 @@ export default defineConfig(({ mode }) => {
     ],
     server: {
       proxy: {
-        [apiPrefix]: "http://127.0.0.1:6789",
+        [apiPrefix]: devBackend,
       },
     },
     build: {

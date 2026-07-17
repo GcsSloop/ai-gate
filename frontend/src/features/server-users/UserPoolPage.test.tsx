@@ -53,6 +53,12 @@ describe("UserPoolPage", () => {
           model_context_window: 0,
           primary_used_percent: 0,
           secondary_used_percent: 0,
+          usage_display: {
+            usage_windows: [
+              { label: "周额度", remaining_percent: 98.8, remaining_value: "$296.39", total_value: "$300.00" },
+              { label: "总额度", remaining_percent: 92.1, remaining_value: "$8291.59", total_value: "$9000.00" },
+            ],
+          },
         },
         {
           id: 2,
@@ -102,6 +108,10 @@ describe("UserPoolPage", () => {
     expect(await screen.findByText("账号 A")).toBeInTheDocument();
     expect(screen.getByText("当前使用中")).toBeInTheDocument();
     expect(screen.getByText("https://upstream-a.example/v1")).toBeInTheDocument();
+    expect(screen.getByText("$296.39 / $300.00")).toBeInTheDocument();
+    expect(screen.getByText("$8291.59 / $9000.00")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "账号 A-周额度" })).toHaveAttribute("aria-valuenow", "98.8");
+    expect(screen.getByRole("progressbar", { name: "账号 A-总额度" })).toHaveAttribute("aria-valuenow", "92.1");
     expect(screen.queryByText(/sk-/)).not.toBeInTheDocument();
     expect(screen.queryByText("credential_ref")).not.toBeInTheDocument();
 

@@ -138,7 +138,38 @@ function UpstreamRow({ account, updating, t, onSwitch, onToggleLock }: UpstreamR
         </Typography.Text>
       </div>
       <div className="user-upstream-usage">
-        <span>{usageSummary(account)}</span>
+        {account.usage_display?.usage_windows?.some((window) => typeof window.remaining_percent === "number") ? (
+          <div className="user-upstream-usage-windows">
+            {account.usage_display.usage_windows
+              .filter((window) => typeof window.remaining_percent === "number")
+              .map((window, index) => {
+                const percent = clampUsagePercent(window.remaining_percent ?? 0);
+                const value = window.remaining_value && window.total_value
+                  ? `${window.remaining_value} / ${window.total_value}`
+                  : `${Math.round(percent)}%`;
+                return (
+                  <div className="user-upstream-usage-window" key={`${window.label ?? "usage"}-${index}`}>
+                    <div className="user-upstream-usage-window-head">
+                      <span>{window.label || t("用量")}</span>
+                      <span>{value}</span>
+                    </div>
+                    <div
+                      className="user-upstream-usage-window-track"
+                      role="progressbar"
+                      aria-label={`${account.account_name}-${window.label || t("用量")}`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={percent}
+                    >
+                      <div className="user-upstream-usage-window-fill" style={{ width: `${percent}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        ) : (
+          <span>{usageSummary(account)}</span>
+        )}
         <span>{t("Tokens")} {formatCompactNumber(account.last_total_tokens)}</span>
       </div>
       <Space size={6} className="user-upstream-actions">
@@ -183,6 +214,13 @@ function usageSummary(account: ServerUpstreamAccount): string {
     return `额度 ${formatCompactNumber(account.quota_remaining)}`;
   }
   return "用量未知";
+}
+
+function clampUsagePercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(100, Math.max(0, value));
 }
 
 function formatCompactNumber(value: number): string {
