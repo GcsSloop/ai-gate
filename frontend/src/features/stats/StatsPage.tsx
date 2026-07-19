@@ -51,7 +51,7 @@ function formatCurrency(language: AppLanguage, value: number): string {
 }
 
 function formatLatency(language: AppLanguage, value: number): string {
-  return `${new Intl.NumberFormat(language, { maximumFractionDigits: 0 }).format(value)} ms`;
+  return `${new Intl.NumberFormat(language, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(value / 1000)} s`;
 }
 
 function eventStatusColor(status: string): string {
