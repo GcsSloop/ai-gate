@@ -102,6 +102,11 @@ describe("StatsPage", () => {
     expect(screen.getByText("P95 延迟")).toBeInTheDocument();
     expect(screen.getByText("P99 延迟")).toBeInTheDocument();
     expect(screen.getByText("最大 / 最小延迟")).toBeInTheDocument();
+    expect(screen.getByText("0.3 s")).toBeInTheDocument();
+    expect(screen.getByText("0.9 s")).toBeInTheDocument();
+    expect(screen.getByText("1.2 s")).toBeInTheDocument();
+    expect(screen.getByText("1.5 s / 0.1 s")).toBeInTheDocument();
+    expect(screen.getByText("321 ms")).toBeInTheDocument();
     expect(screen.queryByText("余额变化")).not.toBeInTheDocument();
     expect(screen.getByText("US$1.23")).toBeInTheDocument();
     expect(screen.queryByText("总 Token")).not.toBeInTheDocument();
