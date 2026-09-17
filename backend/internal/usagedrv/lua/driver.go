@@ -3,6 +3,7 @@ package lua
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -26,6 +27,8 @@ type DriverConfig struct {
 	TimeoutMS int            `json:"timeout_ms"`
 	Raw       map[string]any `json:"-"`
 }
+
+const defaultTimeoutMS = 15000
 
 type DriverOption func(*Driver)
 
@@ -81,7 +84,7 @@ func (d *Driver) Fetch(ctx context.Context, account accounts.Account, credential
 
 	timeout := config.TimeoutMS
 	if timeout <= 0 {
-		timeout = 5000
+		timeout = defaultTimeoutMS
 	}
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
 	defer cancel()
@@ -102,10 +105,58 @@ func (d *Driver) Fetch(ctx context.Context, account accounts.Account, credential
 				return usagedrv.RawUsageResult{}, err
 			}
 		}
-		return d.runtime.ExecuteSource(callCtx, source, "managed:"+key, account, credential, config.Raw)
+		return d.executeWithRateLimitRetry(callCtx, source, "managed:"+key, account, credential, config.Raw)
 	}
 
-	return d.runtime.Execute(callCtx, config.Script, account, credential, config.Raw)
+	return d.executeWithRateLimitRetry(callCtx, config.Script, "", account, credential, config.Raw)
+}
+
+func (d *Driver) executeWithRateLimitRetry(
+	ctx context.Context,
+	source string,
+	sourceName string,
+	account accounts.Account,
+	credential accountdrv.ResolvedCredential,
+	config map[string]any,
+) (usagedrv.RawUsageResult, error) {
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var (
+			result usagedrv.RawUsageResult
+			err    error
+		)
+		if sourceName == "" {
+			result, err = d.runtime.Execute(ctx, source, account, credential, config)
+		} else {
+			result, err = d.runtime.ExecuteSource(ctx, source, sourceName, account, credential, config)
+		}
+		if err == nil || !isLuaRateLimitError(err) || attempt+1 >= maxAttempts {
+			return result, err
+		}
+
+		delay := time.Duration(250*(1<<attempt)) * time.Millisecond
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return usagedrv.RawUsageResult{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return usagedrv.RawUsageResult{}, fmt.Errorf("lua usage retry exhausted")
+}
+
+func isLuaRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var failure *ScriptFailure
+	if errors.As(err, &failure) {
+		message := strings.ToLower(failure.Message)
+		return strings.Contains(message, "429") || strings.Contains(message, "too many requests")
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "status 429") || strings.Contains(message, "too many requests")
 }
 
 func ParseDriverConfig(raw string) (DriverConfig, error) {
@@ -138,7 +189,7 @@ func ParseDriverConfig(raw string) (DriverConfig, error) {
 		}
 		cfg.TimeoutMS = timeoutMS
 	} else {
-		cfg.TimeoutMS = 5000
+		cfg.TimeoutMS = defaultTimeoutMS
 	}
 	return cfg, nil
 }

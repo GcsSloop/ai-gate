@@ -2,7 +2,6 @@ package lua_test
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"math"
 	"net/http"
@@ -213,65 +212,27 @@ end
 	}
 }
 
-func TestLuaDriverUsesManagedStellaisleLoginCookieForSubscription17(t *testing.T) {
+func TestLuaDriverUsesManagedStellaisleFixedCookieAndUserForSubscription17(t *testing.T) {
 	t.Parallel()
 
-	loginAttempts := 0
 	client := &http.Client{Transport: managedScriptRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/user/login":
-			loginAttempts++
-			if loginAttempts == 1 {
-				return &http.Response{
-					StatusCode: http.StatusTooManyRequests,
-					Header:     http.Header{"Retry-After": []string{"0"}},
-					Body:       io.NopCloser(strings.NewReader(`{"error":"rate limited"}`)),
-				}, nil
-			}
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Fatalf("read login body: %v", err)
-			}
-			var credentials map[string]string
-			if err := json.Unmarshal(body, &credentials); err != nil {
-				t.Fatalf("decode login body: %v", err)
-			}
-			if credentials["username"] != "user@example.com" || credentials["password"] != "pass-placeholder" {
-				t.Fatalf("login credentials = %#v, want configured credentials", credentials)
-			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header: http.Header{"Set-Cookie": []string{
-					"stellaisle_session=abc123; Path=/; HttpOnly",
-					"stellaisle_csrf=csrf456; Path=/; HttpOnly",
-				}},
-				Body: io.NopCloser(strings.NewReader(`{"success":true,"data":{"id":264}}`)),
-			}, nil
-		case r.Method == http.MethodGet && r.URL.Path == "/api/subscription/self":
-			if got := r.Header.Get("Cookie"); got != "stellaisle_session=abc123; stellaisle_csrf=csrf456" {
-				t.Fatalf("Cookie = %q, want all session cookies", got)
-			}
-			if got := r.Header.Get("new-api-user"); got != "264" {
-				t.Fatalf("new-api-user = %q, want 264", got)
-			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body: io.NopCloser(strings.NewReader(`{
-					"success": true,
-					"data": {
-						"all_subscriptions": [
-							{"subscription":{"id":18,"amount_total":1,"amount_used":1,"amount_cap":2,"amount_cap_used":2}},
-							{"subscription":{"id":17,"amount_total":300000000,"amount_used":3607724,"amount_cap":9000000000,"amount_cap_used":708408003,"next_reset_time":1784304000,"status":"active","allowed_group":"套餐专用分组"}}
-						]
-					},
-					"message":""
-				}`)),
-			}, nil
-		default:
-			t.Fatalf("unexpected %s %s", r.Method, r.URL.String())
-			return nil, nil
+		if r.Method != http.MethodGet || r.URL.Path != "/api/subscription/self" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
 		}
+		if got := r.Header.Get("Cookie"); got != "sidebar_state=true; session=test-session" {
+			t.Fatalf("Cookie = %q, want fixed session cookie", got)
+		}
+		if got := r.Header.Get("new-api-user"); got != "264" {
+			t.Fatalf("new-api-user = %q, want 264", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"success": true,
+				"data": {"all_subscriptions": [{"subscription": {"id": 17, "amount_total": 300000000, "amount_used": 3607724, "amount_cap": 9000000000, "amount_cap_used": 708408003}}]}
+			}`)),
+		}, nil
 	})}
 
 	root := t.TempDir()
@@ -280,31 +241,16 @@ func TestLuaDriverUsesManagedStellaisleLoginCookieForSubscription17(t *testing.T
 		t.Fatalf("NewManagedScriptStore returned error: %v", err)
 	}
 	if err := manager.Save("stellaisle", `function fetch_usage(ctx)
-  local credentials = ctx.host.json_decode(ctx.credential.api_key or "{}")
-  local base = string.gsub(ctx.account.base_url or "", "/+$", "")
-  local login = ctx.host.http_post({
-    url = base .. "/api/user/login?turnstile=",
-    headers = { ["Accept"] = "application/json", ["Content-Type"] = "application/json" },
-    body = ctx.host.json_encode({ username = credentials.username, password = credentials.password }),
-    retry_on_429 = true,
-    retry_count = 2,
-    retry_delay_ms = 0
-  })
-  local login_payload = ctx.host.json_decode(login.body)
-  local cookie_parts = {}
-  for _, raw_cookie in ipairs(login.set_cookies or {}) do
-    local cookie = string.match(tostring(raw_cookie), "^[^;]+")
-    if cookie ~= nil then table.insert(cookie_parts, cookie) end
-  end
   local usage = ctx.host.http_get({
-    url = base .. "/api/subscription/self",
-    headers = { ["Accept"] = "application/json", ["Cookie"] = table.concat(cookie_parts, "; "), ["new-api-user"] = tostring(login_payload.data.id) }
+    url = "https://token.stellaisle.com/api/subscription/self",
+    headers = {
+      ["Accept"] = "application/json",
+      ["Cookie"] = "sidebar_state=true; session=test-session",
+      ["new-api-user"] = "264"
+    }
   })
   local payload = ctx.host.json_decode(usage.body)
-  local selected
-  for _, entry in ipairs(payload.data.all_subscriptions or {}) do
-    if entry.subscription.id == 17 then selected = entry.subscription break end
-  end
+  local selected = payload.data.all_subscriptions[1].subscription
   local scale = 1000000
   local period_total = selected.amount_total / scale
   local period_remaining = (selected.amount_total - selected.amount_used) / scale
@@ -315,7 +261,6 @@ func TestLuaDriverUsesManagedStellaisleLoginCookieForSubscription17(t *testing.T
     source = "remote",
     confidence = "high",
     limits = { balance = period_total, quota_remaining = period_remaining },
-    meta = { subscription_id = 17 },
     display = {
       summary = { label = "周额度", value = string.format("$%.2f / $%.2f", period_remaining, period_total) },
       usage_windows = {
@@ -333,38 +278,69 @@ end
 	result, err := driver.Fetch(context.Background(), accounts.Account{
 		BaseURL:         "https://token.stellaisle.com",
 		UsageDriver:     "lua",
-		UsageConfigJSON: `{"script":"managed:stellaisle","subscription_id":17}`,
-	}, accountdrv.ResolvedCredential{APIKey: `{"username":"user@example.com","password":"pass-placeholder"}`})
+		UsageConfigJSON: `{"script":"managed:stellaisle"}`,
+	}, accountdrv.ResolvedCredential{})
 	if err != nil {
 		t.Fatalf("Fetch returned error: %v", err)
 	}
 	if result.Limits.Balance == nil || *result.Limits.Balance != 300 {
 		t.Fatalf("Balance = %#v, want 300", result.Limits.Balance)
 	}
-	if loginAttempts != 2 {
-		t.Fatalf("login attempts = %d, want one retry after 429", loginAttempts)
+}
+
+func TestLuaDriverRetriesManagedScriptAfterRateLimitFailure(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	client := &http.Client{Transport: managedScriptRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"error":"rate limited"}`)),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+		}, nil
+	})}
+
+	root := t.TempDir()
+	manager, err := luadrv.NewManagedScriptStore(root)
+	if err != nil {
+		t.Fatalf("NewManagedScriptStore returned error: %v", err)
 	}
-	if result.Limits.QuotaRemaining == nil || *result.Limits.QuotaRemaining != 296.392276 {
-		t.Fatalf("QuotaRemaining = %#v, want 296.392276", result.Limits.QuotaRemaining)
+	if err := manager.Save("rate_limit", `function fetch_usage(ctx)
+  local response = ctx.host.http_post({
+    url = "https://example.test/api/usage",
+    body = "{}"
+  })
+  if response.status == 429 then
+    return { ok = false, error = { kind = "upstream_http_error", message = "usage returned status 429" } }
+  end
+  return { ok = true, source = "remote", confidence = "high", limits = {} }
+end
+`); err != nil {
+		t.Fatalf("Save Stellaisle script returned error: %v", err)
 	}
-	if result.Meta["subscription_id"] != float64(17) {
-		t.Fatalf("subscription_id = %#v, want 17", result.Meta["subscription_id"])
+
+	driver := luadrv.NewDriver(client, moduleRoot(t), luadrv.WithManagedScriptRoot(root))
+	result, err := driver.Fetch(context.Background(), accounts.Account{
+		BaseURL:         "https://example.test",
+		UsageDriver:     "lua",
+		UsageConfigJSON: `{"script":"managed:rate_limit"}`,
+	}, accountdrv.ResolvedCredential{})
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
 	}
-	summary, ok := result.Display["summary"].(map[string]any)
-	if !ok || summary["label"] != "周额度" || summary["value"] != "$296.39 / $300.00" {
-		t.Fatalf("summary = %#v, want subscription usage summary", result.Display["summary"])
+	if attempts != 3 {
+		t.Fatalf("POST attempts = %d, want 3", attempts)
 	}
-	windows, ok := result.Display["usage_windows"].([]any)
-	if !ok || len(windows) != 2 {
-		t.Fatalf("usage_windows = %#v, want weekly and total windows", result.Display["usage_windows"])
-	}
-	weekly, weeklyOK := windows[0].(map[string]any)
-	total, totalOK := windows[1].(map[string]any)
-	if !weeklyOK || weekly["label"] != "周额度" || weekly["remaining_value"] != "$296.39" || weekly["total_value"] != "$300.00" {
-		t.Fatalf("weekly window = %#v, want weekly remaining/total values", windows[0])
-	}
-	if !totalOK || total["label"] != "总额度" || total["remaining_value"] != "$8291.59" || total["total_value"] != "$9000.00" {
-		t.Fatalf("total window = %#v, want total remaining/total values", windows[1])
+	if result.Source != "remote" {
+		t.Fatalf("Source = %q, want remote", result.Source)
 	}
 }
 

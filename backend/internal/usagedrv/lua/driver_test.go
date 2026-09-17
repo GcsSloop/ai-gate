@@ -47,6 +47,18 @@ func TestLuaDriverRejectsMalformedUsageConfig(t *testing.T) {
 	}
 }
 
+func TestLuaDriverUsesFifteenSecondDefaultTimeout(t *testing.T) {
+	t.Parallel()
+
+	config, err := luadrv.ParseDriverConfig(`{"script":"internal/usagedrv/lua/testdata/vendor_x.lua"}`)
+	if err != nil {
+		t.Fatalf("ParseDriverConfig returned error: %v", err)
+	}
+	if config.TimeoutMS != 15000 {
+		t.Fatalf("TimeoutMS = %d, want 15000", config.TimeoutMS)
+	}
+}
+
 func TestLuaDriverRejectsEscapedScriptPath(t *testing.T) {
 	t.Parallel()
 

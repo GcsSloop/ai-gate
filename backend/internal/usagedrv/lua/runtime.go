@@ -216,7 +216,7 @@ func (r *Runtime) registerHostAPI(L *golua.LState, ctx context.Context) error {
 			if response.StatusCode != http.StatusTooManyRequests || attempt+1 >= retryCount {
 				break
 			}
-			if delay := luaRetryDelayMilliseconds(arg, response.Header); delay > 0 {
+			if delay := luaRetryDelayMilliseconds(arg, response.Header, attempt); delay > 0 {
 				timer := time.NewTimer(time.Duration(delay) * time.Millisecond)
 				select {
 				case <-ctx.Done():
@@ -319,15 +319,33 @@ func luaIntValue(value golua.LValue, fallback int) int {
 	return int(number)
 }
 
-func luaRetryDelayMilliseconds(arg *golua.LTable, headers http.Header) int {
-	if value := luaIntValue(arg.RawGetString("retry_delay_ms"), -1); value >= 0 {
+func luaRetryDelayMilliseconds(arg *golua.LTable, headers http.Header, attempt int) int {
+	if value := luaIntValue(arg.RawGetString("retry_delay_ms"), -1); value > 0 {
 		return value
 	}
-	seconds, err := strconv.Atoi(strings.TrimSpace(headers.Get("Retry-After")))
-	if err != nil || seconds <= 0 {
-		return 0
+	retryAfter := strings.TrimSpace(headers.Get("Retry-After"))
+	if seconds, err := strconv.Atoi(retryAfter); err == nil {
+		if seconds > 0 {
+			return seconds * 1000
+		}
+	} else if retryAt, err := http.ParseTime(retryAfter); err == nil {
+		if delay := time.Until(retryAt).Milliseconds(); delay > 0 {
+			return int(delay)
+		}
 	}
-	return seconds * 1000
+
+	const (
+		initialBackoffMS = 250
+		maxBackoffMS     = 5000
+	)
+	delay := initialBackoffMS
+	for index := 0; index < attempt && delay < maxBackoffMS; index++ {
+		delay *= 2
+	}
+	if delay > maxBackoffMS {
+		return maxBackoffMS
+	}
+	return delay
 }
 
 func applyLuaRequestHeaders(request *http.Request, value golua.LValue) error {
