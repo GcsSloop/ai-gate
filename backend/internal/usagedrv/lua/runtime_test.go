@@ -137,7 +137,7 @@ func TestRuntimeHTTPPostRetriesOptedInRateLimit(t *testing.T) {
 	scriptPath := writeTempScript(t, `
 function fetch_usage(ctx)
   local response = ctx.host.http_post({
-    url = "https://token.stellaisle.com/api/user/login?turnstile=",
+    url = "https://example.test/api/usage",
     headers = { ["Content-Type"] = "application/json" },
     body = "{}",
     retry_on_429 = true,
@@ -169,6 +169,47 @@ end
 	}
 	if attempts != 2 {
 		t.Fatalf("POST attempts = %d, want 2", attempts)
+	}
+}
+
+func TestRuntimeHTTPPostBacksOffWhenRateLimitHasNoRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	scriptPath := writeTempScript(t, `
+function fetch_usage(ctx)
+  local response = ctx.host.http_post({
+    url = "https://example.test/api/usage",
+    headers = { ["Content-Type"] = "application/json" },
+    body = "{}",
+    retry_on_429 = true,
+    retry_count = 2,
+    retry_delay_ms = 0
+  })
+  if response.status ~= 200 then
+    error("unexpected status " .. tostring(response.status))
+  end
+  return { ok = true, source = "remote", confidence = "high", limits = {} }
+end
+`)
+	firstAttemptAt := time.Time{}
+	runtime := luadrv.NewRuntime(&http.Client{Transport: roundTripFunc(func(req *http.Request) *http.Response {
+		if firstAttemptAt.IsZero() {
+			firstAttemptAt = time.Now()
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"error":"rate limited"}`)),
+			}
+		}
+		if time.Since(firstAttemptAt) < 50*time.Millisecond {
+			t.Fatalf("retry happened too soon: elapsed=%s", time.Since(firstAttemptAt))
+		}
+		return jsonResponse(`{"ok":true}`)
+	})}, filepath.Dir(scriptPath))
+
+	_, err := runtime.Execute(context.Background(), filepath.Base(scriptPath), accounts.Account{}, accountdrv.ResolvedCredential{}, map[string]any{})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
 	}
 }
 
