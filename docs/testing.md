@@ -12,6 +12,49 @@ cd backend && go test ./...
 npm --prefix frontend test
 ```
 
+## Account model catalog
+
+The connection test offers the account's own model list instead of a hardcoded
+list. The backend serves it from the account's upstream `/models` endpoint:
+
+```bash
+curl http://127.0.0.1:<port>/ai-router/api/accounts/<id>/models
+```
+
+Official Codex accounts request `/models?client_version=<v>` so the upstream
+returns models gated behind newer Codex builds (gpt-5.6 and gpt-6). The version
+tracks `references/openai-codex`; when that submodule moves, update
+`codexClientVersion` in `backend/internal/providers/codex/adapter.go` with it.
+Failures answer HTTP 200 with `ok:false` and a `details` string, which lets the
+UI fall back to the list cached in the browser and to the built-in suggestions.
+
+## Per-account upstream proxy override
+
+The upstream proxy configured on the settings page stays global. Each account can
+override it from the account edit dialog (`走代理`):
+
+- stored as `accounts.proxy_mode`: empty inherits the global mode, `direct` never
+  proxies, `proxy` always proxies.
+- `proxy` reuses the global manual proxy address. When the global mode is
+  `direct` it falls back to the system/environment proxy, so one account can still
+  be routed through a proxy while the rest stay direct.
+- `GET /accounts` reports the effective value as `uses_upstream_proxy`, so an
+  inheriting account is never misrepresented in the dialog; saving writes an
+  explicit `direct` or `proxy`.
+- the override covers account tests, model catalog reads, gateway traffic, and
+  usage refreshes, because they all share the upstream transport.
+
+```bash
+curl http://127.0.0.1:<port>/ai-router/api/accounts | jq '.[] | {account_name, proxy_mode, uses_upstream_proxy}'
+```
+
+## Usage availability signals
+
+The account card usage dot only reads green when a configured usage driver
+recently returned something renderable. An account without a matching driver, or
+one whose refresh returns no usage figures, shows a neutral dot and keeps the
+usage slot blank. Hovering the dot explains which of the two cases applies.
+
 ## Lua usage closed loop
 
 Platform-specific usage adapters are user-managed Lua scripts. Select the Lua
@@ -26,7 +69,10 @@ protocol is shared by server mode and the desktop client connected to it.
 
 For login-style POST requests that may be rate limited, a script can opt in to
 bounded retry with `retry_on_429 = true`, `retry_count`, and `retry_delay_ms`.
-Ordinary POST requests are not retried by default.
+Ordinary POST requests are not retried by default. When a Lua script returns a
+clear 429/Too Many Requests failure, the Lua driver also retries the complete
+script up to three times with backoff. Lua usage configs default to a 15-second
+timeout; set `timeout_ms` when an upstream requires a different budget.
 
 For an isolated local check, run the backend on a separate loopback port with a
 temporary repository-local database, then call:
