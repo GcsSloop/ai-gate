@@ -1,6 +1,8 @@
 import { runtimeTranslate } from "./i18n";
 import { apiPath, authPath } from "./paths";
 
+export type AccountProxyMode = "direct" | "proxy";
+
 export type AccountRecord = {
   id: number;
   provider_type: string;
@@ -17,6 +19,8 @@ export type AccountRecord = {
   is_locked?: boolean;
   supports_responses?: boolean;
   skip_tls_verify?: boolean;
+  proxy_mode?: AccountProxyMode;
+  uses_upstream_proxy?: boolean;
   cooldown_remaining_seconds?: number;
   routing_cooldown_remaining_seconds?: number;
   routing_cooldown_reason?: string;
@@ -102,6 +106,7 @@ export type CreateAccountPayload = {
   usage_config_json?: string;
   supports_responses?: boolean;
   skip_tls_verify?: boolean;
+  proxy_mode?: AccountProxyMode;
 };
 
 export type ShareAccountResponse = {
@@ -341,6 +346,18 @@ export type PPChatTokenLogsPayload = {
 export type AccountChatTestPayload = {
   model: string;
   input: string;
+};
+
+export type AccountModelEntry = {
+  id: string;
+  display_name?: string;
+};
+
+export type AccountModelsResult = {
+  ok: boolean;
+  models: AccountModelEntry[];
+  message?: string;
+  details?: string;
 };
 
 export type CodexBackupItem = {
@@ -680,6 +697,7 @@ export async function updateAccount(
     is_active?: boolean;
     is_locked?: boolean;
     supports_responses?: boolean;
+    proxy_mode?: AccountProxyMode;
   },
 ): Promise<void> {
   const response = await fetch(apiPath(`/accounts/${id}`), {
@@ -869,6 +887,93 @@ export async function testAccount(
     };
   }
   return data;
+}
+
+const ACCOUNT_MODELS_CACHE_PREFIX = "aigate:account-models:v1:";
+
+function normalizeAccountModelEntries(value: unknown): AccountModelEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry): AccountModelEntry | null => {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+      const record = entry as { id?: unknown; display_name?: unknown };
+      const id = typeof record.id === "string" ? record.id.trim() : "";
+      if (id === "") {
+        return null;
+      }
+      const displayName =
+        typeof record.display_name === "string"
+          ? record.display_name.trim()
+          : "";
+      return displayName === "" ? { id } : { id, display_name: displayName };
+    })
+    .filter((entry): entry is AccountModelEntry => entry !== null);
+}
+
+/** Locally cached upstream catalog for one account, used when the upstream is unreachable. */
+export function readCachedAccountModels(accountID: number): AccountModelEntry[] {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(
+      `${ACCOUNT_MODELS_CACHE_PREFIX}${accountID}`,
+    );
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as { models?: unknown };
+    return normalizeAccountModelEntries(parsed?.models);
+  } catch {
+    return [];
+  }
+}
+
+export function writeCachedAccountModels(
+  accountID: number,
+  models: AccountModelEntry[],
+): void {
+  if (models.length === 0) {
+    return;
+  }
+  if (typeof window === "undefined" || !window.localStorage) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(
+      `${ACCOUNT_MODELS_CACHE_PREFIX}${accountID}`,
+      JSON.stringify({ models, cached_at: new Date().toISOString() }),
+    );
+  } catch {
+    // ignore cache persistence failures
+  }
+}
+
+export async function listAccountModels(
+  id: number,
+): Promise<AccountModelsResult> {
+  const response = await fetch(apiPath(`/accounts/${id}/models`));
+  const data = (await response
+    .json()
+    .catch(() => null)) as Partial<AccountModelsResult> | null;
+  if (!response.ok) {
+    return {
+      ok: false,
+      models: [],
+      message: data?.message || runtimeTranslate("读取模型列表失败"),
+      details: data?.details,
+    };
+  }
+  return {
+    ok: Boolean(data?.ok),
+    models: normalizeAccountModelEntries(data?.models),
+    message: data?.message,
+    details: data?.details,
+  };
 }
 
 export async function getLuaUsageScript(

@@ -23,6 +23,7 @@ var schemaStatements = []string{
 		is_locked INTEGER NOT NULL DEFAULT 0,
 		supports_responses INTEGER NOT NULL DEFAULT 0,
 		skip_tls_verify INTEGER NOT NULL DEFAULT 0,
+		proxy_mode TEXT NOT NULL DEFAULT '',
 		cooldown_until DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`,

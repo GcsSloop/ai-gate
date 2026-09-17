@@ -187,6 +187,115 @@ func TestResolveProxyUsesSystemProxyResolver(t *testing.T) {
 	}
 }
 
+func TestResolveProxyAccountOverrideForcesDirect(t *testing.T) {
+	t.Parallel()
+
+	reader := stubSettingsReader{value: settings.AppSettings{
+		UpstreamProxyMode: settings.UpstreamProxyModeManual,
+		UpstreamProxyURL:  "http://127.0.0.1:7890",
+	}}
+	ctx := netproxy.ContextWithProxyOverride(context.Background(), netproxy.ProxyOverrideDirect)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext returned error: %v", err)
+	}
+
+	got, err := netproxy.ResolveProxy(req, reader)
+	if err != nil {
+		t.Fatalf("ResolveProxy returned error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("ResolveProxy = %v, want nil when the account forces direct", got)
+	}
+}
+
+func TestResolveProxyAccountOverrideReusesGlobalManualProxy(t *testing.T) {
+	t.Parallel()
+
+	reader := stubSettingsReader{value: settings.AppSettings{
+		UpstreamProxyMode: settings.UpstreamProxyModeDirect,
+		UpstreamProxyURL:  "http://127.0.0.1:7890",
+	}}
+	ctx := netproxy.ContextWithProxyOverride(context.Background(), netproxy.ProxyOverrideProxy)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext returned error: %v", err)
+	}
+
+	got, err := netproxy.ResolveProxy(req, reader)
+	if err != nil {
+		t.Fatalf("ResolveProxy returned error: %v", err)
+	}
+	if got == nil || got.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("ResolveProxy = %v, want the globally configured proxy address", got)
+	}
+}
+
+func TestResolveProxyAccountOverrideFallsBackToSystemProxy(t *testing.T) {
+	t.Parallel()
+
+	restore := netproxy.SetSystemProxyResolverForTest(func(req *http.Request) (*url.URL, error) {
+		return url.Parse("http://127.0.0.1:7897")
+	})
+	defer restore()
+
+	reader := stubSettingsReader{value: settings.AppSettings{
+		UpstreamProxyMode: settings.UpstreamProxyModeDirect,
+	}}
+	ctx := netproxy.ContextWithProxyOverride(context.Background(), netproxy.ProxyOverrideProxy)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext returned error: %v", err)
+	}
+
+	got, err := netproxy.ResolveProxy(req, reader)
+	if err != nil {
+		t.Fatalf("ResolveProxy returned error: %v", err)
+	}
+	if got == nil || got.String() != "http://127.0.0.1:7897" {
+		t.Fatalf("ResolveProxy = %v, want the system proxy when the global mode is direct", got)
+	}
+}
+
+func TestContextWithProxyOverrideIgnoresInheritedMode(t *testing.T) {
+	t.Parallel()
+
+	reader := stubSettingsReader{value: settings.AppSettings{
+		UpstreamProxyMode: settings.UpstreamProxyModeManual,
+		UpstreamProxyURL:  "http://127.0.0.1:7890",
+	}}
+	ctx := netproxy.ContextWithProxyOverride(context.Background(), netproxy.ProxyOverrideForAccountMode(""))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext returned error: %v", err)
+	}
+
+	got, err := netproxy.ResolveProxy(req, reader)
+	if err != nil {
+		t.Fatalf("ResolveProxy returned error: %v", err)
+	}
+	if got == nil || got.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("ResolveProxy = %v, want the global manual proxy for an inheriting account", got)
+	}
+}
+
+func TestProxyOverrideForAccountMode(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]netproxy.ProxyOverride{
+		"":        "",
+		"inherit": "",
+		"direct":  netproxy.ProxyOverrideDirect,
+		"proxy":   netproxy.ProxyOverrideProxy,
+		"bogus":   "",
+	}
+	for mode, want := range cases {
+		if got := netproxy.ProxyOverrideForAccountMode(mode); got != want {
+			t.Fatalf("ProxyOverrideForAccountMode(%q) = %q, want %q", mode, got, want)
+		}
+	}
+}
+
 func TestResolveProxySystemModeFallsBackToEnvironment(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
 	restore := netproxy.SetSystemProxyResolverForTest(func(req *http.Request) (*url.URL, error) {

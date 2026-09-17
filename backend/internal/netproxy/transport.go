@@ -19,10 +19,45 @@ type settingsReader interface {
 
 type skipTLSVerifyContextKey struct{}
 
+type proxyOverrideContextKey struct{}
+
+// ProxyOverride is a per-account override of the global upstream proxy setting.
+type ProxyOverride string
+
+const (
+	// ProxyOverrideDirect never uses a proxy, ignoring the global setting.
+	ProxyOverrideDirect ProxyOverride = "direct"
+	// ProxyOverrideProxy always uses a proxy, reusing the globally configured address.
+	ProxyOverrideProxy ProxyOverride = "proxy"
+)
+
 var systemProxyResolver = resolveSystemProxy
 
 func ContextWithSkipTLSVerify(ctx context.Context, skip bool) context.Context {
 	return context.WithValue(ctx, skipTLSVerifyContextKey{}, skip)
+}
+
+// ContextWithProxyOverride scopes the global upstream proxy setting to one request, which is how a
+// per-account override reaches the shared transport.
+func ContextWithProxyOverride(ctx context.Context, override ProxyOverride) context.Context {
+	if override != ProxyOverrideDirect && override != ProxyOverrideProxy {
+		return ctx
+	}
+	return context.WithValue(ctx, proxyOverrideContextKey{}, override)
+}
+
+// ProxyOverrideForAccountMode translates a stored account proxy mode into an override. Accounts
+// persist "direct" or "proxy" for an explicit override and the empty string to inherit; anything
+// else inherits, matching accounts.NormalizeProxyMode.
+func ProxyOverrideForAccountMode(mode string) ProxyOverride {
+	switch ProxyOverride(mode) {
+	case ProxyOverrideDirect:
+		return ProxyOverrideDirect
+	case ProxyOverrideProxy:
+		return ProxyOverrideProxy
+	default:
+		return ""
+	}
 }
 
 func SetSystemProxyResolverForTest(resolver func(*http.Request) (*url.URL, error)) func() {
@@ -102,7 +137,21 @@ func ResolveProxy(req *http.Request, repo settingsReader) (*url.URL, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load app settings: %w", err)
 	}
-	switch appSettings.UpstreamProxyMode {
+
+	mode := appSettings.UpstreamProxyMode
+	if override := proxyOverride(req); override != "" {
+		if override == ProxyOverrideDirect {
+			return nil, nil
+		}
+		// Forced proxy: reuse the global address when there is one, otherwise fall back to the
+		// system/env proxy so a single account can still be routed through a proxy.
+		mode = settings.UpstreamProxyModeManual
+		if appSettings.UpstreamProxyMode != settings.UpstreamProxyModeManual {
+			mode = settings.UpstreamProxyModeSystem
+		}
+	}
+
+	switch mode {
 	case settings.UpstreamProxyModeDirect:
 		return nil, nil
 	case settings.UpstreamProxyModeManual:
@@ -123,6 +172,14 @@ func ResolveProxy(req *http.Request, repo settingsReader) (*url.URL, error) {
 	default:
 		return http.ProxyFromEnvironment(req)
 	}
+}
+
+func proxyOverride(req *http.Request) ProxyOverride {
+	if req == nil {
+		return ""
+	}
+	override, _ := req.Context().Value(proxyOverrideContextKey{}).(ProxyOverride)
+	return override
 }
 
 func parseManualProxy(appSettings settings.AppSettings) (*url.URL, error) {

@@ -11,8 +11,15 @@ func doAccountRequest(client *http.Client, req *http.Request, account accounts.A
 	if client == nil {
 		client = http.DefaultClient
 	}
+	ctx := req.Context()
 	if account.SkipTLSVerify {
-		req = req.WithContext(netproxy.ContextWithSkipTLSVerify(req.Context(), true))
+		ctx = netproxy.ContextWithSkipTLSVerify(ctx, true)
+	}
+	if override := netproxy.ProxyOverrideForAccountMode(string(account.ProxyMode)); override != "" {
+		ctx = netproxy.ContextWithProxyOverride(ctx, override)
+	}
+	if ctx != req.Context() {
+		req = req.WithContext(ctx)
 	}
 	return client.Do(req)
 }

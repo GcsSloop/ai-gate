@@ -27,6 +27,27 @@ const (
 	StatusDisabled Status = "disabled"
 )
 
+// ProxyMode is the per-account override for the global upstream proxy setting.
+type ProxyMode string
+
+const (
+	// ProxyModeInherit follows the global upstream proxy mode.
+	ProxyModeInherit ProxyMode = ""
+	// ProxyModeDirect never uses a proxy for this account.
+	ProxyModeDirect ProxyMode = "direct"
+	// ProxyModeProxy always uses a proxy for this account, reusing the global proxy address.
+	ProxyModeProxy ProxyMode = "proxy"
+)
+
+func NormalizeProxyMode(raw string) ProxyMode {
+	switch ProxyMode(raw) {
+	case ProxyModeDirect, ProxyModeProxy:
+		return ProxyMode(raw)
+	default:
+		return ProxyModeInherit
+	}
+}
+
 type Account struct {
 	ID                int64
 	ProviderType      ProviderType
@@ -44,6 +65,7 @@ type Account struct {
 	IsLocked          bool
 	SupportsResponses bool
 	SkipTLSVerify     bool
+	ProxyMode         ProxyMode
 	CooldownUntil     *time.Time
 	CooldownReason    string
 	CreatedAt         time.Time

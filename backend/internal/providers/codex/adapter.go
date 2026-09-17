@@ -10,12 +10,19 @@ import (
 )
 
 const (
-	// Codex ChatGPT backend gates some models (e.g. gpt-5.5) behind minimum Codex versions.
-	// Use a recent Codex CLI version string to avoid unnecessary model gating.
-	codexClientVersion = "0.142.5"
+	// Codex ChatGPT backend gates newer models behind minimum Codex versions: gpt-5.6-* needs
+	// 0.144.0 and gpt-6-astra needs 0.153.0. Advertise the Codex CLI version this adapter tracks
+	// (references/openai-codex is pinned to the same tag) so those models stay reachable.
+	codexClientVersion = "0.154.0"
 	codexOriginator    = "codex_cli_rs"
 	codexUserAgent     = "codex_cli_rs/" + codexClientVersion + " (ai-gate)"
 )
+
+// ModelsPath returns the model catalog path Codex clients request, including the client_version
+// query upstream uses to filter models by minimum supported client version.
+func ModelsPath() string {
+	return "/models?client_version=" + codexClientVersion
+}
 
 type Adapter struct {
 	baseURL string

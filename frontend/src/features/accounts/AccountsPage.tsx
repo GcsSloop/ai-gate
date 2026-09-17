@@ -71,8 +71,10 @@ import {
   importCurrentCodexAuth,
   importSharedAccount,
   listLuaUsageScripts,
+  listAccountModels,
   listAccountUsage,
   listAccounts,
+  readCachedAccountModels,
   refreshAccountUsage,
   saveLuaUsageScript,
   shareAccount,
@@ -81,7 +83,9 @@ import {
   updateAccount,
   updateAccountUpstreamLock,
   updateAccountUpstreamRoute,
+  writeCachedAccountModels,
   type AccountRecord,
+  type AccountModelEntry,
   type AccountTestResult,
   type OfficialAuthSession,
   type ServerUpstreamAccount,
@@ -95,6 +99,7 @@ import sourceAIGateIcon from "../../assets/aigate_1024_1024.png";
 import sourceClaudeCodeIcon from "../../assets/providers/claude-code.png";
 import sourceOpenAIIcon from "../../assets/providers/openai.png";
 import sourcePPChatIcon from "../../assets/providers/ppchat.png";
+import { buildTestModelOptions, pickPreferredTestModel } from "./testModels";
 
 const { Title, Text } = Typography;
 
@@ -133,19 +138,6 @@ const sourceIconMap: Record<SourceIcon, { label: string; icon: string }> = {
 };
 
 const selectableSourceIcons: SourceIcon[] = ["openai", "claude_code", "ppchat"];
-
-const TEST_MODEL_SUGGESTIONS = [
-  "gpt-5.5",
-  "gpt-5.5-pro",
-  "gpt-5.4",
-  "gpt-5.3-codex",
-  "gpt-5.2",
-  "gpt-5.2-codex",
-  "gpt-5.1",
-  "gpt-5.1-codex-max",
-  "gpt-5",
-  "gpt-4.1",
-];
 
 function normalizeSourceIcon(raw?: string): SourceIcon {
   if (raw === "ppchat") {
@@ -654,21 +646,27 @@ function formatCheckedAt(value: string | undefined, language: AppLanguage) {
   });
 }
 
+function hasConfiguredUsageDriver(
+  record: Pick<AccountRecord, "usage_driver" | "usage_config_json">,
+): boolean {
+  const usageDriver = (record.usage_driver || "").trim().toLowerCase();
+  const usageConfig = parseUsageConfig(record.usage_config_json);
+  const luaScript =
+    typeof usageConfig.script === "string" ? String(usageConfig.script) : "";
+  return (
+    usageDriver.startsWith("builtin_") ||
+    (usageDriver === "lua" && luaScript.trim() !== "")
+  );
+}
+
 function getUsageHealthState(
   record: Pick<
     AccountRecord,
     "checked_at" | "stale" | "usage_driver" | "usage_config_json"
   >,
+  hasUsageReadout: boolean,
 ): "ok" | "warning" | "danger" | "unknown" {
-  const usageDriver = (record.usage_driver || "").trim().toLowerCase();
-  const usageConfig = parseUsageConfig(record.usage_config_json);
-  const luaScript =
-    typeof usageConfig.script === "string" ? String(usageConfig.script) : "";
-  const hasBuiltinUsageDriver = usageDriver.startsWith("builtin_");
-  const hasLuaUsageDriver =
-    usageDriver === "lua" && luaScript.trim() !== "";
-
-  if (!hasBuiltinUsageDriver && !hasLuaUsageDriver) {
+  if (!hasConfiguredUsageDriver(record)) {
     return "unknown";
   }
   if (!record.checked_at) {
@@ -676,6 +674,11 @@ function getUsageHealthState(
   }
   if (record.stale) {
     return "danger";
+  }
+  // A refresh can succeed and still return nothing renderable. Reporting that as healthy made the
+  // dot green next to an empty usage slot.
+  if (!hasUsageReadout) {
+    return "unknown";
   }
   const checkedAt = new Date(record.checked_at);
   if (Number.isNaN(checkedAt.getTime())) {
@@ -694,20 +697,42 @@ function getUsageHealthState(
 function renderUsageHealthTooltip(
   record: Pick<AccountRecord, "checked_at" | "stale" | "last_error">,
   language: AppLanguage,
+  options: { hasUsageDriver: boolean; hasUsageReadout: boolean },
 ) {
   const checkedAt = formatCheckedAt(record.checked_at, language);
   const errorMessage = maskSensitiveErrorText(record.last_error || "");
   if (!record.checked_at) {
     return <span>{checkedAt}</span>;
   }
+  // A real refresh failure explains the state better than the missing-driver case below.
+  if (record.stale) {
+    return (
+      <div className="account-usage-health-tooltip">
+        <div>{checkedAt}</div>
+        <div>{errorMessage || (language === "en-US" ? "Refresh failed" : "刷新失败")}</div>
+      </div>
+    );
+  }
+  if (!options.hasUsageDriver) {
+    return (
+      <div className="account-usage-health-tooltip">
+        <div>{checkedAt}</div>
+        <div>{language === "en-US" ? "No usage driver matched" : "未匹配用量驱动"}</div>
+      </div>
+    );
+  }
+  if (!options.hasUsageReadout) {
+    return (
+      <div className="account-usage-health-tooltip">
+        <div>{checkedAt}</div>
+        <div>{language === "en-US" ? "Upstream returned no usage figures" : "上游未返回可展示的用量数据"}</div>
+      </div>
+    );
+  }
   return (
     <div className="account-usage-health-tooltip">
       <div>{checkedAt}</div>
-      {record.stale ? (
-        <div>{errorMessage || (language === "en-US" ? "Refresh failed" : "刷新失败")}</div>
-      ) : (
-        <div>{language === "en-US" ? "Refresh healthy" : "刷新正常"}</div>
-      )}
+      <div>{language === "en-US" ? "Refresh healthy" : "刷新正常"}</div>
     </div>
   );
 }
@@ -1151,6 +1176,14 @@ export function AccountsPage({
   const [sharedImportError, setSharedImportError] = useState<string>("");
   const [testResult, setTestResult] = useState<AccountTestResult | null>(null);
   const [testLoading, setTestLoading] = useState(false);
+  const [testModelCatalog, setTestModelCatalog] = useState<AccountModelEntry[]>(
+    [],
+  );
+  const [testModelSource, setTestModelSource] = useState<
+    "upstream" | "cache" | "builtin"
+  >("builtin");
+  const [testModelLoading, setTestModelLoading] = useState(false);
+  const testModelRequestAccountIDRef = useRef<number | null>(null);
   const [luaTestResult, setLuaTestResult] = useState<AccountTestResult | null>(
     null,
   );
@@ -1192,6 +1225,18 @@ export function AccountsPage({
       activationConstraint: { distance: 4 },
     }),
   );
+
+  const testModelOptions = useMemo(
+    () => buildTestModelOptions(testModelCatalog),
+    [testModelCatalog],
+  );
+  const testModelHint = testModelLoading
+    ? t("正在读取上游模型列表…")
+    : testModelSource === "upstream"
+      ? t("模型列表来自上游接口，可手动输入")
+      : testModelSource === "cache"
+        ? t("上游模型列表不可用，已使用本地缓存，可手动输入")
+        : t("上游模型列表不可用，已使用内置建议，可手动输入");
 
   function setAccountsState(
     next: AccountRecord[] | ((items: AccountRecord[]) => AccountRecord[]),
@@ -1635,6 +1680,7 @@ export function AccountsPage({
       credential_ref: "",
       usage_driver: account.usage_driver === "lua" ? account.usage_driver : "",
       skip_tls_verify: account.skip_tls_verify ?? false,
+      use_proxy: account.uses_upstream_proxy ?? false,
     });
     testForm.setFieldsValue({
       model: getDefaultTestModel(account),
@@ -1649,6 +1695,7 @@ export function AccountsPage({
     credential_ref?: string;
     usage_driver?: string;
     skip_tls_verify?: boolean;
+    use_proxy?: boolean;
   }) {
     if (!editingAccount) {
       return;
@@ -1681,7 +1728,13 @@ export function AccountsPage({
       usage_config_json: usageConfigJSON,
       supports_responses: true,
       skip_tls_verify: values.skip_tls_verify ?? false,
+      proxy_mode: values.use_proxy ? "proxy" : "direct",
     });
+    try {
+      await refreshAccountUsage();
+    } catch {
+      // Keep the account save successful when the immediate usage refresh fails.
+    }
     setEditingAccount(null);
     editForm.resetFields();
     await refreshAll();
@@ -1715,11 +1768,55 @@ export function AccountsPage({
     setTestingAccount(account);
     setTestResult(null);
     setTestLoading(false);
+    const cachedModels = readCachedAccountModels(account.id);
+    const fallbackModel = getDefaultTestModel(account);
+    const initialModel = pickPreferredTestModel(
+      cachedModels.map((entry) => entry.id),
+      fallbackModel,
+    );
+    setTestModelCatalog(cachedModels);
+    setTestModelSource(cachedModels.length > 0 ? "cache" : "builtin");
     const payload = {
-      model: getDefaultTestModel(account),
+      model: initialModel,
       input: "ping",
     };
     testForm.setFieldsValue(payload);
+    void loadTestModels(account, initialModel);
+  }
+
+  async function loadTestModels(account: AccountRecord, initialModel: string) {
+    testModelRequestAccountIDRef.current = account.id;
+    setTestModelLoading(true);
+    try {
+      const result = await listAccountModels(account.id);
+      if (testModelRequestAccountIDRef.current !== account.id) {
+        return;
+      }
+      if (!result.ok || result.models.length === 0) {
+        return;
+      }
+      setTestModelCatalog(result.models);
+      setTestModelSource("upstream");
+      writeCachedAccountModels(account.id, result.models);
+      const currentModel = String(testForm.getFieldValue("model") ?? "");
+      if (currentModel.trim() !== initialModel) {
+        // The user already typed a model; keep their choice.
+        return;
+      }
+      const preferred = pickPreferredTestModel(
+        result.models.map((entry) => entry.id),
+        initialModel,
+      );
+      if (preferred !== currentModel) {
+        testForm.setFieldsValue({ model: preferred });
+      }
+    } catch {
+      // Keep the cached or built-in options when the catalog request fails.
+    } finally {
+      if (testModelRequestAccountIDRef.current === account.id) {
+        setTestModelLoading(false);
+      }
+    }
   }
 
   async function handleTest(values: { model: string; input: string }) {
@@ -2136,7 +2233,6 @@ export function AccountsPage({
   ) {
     const actionsVisible = visibleActionAccountID === record.id;
     const sourceIcon = sourceIconMap[getDisplaySourceIcon(record)];
-    const usageHealthState = getUsageHealthState(record);
     const aiGateAccount = isAIGateAccount(record);
     const remoteState = remoteUpstreamsByAccountID[record.id];
     const remoteUpstreams = remoteState?.data;
@@ -2187,6 +2283,9 @@ export function AccountsPage({
         : buildGenericUsageWindows(record, language);
     const usageAmount =
       usageWindows.length === 0 ? buildUsageAmount(record, language) : null;
+    const hasUsageDriver = hasConfiguredUsageDriver(record);
+    const hasUsageReadout = usageWindows.length > 0 || usageAmount !== null;
+    const usageHealthState = getUsageHealthState(record, hasUsageReadout);
     const canToggleRemote = aiGateAccount && Boolean(remoteUpstreams) && !options.actionsDisabled;
     const toggleRemote = () => {
       if (!canToggleRemote) {
@@ -2295,7 +2394,10 @@ export function AccountsPage({
                         maxWidth: 320,
                       },
                     }}
-                    title={renderUsageHealthTooltip(record, language)}
+                    title={renderUsageHealthTooltip(record, language, {
+                      hasUsageDriver,
+                      hasUsageReadout,
+                    })}
                   >
                     <span
                       className={`account-usage-health-dot is-${usageHealthState}`}
@@ -2941,6 +3043,16 @@ export function AccountsPage({
           >
             <Switch aria-label={t("跳过 TLS 证书校验")} />
           </Form.Item>
+          <Form.Item
+            label={t("走代理")}
+            name="use_proxy"
+            valuePropName="checked"
+            extra={t(
+              "开启后该账户走上游代理，地址与凭据沿用设置页的代理配置；关闭则该账户直连。",
+            )}
+          >
+            <Switch aria-label={t("走代理")} />
+          </Form.Item>
           <Form.Item label={t("用量驱动")} name="usage_driver">
             <Select
               options={[
@@ -3071,8 +3183,12 @@ export function AccountsPage({
         open={!!testingAccount}
         title={t("连接测试")}
         onCancel={() => {
+          testModelRequestAccountIDRef.current = null;
           setTestingAccount(null);
           setTestLoading(false);
+          setTestModelLoading(false);
+          setTestModelCatalog([]);
+          setTestModelSource("builtin");
         }}
         footer={null}
         destroyOnHidden
@@ -3087,16 +3203,17 @@ export function AccountsPage({
             label={t("模型")}
             name="model"
             rules={[{ required: true, message: t("请选择模型") }]}
+            extra={testModelHint}
           >
             <AutoComplete
-              options={TEST_MODEL_SUGGESTIONS.map((value) => ({ value }))}
+              options={testModelOptions}
               filterOption={(inputValue, option) =>
                 (option?.value ?? "")
                   .toString()
                   .toLowerCase()
                   .includes(inputValue.toLowerCase())
               }
-              placeholder="gpt-5.4"
+              placeholder="gpt-5.6-sol"
             />
           </Form.Item>
           <Form.Item
@@ -3130,12 +3247,14 @@ export function AccountsPage({
   );
 }
 
+// Last-resort default when the account's own catalog is unavailable. Official Codex accounts follow
+// the catalog bundled with the pinned Codex reference (gpt-5.6 family); relays keep the wider slug.
 function getDefaultTestModel(account: AccountRecord): string {
   if (
     account.auth_mode === "codex_local_import" ||
     account.provider_type === "openai-official"
   ) {
-    return "gpt-5.4";
+    return "gpt-5.6-sol";
   }
   return "gpt-5.4";
 }
