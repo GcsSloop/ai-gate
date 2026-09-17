@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
+	"github.com/gcssloop/codex-router/backend/internal/netproxy"
 	"github.com/gcssloop/codex-router/backend/internal/settings"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 	"github.com/gcssloop/codex-router/backend/internal/usage/normalize"
@@ -175,6 +176,10 @@ func (o *Orchestrator) refreshOne(ctx context.Context, account accounts.Account,
 	usageDriver, err := o.registry.UsageDriverFor(account)
 	if err != nil {
 		return o.markFailure(account.ID, runAt, err)
+	}
+	// Usage drivers share the upstream transport, so carry the account proxy override with the call.
+	if override := netproxy.ProxyOverrideForAccountMode(string(account.ProxyMode)); override != "" {
+		ctx = netproxy.ContextWithProxyOverride(ctx, override)
 	}
 	raw, err := usageDriver.Fetch(ctx, account, credential)
 	if err != nil {

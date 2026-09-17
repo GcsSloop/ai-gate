@@ -174,6 +174,8 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.shareAccount(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/test"):
 		h.testAccount(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/models"):
+		h.listAccountModels(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/usage-lua-test"):
 		h.testLuaUsage(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/accounts/") && strings.HasSuffix(r.URL.Path, "/ppchat-token-logs"):
@@ -197,6 +199,7 @@ type createAccountRequest struct {
 	UsageConfigJSON   string                `json:"usage_config_json"`
 	SupportsResponses *bool                 `json:"supports_responses"`
 	SkipTLSVerify     bool                  `json:"skip_tls_verify"`
+	ProxyMode         string                `json:"proxy_mode"`
 }
 
 type importLocalAuthRequest struct {
@@ -238,6 +241,7 @@ type accountSharePayload struct {
 	UsageConfigJSON   string                `json:"usage_config_json"`
 	SupportsResponses bool                  `json:"supports_responses"`
 	SkipTLSVerify     bool                  `json:"skip_tls_verify"`
+	ProxyMode         string                `json:"proxy_mode"`
 }
 
 type updateAccountRequest struct {
@@ -254,6 +258,7 @@ type updateAccountRequest struct {
 	IsLocked          *bool           `json:"is_locked"`
 	SupportsResponses *bool           `json:"supports_responses"`
 	SkipTLSVerify     *bool           `json:"skip_tls_verify"`
+	ProxyMode         *string         `json:"proxy_mode"`
 }
 
 type accountTestResponse struct {
@@ -266,6 +271,19 @@ type accountTestResponse struct {
 type accountChatTestRequest struct {
 	Model string `json:"model"`
 	Input string `json:"input"`
+}
+
+// accountModelEntry is one selectable model of an account's upstream catalog.
+type accountModelEntry struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+type accountModelsResponse struct {
+	OK      bool                `json:"ok"`
+	Models  []accountModelEntry `json:"models"`
+	Message string              `json:"message,omitempty"`
+	Details string              `json:"details,omitempty"`
 }
 
 type luaUsageScriptRequest struct {
@@ -317,6 +335,7 @@ func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) 
 		Status:            accounts.StatusActive,
 		SupportsResponses: supportsResponses,
 		SkipTLSVerify:     req.SkipTLSVerify,
+		ProxyMode:         accounts.NormalizeProxyMode(req.ProxyMode),
 	})
 
 	err := h.repo.Create(account)
@@ -368,10 +387,13 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 		IsLocked                        bool                  `json:"is_locked"`
 		SupportsResponses               bool                  `json:"supports_responses"`
 		SkipTLSVerify                   bool                  `json:"skip_tls_verify"`
+		ProxyMode                       string                `json:"proxy_mode"`
+		UsesUpstreamProxy               bool                  `json:"uses_upstream_proxy"`
 	}
 
 	response := make([]responseItem, 0, len(accountList))
 	now := time.Now().UTC()
+	globalUpstreamProxyActive := h.upstreamProxyActive()
 	for _, account := range accountList {
 		account = applyBuiltInDriverDefaults(account)
 		item := responseItem{
@@ -387,6 +409,8 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 			IsLocked:             account.IsLocked,
 			SupportsResponses:    account.SupportsResponses,
 			SkipTLSVerify:        account.SkipTLSVerify,
+			ProxyMode:            string(account.ProxyMode),
+			UsesUpstreamProxy:    accountUsesUpstreamProxy(account, globalUpstreamProxyActive),
 			Balance:              0,
 			QuotaRemaining:       0,
 			RPMRemaining:         0,
@@ -797,6 +821,7 @@ func (h *AccountsHandler) shareAccount(w http.ResponseWriter, r *http.Request) {
 			UsageConfigJSON:   account.UsageConfigJSON,
 			SupportsResponses: account.NativeResponsesCapable(),
 			SkipTLSVerify:     account.SkipTLSVerify,
+			ProxyMode:         string(account.ProxyMode),
 		},
 	})
 	if err != nil {
@@ -1020,6 +1045,7 @@ func (h *AccountsHandler) importSharedAccount(w http.ResponseWriter, r *http.Req
 		IsActive:          false,
 		SupportsResponses: envelope.Account.SupportsResponses,
 		SkipTLSVerify:     envelope.Account.SkipTLSVerify,
+		ProxyMode:         accounts.NormalizeProxyMode(envelope.Account.ProxyMode),
 	})
 
 	if err := h.repo.Create(account); err != nil {
@@ -1095,6 +1121,9 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 	if req.SkipTLSVerify != nil {
 		current.SkipTLSVerify = *req.SkipTLSVerify
 	}
+	if req.ProxyMode != nil {
+		current.ProxyMode = accounts.NormalizeProxyMode(*req.ProxyMode)
+	}
 	current = applyBuiltInDriverDefaults(current)
 
 	if err := h.repo.Update(current); err != nil {
@@ -1108,6 +1137,33 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 func (h *AccountsHandler) publishAccountRoutingStateChanged() {
 	if h.stateEvents != nil {
 		h.stateEvents.Publish(AccountRoutingStateChangedTopic)
+	}
+}
+
+// upstreamProxyActive reports whether the global upstream proxy setting resolves to a proxy.
+// System mode is environment-dependent, so it counts as active; the transport still falls back to a
+// direct connection when the host has no system or environment proxy.
+func (h *AccountsHandler) upstreamProxyActive() bool {
+	if h.settings == nil {
+		return true
+	}
+	appSettings, err := h.settings.GetAppSettings()
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(appSettings.UpstreamProxyMode) != settings.UpstreamProxyModeDirect
+}
+
+// accountUsesUpstreamProxy resolves the per-account proxy_mode override against the global setting.
+// Inheriting accounts report what they effectively do, so the UI switch never misrepresents them.
+func accountUsesUpstreamProxy(account accounts.Account, globalActive bool) bool {
+	switch account.ProxyMode {
+	case accounts.ProxyModeProxy:
+		return true
+	case accounts.ProxyModeDirect:
+		return false
+	default:
+		return globalActive
 	}
 }
 
@@ -1181,6 +1237,133 @@ func (h *AccountsHandler) testAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, h.runAccountTest(r.Context(), account, credential, reqBody.Model, reqBody.Input))
+}
+
+// listAccountModels returns the account's upstream model catalog so the connection test can offer
+// real choices instead of a hardcoded list. Failures are reported through the ok flag (HTTP 200)
+// the same way as /test, which lets the client fall back to its locally cached catalog.
+func (h *AccountsHandler) listAccountModels(w http.ResponseWriter, r *http.Request) {
+	id, err := accountIDFromPath(strings.TrimSuffix(strings.TrimSuffix(r.URL.Path, "/models"), "/"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	account, err := h.repo.GetByID(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	credential, err := resolveCredential(account)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if usesOfficialCodexAdapter(account) {
+		if err := ensureOfficialAccountSession(r.Context(), h.client, h.repo, &account); err != nil {
+			writeJSON(w, http.StatusOK, accountModelsResponse{OK: false, Models: []accountModelEntry{}, Message: "官方账户会话刷新失败", Details: err.Error()})
+			return
+		}
+		credential, err = resolveCredential(account)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	models, err := h.fetchAccountModels(r.Context(), account, credential)
+	if err != nil {
+		writeJSON(w, http.StatusOK, accountModelsResponse{OK: false, Models: []accountModelEntry{}, Message: "读取上游模型列表失败", Details: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, accountModelsResponse{OK: true, Models: models})
+}
+
+func (h *AccountsHandler) fetchAccountModels(ctx context.Context, account accounts.Account, credential string) ([]accountModelEntry, error) {
+	req, err := buildAccountModelsRequest(ctx, account, credential)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := doAccountRequest(h.client, req, account)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body := compactErrorText(strings.TrimSpace(string(raw)), 256)
+		if body == "" {
+			return nil, fmt.Errorf("upstream models request failed: %s", resp.Status)
+		}
+		return nil, fmt.Errorf("upstream models request failed: %s: %s", resp.Status, body)
+	}
+
+	return parseAccountModels(resp.Body)
+}
+
+func buildAccountModelsRequest(ctx context.Context, account accounts.Account, credential string) (*http.Request, error) {
+	if usesOfficialCodexAdapter(account) {
+		accountID, err := resolveLocalAccountID(account)
+		if err != nil {
+			return nil, err
+		}
+		return providercodex.NewAdapter(resolveAccountBaseURL(account)).BuildModelsRequest(ctx, credential, accountID, providercodex.ModelsPath())
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(resolveAccountBaseURL(account), "/")+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+credential)
+	return req, nil
+}
+
+// parseAccountModels accepts both catalogs seen in practice: the OpenAI-compatible
+// {"data":[{"id":...}]} list and the Codex {"models":[{"slug":...,"display_name":...}]} catalog.
+func parseAccountModels(body io.Reader) ([]accountModelEntry, error) {
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Models []struct {
+			Slug        string `json:"slug"`
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(body).Decode(&payload); err != nil {
+		return nil, err
+	}
+
+	models := make([]accountModelEntry, 0, len(payload.Data)+len(payload.Models))
+	seen := make(map[string]struct{}, len(payload.Data)+len(payload.Models))
+	appendModel := func(id string, displayName string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		key := strings.ToLower(id)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		models = append(models, accountModelEntry{ID: id, DisplayName: strings.TrimSpace(displayName)})
+	}
+	for _, model := range payload.Data {
+		appendModel(model.ID, "")
+	}
+	for _, model := range payload.Models {
+		id := model.Slug
+		if strings.TrimSpace(id) == "" {
+			id = model.ID
+		}
+		appendModel(id, model.DisplayName)
+	}
+	return models, nil
 }
 
 func (h *AccountsHandler) getLuaUsageScript(w http.ResponseWriter, r *http.Request) {
@@ -1565,11 +1748,10 @@ func (h *AccountsHandler) executeUpstreamTest(req *http.Request, account account
 }
 
 func (h *AccountsHandler) discoverFallbackModel(ctx context.Context, account accounts.Account, credential string, currentModel string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(resolveAccountBaseURL(account), "/")+"/models", nil)
+	req, err := buildAccountModelsRequest(ctx, account, credential)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+credential)
 
 	resp, err := doAccountRequest(h.client, req, account)
 	if err != nil {
@@ -1581,23 +1763,17 @@ func (h *AccountsHandler) discoverFallbackModel(ctx context.Context, account acc
 		return "", fmt.Errorf("upstream models request failed: %s", resp.Status)
 	}
 
-	var payload struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	models, err := parseAccountModels(resp.Body)
+	if err != nil {
 		return "", err
 	}
 
-	available := make(map[string]struct{}, len(payload.Data))
-	for _, model := range payload.Data {
-		if strings.TrimSpace(model.ID) != "" {
-			available[model.ID] = struct{}{}
-		}
+	available := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		available[model.ID] = struct{}{}
 	}
 
-	for _, candidate := range preferredTestModels(account) {
+	for _, candidate := range preferredTestModels() {
 		if candidate == currentModel {
 			continue
 		}
@@ -1605,7 +1781,7 @@ func (h *AccountsHandler) discoverFallbackModel(ctx context.Context, account acc
 			return candidate, nil
 		}
 	}
-	for _, model := range payload.Data {
+	for _, model := range models {
 		if model.ID != "" && model.ID != currentModel {
 			return model.ID, nil
 		}
@@ -1613,18 +1789,22 @@ func (h *AccountsHandler) discoverFallbackModel(ctx context.Context, account acc
 	return "", nil
 }
 
+// defaultTestModelForAccount is the last-resort model for callers that did not pin one. Official
+// Codex accounts follow the catalog bundled with the pinned Codex reference (gpt-5.6 family);
+// relays keep a wider slug. The connection test picks a newer catalog entry when the account
+// offers one.
 func defaultTestModelForAccount(account accounts.Account) string {
 	if account.AuthMode == accounts.AuthModeLocalImport || account.ProviderType == accounts.ProviderOpenAIOfficial {
-		return "gpt-5.4"
+		return "gpt-5.6-sol"
 	}
 	return "gpt-5.4"
 }
 
-func preferredTestModels(account accounts.Account) []string {
-	if account.AuthMode == accounts.AuthModeLocalImport || account.ProviderType == accounts.ProviderOpenAIOfficial {
-		return []string{"gpt-5.4", "gpt-5.2-codex", "gpt-5.1-codex-max", "gpt-4.1"}
-	}
-	return []string{"gpt-5.4", "gpt-5.2-codex", "gpt-5.1-codex-max", "gpt-4.1"}
+// preferredTestModels lists the models tried when the caller did not pin one, newest first.
+// The order tracks the bundled catalog of the pinned Codex reference (v0.154.0), which puts
+// gpt-6-astra, gpt-5.6-sol, gpt-5.6-terra and gpt-5.6-luna ahead of the gpt-5.5 and gpt-5.4 family.
+func preferredTestModels() []string {
+	return []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.2-codex", "gpt-4.1"}
 }
 
 func parseResponsesContent(raw []byte) string {

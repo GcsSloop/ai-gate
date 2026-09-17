@@ -433,3 +433,100 @@ func TestSQLiteRepositoryPersistsSupportsResponses(t *testing.T) {
 		t.Fatalf("SupportsResponses = false, want true")
 	}
 }
+
+func TestSQLiteRepositoryPersistsProxyMode(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "forced-proxy",
+		AuthMode:      accounts.AuthModeAPIKey,
+		CredentialRef: "sk-proxy",
+		BaseURL:       "https://example.test/v1",
+		Status:        accounts.StatusActive,
+		ProxyMode:     accounts.ProxyModeProxy,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "forced-direct",
+		AuthMode:      accounts.AuthModeAPIKey,
+		CredentialRef: "sk-direct",
+		BaseURL:       "https://example.test/v1",
+		Status:        accounts.StatusActive,
+		ProxyMode:     accounts.ProxyModeDirect,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "inherits",
+		AuthMode:      accounts.AuthModeAPIKey,
+		CredentialRef: "sk-inherit",
+		BaseURL:       "https://example.test/v1",
+		Status:        accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	items, err := repo.List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("len(items) = %d, want 3", len(items))
+	}
+	if items[0].ProxyMode != accounts.ProxyModeProxy {
+		t.Fatalf("ProxyMode = %q, want %q", items[0].ProxyMode, accounts.ProxyModeProxy)
+	}
+	if items[1].ProxyMode != accounts.ProxyModeDirect {
+		t.Fatalf("ProxyMode = %q, want %q", items[1].ProxyMode, accounts.ProxyModeDirect)
+	}
+	if items[2].ProxyMode != accounts.ProxyModeInherit {
+		t.Fatalf("ProxyMode = %q, want the inherited empty mode", items[2].ProxyMode)
+	}
+
+	// GetByID must read the same column.
+	single, err := repo.GetByID(items[0].ID)
+	if err != nil {
+		t.Fatalf("GetByID returned error: %v", err)
+	}
+	if single.ProxyMode != accounts.ProxyModeProxy {
+		t.Fatalf("GetByID ProxyMode = %q, want %q", single.ProxyMode, accounts.ProxyModeProxy)
+	}
+
+	// Update must persist a changed mode and normalize unknown values back to inherit.
+	single.ProxyMode = accounts.ProxyModeDirect
+	if err := repo.Update(single); err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+	updated, err := repo.GetByID(single.ID)
+	if err != nil {
+		t.Fatalf("GetByID after Update returned error: %v", err)
+	}
+	if updated.ProxyMode != accounts.ProxyModeDirect {
+		t.Fatalf("ProxyMode after Update = %q, want %q", updated.ProxyMode, accounts.ProxyModeDirect)
+	}
+
+	updated.ProxyMode = accounts.ProxyMode("bogus")
+	if err := repo.Update(updated); err != nil {
+		t.Fatalf("Update with unknown mode returned error: %v", err)
+	}
+	normalized, err := repo.GetByID(updated.ID)
+	if err != nil {
+		t.Fatalf("GetByID after normalize returned error: %v", err)
+	}
+	if normalized.ProxyMode != accounts.ProxyModeInherit {
+		t.Fatalf("ProxyMode = %q, want the unknown value normalized to inherit", normalized.ProxyMode)
+	}
+}

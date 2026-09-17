@@ -23,6 +23,33 @@ vi.mock("../../lib/desktop-shell", () => ({
   isDesktopShell: vi.fn(() => false),
 }));
 
+function createMemoryStorage(): Storage {
+  const store = new Map<string, string>();
+  return {
+    get length() {
+      return store.size;
+    },
+    clear: () => store.clear(),
+    getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+    key: (index: number) => Array.from(store.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      store.set(key, String(value));
+    },
+  } as Storage;
+}
+
+// Node 26 leaves window.localStorage undefined in this jsdom setup, but the account model cache
+// reads it, so give this file a real in-memory Storage to exercise the cache-fallback path.
+if (!window.localStorage) {
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: createMemoryStorage(),
+  });
+}
+
 function renderAccountsPage() {
   return render(
     <ConfigProvider>
@@ -33,9 +60,71 @@ function renderAccountsPage() {
   );
 }
 
+function accountsProxyFetchMock(
+  accountName: string,
+  extra: { uses_upstream_proxy: boolean },
+) {
+  const account = {
+    id: 1,
+    provider_type: "openai-compatible",
+    account_name: accountName,
+    source_icon: "ppchat",
+    auth_mode: "api_key",
+    base_url: "https://code.ppchat.vip/v1",
+    status: "active",
+    is_active: true,
+    priority: 1,
+    balance: 0,
+    quota_remaining: 0,
+    rpm_remaining: 0,
+    tpm_remaining: 0,
+    health_score: 1,
+    recent_error_rate: 0,
+    last_total_tokens: 0,
+    last_input_tokens: 0,
+    last_output_tokens: 0,
+    model_context_window: 0,
+    primary_used_percent: 0,
+    secondary_used_percent: 0,
+    ...extra,
+  };
+  return (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (
+      url === "/ai-router/api/accounts" &&
+      (!init?.method || init.method === "GET")
+    ) {
+      return Promise.resolve(
+        new Response(JSON.stringify([account]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+    if (url === "/ai-router/api/accounts/usage") {
+      return Promise.resolve(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+    if (url === "/ai-router/api/accounts/1" && init?.method === "PUT") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+    return Promise.resolve(new Response(null, { status: 404 }));
+  };
+}
+
 describe("AccountsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     setAPIBase("/ai-router/api");
     window.history.pushState({}, "", "/ai-router/webui/");
     vi.mocked(isDesktopShell).mockReturnValue(false);
@@ -690,6 +779,7 @@ describe("AccountsPage", () => {
             usage_config_json: "",
             supports_responses: true,
             skip_tls_verify: false,
+            proxy_mode: "direct",
           }),
         }),
       );
@@ -1745,6 +1835,12 @@ describe("AccountsPage", () => {
       if (url === "/ai-router/api/accounts/1" && init?.method === "PUT") {
         return Promise.resolve(new Response(null, { status: 200 }));
       }
+      if (
+        url === "/ai-router/api/accounts/usage/refresh" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
       return Promise.resolve(new Response(null, { status: 404 }));
     });
 
@@ -1838,8 +1934,15 @@ describe("AccountsPage", () => {
               '{"script":"managed:vendor_shared","endpoint":"https://usage.example.test/v1/usage"}',
             supports_responses: true,
             skip_tls_verify: false,
+            proxy_mode: "direct",
           }),
         }),
+      );
+    });
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/usage/refresh",
+        expect.objectContaining({ method: "POST" }),
       );
     });
   });
@@ -2659,6 +2762,230 @@ describe("AccountsPage", () => {
       await within(testModal).findByText("远端连通性测试成功"),
     ).toBeInTheDocument();
     expect(within(testModal).getByText("pong")).toBeInTheDocument();
+  });
+
+  it("loads connection-test model choices from the account catalog", async () => {
+    const initialList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "mirror-east",
+        source_icon: "ppchat",
+        auth_mode: "api_key",
+        base_url: "https://code.ppchat.vip/v1",
+        status: "active",
+        is_active: true,
+        priority: 2,
+        balance: 12.5,
+        quota_remaining: 5000,
+        rpm_remaining: 90,
+        tpm_remaining: 80000,
+        health_score: 0.93,
+        recent_error_rate: 0.01,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(
+          new Response(JSON.stringify(initialList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url === "/ai-router/api/accounts/usage") {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url === "/ai-router/api/accounts/1/models") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              ok: true,
+              models: [
+                { id: "gpt-5.6-luna", display_name: "GPT-5.6-Luna" },
+                { id: "gpt-6-astra", display_name: "GPT-6-Astra" },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url === "/ai-router/api/accounts/1/test" && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              ok: true,
+              message: "远端连通性测试成功",
+              content: "pong",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("mirror-east")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "测试-mirror-east" }));
+    const testModal = await screen.findByRole("dialog", { name: "连接测试" });
+
+    await waitFor(() => {
+      expect(within(testModal).getByLabelText("模型")).toHaveValue(
+        "gpt-6-astra",
+      );
+    });
+    expect(
+      within(testModal).getByText("模型列表来自上游接口，可手动输入"),
+    ).toBeInTheDocument();
+
+    const modelField = within(testModal).getByLabelText("模型");
+    fireEvent.mouseDown(modelField.closest(".ant-select-selector") ?? modelField);
+    fireEvent.change(modelField, { target: { value: "gpt-5.6" } });
+
+    // The catalog contributes gpt-5.6-luna/gpt-5.6-terra and the built-in list contributes gpt-5.6-sol.
+    expect(await screen.findByTitle("gpt-5.6-luna")).toBeInTheDocument();
+    expect(screen.getByTitle("gpt-5.6-terra")).toBeInTheDocument();
+    expect(screen.getByTitle("gpt-5.6-sol")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle("gpt-5.6-luna"));
+    await waitFor(() => {
+      expect(modelField).toHaveValue("gpt-5.6-luna");
+    });
+
+    fireEvent.click(within(testModal).getByRole("button", { name: /测\s*试/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1/test",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ model: "gpt-5.6-luna", input: "ping" }),
+        }),
+      );
+    });
+  });
+
+  it("falls back to the cached model list and still allows manual input", async () => {
+    window.localStorage.setItem(
+      "aigate:account-models:v1:1",
+      JSON.stringify({
+        models: [
+          { id: "gpt-5.6-terra", display_name: "GPT-5.6-Terra" },
+          { id: "gpt-5.6-luna" },
+        ],
+      }),
+    );
+
+    const initialList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "mirror-east",
+        source_icon: "ppchat",
+        auth_mode: "api_key",
+        base_url: "https://code.ppchat.vip/v1",
+        status: "active",
+        is_active: true,
+        priority: 2,
+        balance: 12.5,
+        quota_remaining: 5000,
+        rpm_remaining: 90,
+        tpm_remaining: 80000,
+        health_score: 0.93,
+        recent_error_rate: 0.01,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/ai-router/api/accounts" && (!init?.method || init.method === "GET")) {
+        return Promise.resolve(
+          new Response(JSON.stringify(initialList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url === "/ai-router/api/accounts/usage") {
+        return Promise.resolve(
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url === "/ai-router/api/accounts/1/models") {
+        return Promise.resolve(new Response(null, { status: 502 }));
+      }
+      if (url === "/ai-router/api/accounts/1/test" && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              ok: true,
+              message: "远端连通性测试成功",
+              content: "pong",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("mirror-east")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "测试-mirror-east" }));
+    const testModal = await screen.findByRole("dialog", { name: "连接测试" });
+
+    await waitFor(() => {
+      expect(within(testModal).getByLabelText("模型")).toHaveValue(
+        "gpt-5.6-terra",
+      );
+    });
+    expect(
+      within(testModal).getByText(
+        "上游模型列表不可用，已使用本地缓存，可手动输入",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.change(within(testModal).getByLabelText("模型"), {
+      target: { value: "gpt-5.6-custom" },
+    });
+    fireEvent.click(within(testModal).getByRole("button", { name: /测\s*试/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1/test",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ model: "gpt-5.6-custom", input: "ping" }),
+        }),
+      );
+    });
   });
 
   it("renders dual official remaining meters with warning thresholds", async () => {
@@ -3747,6 +4074,196 @@ describe("AccountsPage", () => {
           body: JSON.stringify({ priority: 1 }),
         }),
       );
+    });
+  });
+
+  it("sends proxy_mode=direct when the edit switch is turned off", async () => {
+    const fetchMock = vi.fn(
+      accountsProxyFetchMock("proxy-on", { uses_upstream_proxy: true }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("proxy-on")).toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "编辑-proxy-on" }),
+    );
+    const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
+
+    const proxySwitch = within(editModal).getByRole("switch", {
+      name: "走代理",
+    });
+    expect(proxySwitch).toBeChecked();
+    fireEvent.click(proxySwitch);
+    fireEvent.click(within(editModal).getByRole("button", { name: /保\s*存/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1",
+        expect.objectContaining({
+          method: "PUT",
+          body: expect.stringContaining('"proxy_mode":"direct"'),
+        }),
+      );
+    });
+  });
+
+  it("sends proxy_mode=proxy when the edit switch is turned on", async () => {
+    const fetchMock = vi.fn(
+      accountsProxyFetchMock("proxy-off", { uses_upstream_proxy: false }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("proxy-off")).toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "编辑-proxy-off" }),
+    );
+    const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
+
+    const proxySwitch = within(editModal).getByRole("switch", {
+      name: "走代理",
+    });
+    expect(proxySwitch).not.toBeChecked();
+    fireEvent.click(proxySwitch);
+    fireEvent.click(within(editModal).getByRole("button", { name: /保\s*存/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/ai-router/api/accounts/1",
+        expect.objectContaining({
+          method: "PUT",
+          body: expect.stringContaining('"proxy_mode":"proxy"'),
+        }),
+      );
+    });
+  });
+
+  it("keeps the usage dot neutral and the slot blank when there is no usage readout", async () => {
+    const checkedAt = new Date(Date.now() - 60_000);
+    const accountList = [
+      {
+        id: 1,
+        provider_type: "openai-compatible",
+        account_name: "unmatched-platform",
+        source_icon: "openai",
+        auth_mode: "api_key",
+        base_url: "https://relay.example.test/v1",
+        account_driver: "builtin_api_key",
+        usage_driver: "",
+        usage_config_json: "",
+        status: "active",
+        is_active: true,
+        priority: 2,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+      {
+        id: 2,
+        provider_type: "openai-compatible",
+        account_name: "empty-ppchat",
+        source_icon: "ppchat",
+        auth_mode: "api_key",
+        base_url: "https://code.ppchat.vip/v1",
+        account_driver: "builtin_api_key",
+        usage_driver: "builtin_ppchat",
+        usage_config_json: "",
+        status: "active",
+        is_active: false,
+        priority: 1,
+        balance: 0,
+        quota_remaining: 0,
+        rpm_remaining: 0,
+        tpm_remaining: 0,
+        health_score: 1,
+        recent_error_rate: 0,
+        last_total_tokens: 0,
+        last_input_tokens: 0,
+        last_output_tokens: 0,
+        model_context_window: 0,
+        primary_used_percent: 0,
+        secondary_used_percent: 0,
+      },
+    ];
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url === "/ai-router/api/accounts" &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(accountList), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url === "/ai-router/api/accounts/usage") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify([
+              {
+                account_id: 2,
+                balance: 0,
+                quota_remaining: 0,
+                rpm_remaining: 0,
+                tpm_remaining: 0,
+                health_score: 1,
+                recent_error_rate: 0,
+                last_total_tokens: 0,
+                last_input_tokens: 0,
+                last_output_tokens: 0,
+                model_context_window: 0,
+                primary_used_percent: 0,
+                secondary_used_percent: 0,
+                checked_at: checkedAt.toISOString(),
+                stale: false,
+                last_error: "",
+              },
+            ]),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderAccountsPage();
+
+    expect(await screen.findByText("unmatched-platform")).toBeInTheDocument();
+
+    // No driver matched: the dot must not read as healthy.
+    const unmatchedDot = screen.getByLabelText(
+      "unmatched-platform-usage-health",
+    );
+    expect(unmatchedDot).toHaveClass("is-unknown");
+    expect(unmatchedDot).not.toHaveClass("is-ok");
+
+    // The refresh succeeded but returned nothing renderable: still not green.
+    const emptyDot = screen.getByLabelText("empty-ppchat-usage-health");
+    expect(emptyDot).toHaveClass("is-unknown");
+    expect(emptyDot).not.toHaveClass("is-ok");
+
+    // An account without a usage readout keeps a blank slot instead of placeholder copy.
+    const usageSlots = document.querySelectorAll(".account-usage-mini");
+    expect(usageSlots).toHaveLength(2);
+    usageSlots.forEach((slot) => {
+      expect(slot.textContent?.trim()).toBe("");
     });
   });
 });

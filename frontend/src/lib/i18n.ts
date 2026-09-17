@@ -267,6 +267,8 @@ const enUSMessages: Record<string, string> = {
   "留空表示不修改": "Leave blank to keep the current value",
   "跳过 TLS 证书校验": "Skip TLS certificate verification",
   "仅在该账户上游使用自签名或不合规证书时开启。": "Enable only when this account's upstream uses a self-signed or non-compliant certificate.",
+  "走代理": "Use proxy",
+  "开启后该账户走上游代理，地址与凭据沿用设置页的代理配置；关闭则该账户直连。": "Enable to route this account through the upstream proxy configured on the settings page; disable to connect directly.",
   "连接测试": "Connection test",
   "模型": "Model",
   "请选择模型": "Choose a model",

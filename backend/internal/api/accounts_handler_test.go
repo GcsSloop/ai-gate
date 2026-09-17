@@ -20,6 +20,7 @@ import (
 	"github.com/gcssloop/codex-router/backend/internal/accounts"
 	"github.com/gcssloop/codex-router/backend/internal/api"
 	"github.com/gcssloop/codex-router/backend/internal/auth"
+	"github.com/gcssloop/codex-router/backend/internal/settings"
 	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 	"github.com/gcssloop/codex-router/backend/internal/usage/refresh"
@@ -1787,6 +1788,187 @@ func TestAccountsHandlerTestAccountReturnsUpstreamErrorDetails(t *testing.T) {
 	}
 }
 
+func TestAccountsHandlerListAccountModelsUsesUpstreamCatalog(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
+			t.Fatalf("authorization = %q, want Bearer sk-test", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"gpt-6-astra"},{"id":"gpt-5.6-sol"},{"id":"gpt-6-astra"}]}`)
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "relay",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-test",
+		Status:        accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/accounts/1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts/1/models status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload struct {
+		OK     bool `json:"ok"`
+		Models []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if !payload.OK {
+		t.Fatalf("ok = false, want true; body=%s", rec.Body.String())
+	}
+	if len(payload.Models) != 2 {
+		t.Fatalf("models = %#v, want the two deduplicated upstream ids", payload.Models)
+	}
+	if payload.Models[0].ID != "gpt-6-astra" || payload.Models[1].ID != "gpt-5.6-sol" {
+		t.Fatalf("models = %#v, want upstream order preserved", payload.Models)
+	}
+}
+
+func TestAccountsHandlerListAccountModelsParsesCodexCatalog(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("client_version"); got != "0.154.0" {
+			t.Fatalf("client_version = %q, want 0.154.0", got)
+		}
+		if got := r.Header.Get("ChatGPT-Account-Id"); got != "acct-1" {
+			t.Fatalf("ChatGPT-Account-Id = %q, want acct-1", got)
+		}
+		if got := r.Header.Get("User-Agent"); got != "codex_cli_rs/0.154.0 (ai-gate)" {
+			t.Fatalf("User-Agent = %q, want the tracked Codex client version", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"models":[{"slug":"gpt-6-astra","display_name":"GPT-6-Astra"},{"slug":"gpt-5.6-luna","display_name":"GPT-5.6-Luna"}]}`)
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	if err := repo.Create(accounts.Account{
+		ProviderType: accounts.ProviderOpenAIOfficial,
+		AccountName:  "local-codex",
+		AuthMode:     accounts.AuthModeLocalImport,
+		BaseURL:      upstream.URL + "/v1",
+		CredentialRef: `{
+			"auth_mode":"chatgpt",
+			"tokens":{"access_token":"token-1","account_id":"acct-1"}
+		}`,
+		Status: accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/accounts/1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts/1/models status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload struct {
+		OK     bool `json:"ok"`
+		Models []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if !payload.OK {
+		t.Fatalf("ok = false, want true; body=%s", rec.Body.String())
+	}
+	if len(payload.Models) != 2 || payload.Models[0].ID != "gpt-6-astra" {
+		t.Fatalf("models = %#v, want the Codex catalog slugs", payload.Models)
+	}
+	if payload.Models[0].DisplayName != "GPT-6-Astra" {
+		t.Fatalf("display_name = %q, want GPT-6-Astra", payload.Models[0].DisplayName)
+	}
+}
+
+func TestAccountsHandlerListAccountModelsReportsUpstreamFailure(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"message":"invalid api key"}}`)
+	}))
+	defer upstream.Close()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "relay",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       upstream.URL + "/v1",
+		CredentialRef: "sk-bad",
+		Status:        accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/accounts/1/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts/1/models status = %d, want %d so clients can fall back to their cache", rec.Code, http.StatusOK)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if payload["ok"] != false {
+		t.Fatalf("ok = %v, want false", payload["ok"])
+	}
+	details, _ := payload["details"].(string)
+	if !strings.Contains(details, "401 Unauthorized") {
+		t.Fatalf("details = %q, want the upstream status", details)
+	}
+}
+
 func TestAccountsHandlerImportLocalCodexAuthUpload(t *testing.T) {
 	t.Parallel()
 
@@ -1922,5 +2104,110 @@ func TestAccountsHandlerImportCurrentCodexAuthWaitsForFileReady(t *testing.T) {
 	}
 	if len(listed) != 1 {
 		t.Fatalf("List returned %d accounts, want 1", len(listed))
+	}
+}
+
+func TestAccountsHandlerPersistsPerAccountProxyMode(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	settingsRepo := settings.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(
+		repo,
+		nil,
+		auth.NewOAuthConnector(auth.Config{}),
+		auth.NewStateStore(5*time.Minute),
+		api.WithAccountsSettings(settingsRepo),
+	)
+
+	if err := repo.Create(accounts.Account{
+		ProviderType:  accounts.ProviderOpenAICompatible,
+		AccountName:   "mirror-east",
+		AuthMode:      accounts.AuthModeAPIKey,
+		BaseURL:       "https://example.test/v1",
+		CredentialRef: "sk-test",
+		Status:        accounts.StatusActive,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	// The default app settings use system mode, which counts as an active global proxy, so an
+	// account that has not overridden anything reports that it uses the proxy.
+	assertProxyState(t, handler, "", true)
+
+	update := func(body string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/accounts/1", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT /accounts/1 status = %d, want %d body=%q", rec.Code, http.StatusOK, rec.Body.String())
+		}
+	}
+
+	update(`{"proxy_mode":"direct"}`)
+	assertProxyState(t, handler, string(accounts.ProxyModeDirect), false)
+	stored, err := repo.GetByID(1)
+	if err != nil {
+		t.Fatalf("GetByID returned error: %v", err)
+	}
+	if stored.ProxyMode != accounts.ProxyModeDirect {
+		t.Fatalf("persisted ProxyMode = %q, want %q", stored.ProxyMode, accounts.ProxyModeDirect)
+	}
+
+	update(`{"proxy_mode":"proxy"}`)
+	assertProxyState(t, handler, string(accounts.ProxyModeProxy), true)
+
+	// Unknown values fall back to inheriting the global setting.
+	update(`{"proxy_mode":"bogus"}`)
+	assertProxyState(t, handler, "", true)
+
+	// Switching the global mode to direct flips the inheriting account back to a direct connection.
+	appSettings, err := settingsRepo.GetAppSettings()
+	if err != nil {
+		t.Fatalf("GetAppSettings returned error: %v", err)
+	}
+	appSettings.UpstreamProxyMode = settings.UpstreamProxyModeDirect
+	if err := settingsRepo.SaveAppSettings(appSettings); err != nil {
+		t.Fatalf("SaveAppSettings returned error: %v", err)
+	}
+	assertProxyState(t, handler, "", false)
+
+	// An explicit per-account override still wins over the global direct mode.
+	update(`{"proxy_mode":"proxy"}`)
+	assertProxyState(t, handler, string(accounts.ProxyModeProxy), true)
+}
+
+func assertProxyState(t *testing.T, handler *api.AccountsHandler, wantMode string, wantUsesProxy bool) {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/accounts", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /accounts status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var payload []struct {
+		ProxyMode         string `json:"proxy_mode"`
+		UsesUpstreamProxy bool   `json:"uses_upstream_proxy"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("GET /accounts returned %d accounts, want 1", len(payload))
+	}
+	if payload[0].ProxyMode != wantMode {
+		t.Fatalf("proxy_mode = %q, want %q", payload[0].ProxyMode, wantMode)
+	}
+	if payload[0].UsesUpstreamProxy != wantUsesProxy {
+		t.Fatalf("uses_upstream_proxy = %v, want %v", payload[0].UsesUpstreamProxy, wantUsesProxy)
 	}
 }
