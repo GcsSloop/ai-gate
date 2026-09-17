@@ -213,7 +213,7 @@ func TestResolveProxyAccountOverrideReusesGlobalManualProxy(t *testing.T) {
 	t.Parallel()
 
 	reader := stubSettingsReader{value: settings.AppSettings{
-		UpstreamProxyMode: settings.UpstreamProxyModeDirect,
+		UpstreamProxyMode: settings.UpstreamProxyModeManual,
 		UpstreamProxyURL:  "http://127.0.0.1:7890",
 	}}
 	ctx := netproxy.ContextWithProxyOverride(context.Background(), netproxy.ProxyOverrideProxy)
