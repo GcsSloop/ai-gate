@@ -343,7 +343,7 @@ describe("AccountsPage", () => {
     const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
     expect(await within(editModal).findByText("Lua Usage 配置")).toBeInTheDocument();
     await waitFor(() => {
-      expect(within(editModal).getByDisplayValue(/simple_usage/)).toBeInTheDocument();
+      expect(within(editModal).getByDisplayValue(/ccs_usage/)).toBeInTheDocument();
     });
     expect(within(editModal).queryByDisplayValue(/lab\.sansi\.io/)).not.toBeInTheDocument();
   });
@@ -2056,6 +2056,7 @@ describe("AccountsPage", () => {
       expect(clipboardWriteText).toHaveBeenCalledTimes(1);
     });
     expect(clipboardWriteText.mock.calls[0][0]).toContain("simple_usage");
+    expect(clipboardWriteText.mock.calls[0][0]).toContain("ccs_usage");
     expect(clipboardWriteText.mock.calls[0][0]).toContain("兼容旧入口");
   });
 

@@ -131,6 +131,70 @@ simple_usage({
 	}
 }
 
+func TestRuntimeExecuteCCSCompatibleUsageDSL(t *testing.T) {
+	t.Parallel()
+
+	scriptPath := writeTempScript(t, `
+ccs_usage({
+  request = {
+    url = "{{baseUrl}}/v1/usage",
+    method = "GET",
+    headers = { Authorization = "Bearer {{apiKey}}" }
+  },
+  extractor = function(response)
+    local quota = type(response.quota) == "table" and response.quota or {}
+    local is_valid = response.is_active
+    if is_valid == nil then
+      is_valid = response.isValid
+    end
+    if is_valid == nil then
+      is_valid = true
+    end
+    return {
+      isValid = is_valid,
+      remaining = response.remaining or quota.remaining or response.balance,
+      unit = response.unit or quota.unit or "CNY"
+    }
+  end
+})
+`)
+	runtime := luadrv.NewRuntime(&http.Client{Transport: roundTripFunc(func(req *http.Request) *http.Response {
+		if req.URL.String() != "https://www.codex2api.com/v1/usage" {
+			t.Fatalf("request url = %q, want codex2api usage endpoint", req.URL.String())
+		}
+		if req.Header.Get("Authorization") != "Bearer sk-ccs" {
+			t.Fatalf("Authorization = %q, want CCS-style bearer token", req.Header.Get("Authorization"))
+		}
+		return jsonResponse(`{"quota":{"remaining":49.75,"unit":"CNY"},"isValid":false}`)
+	})}, filepath.Dir(scriptPath))
+	result, err := runtime.Execute(
+		context.Background(),
+		filepath.Base(scriptPath),
+		accounts.Account{BaseURL: "https://www.codex2api.com/v1"},
+		accountdrv.ResolvedCredential{APIKey: "sk-ccs"},
+		map[string]any{},
+	)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result.Limits.Balance == nil || *result.Limits.Balance != 49.75 {
+		t.Fatalf("Balance = %#v, want 49.75", result.Limits.Balance)
+	}
+	if result.Meta["unit"] != "CNY" {
+		t.Fatalf("unit meta = %#v, want CNY", result.Meta["unit"])
+	}
+	if result.Meta["is_valid"] != false {
+		t.Fatalf("is_valid meta = %#v, want false", result.Meta["is_valid"])
+	}
+	summary, ok := result.Display["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("display.summary = %#v, want object", result.Display["summary"])
+	}
+	if summary["label"] != "余额" || summary["value"] != "¥49.75" {
+		t.Fatalf("display.summary = %#v, want formatted CNY balance", summary)
+	}
+}
+
 func TestRuntimeHTTPPostRetriesOptedInRateLimit(t *testing.T) {
 	t.Parallel()
 
