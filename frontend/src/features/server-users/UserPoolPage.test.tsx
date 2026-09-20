@@ -119,7 +119,9 @@ describe("UserPoolPage", () => {
     await waitFor(() => expect(updateServerUpstreamLock).toHaveBeenCalledWith(1, true));
     expect(updateServerRoute).not.toHaveBeenCalledWith({ account_id: 1, locked: true });
     await waitFor(() => expect(getServerUpstreams).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getByRole("button", { name: "切换-账号 A" })).not.toBeDisabled());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "切换-账号 A" })).not.toHaveClass("ant-btn-loading"),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "切换-账号 A" }));
     await waitFor(() => expect(updateServerRoute).toHaveBeenCalledWith({ account_id: 1, locked: false }));
