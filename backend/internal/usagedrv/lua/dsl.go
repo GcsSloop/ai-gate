@@ -192,7 +192,8 @@ local function aigate_join_url(base_url, path)
     return base_url
   end
   if string.match(path, "^https?://") then
-    return path
+    local normalized = string.gsub(path, "(/v1)/v1/", "%1/", 1)
+    return (string.gsub(normalized, "(/v1)/v1$", "%1", 1))
   end
   local base = string.gsub(base_url or "", "/+$", "")
   local suffix = string.gsub(path, "^/+", "")
@@ -297,6 +298,88 @@ local function aigate_execute_simple_usage(adapter, ctx, payload)
   }
 end
 
+local function aigate_format_ccs_balance(remaining, unit)
+  if type(remaining) ~= "number" then
+    return "--"
+  end
+  if unit == "USD" then
+    return "$" .. string.format("%.2f", remaining)
+  end
+  if unit == "CNY" or unit == "RMB" then
+    return "¥" .. string.format("%.2f", remaining)
+  end
+  if unit == nil or unit == "" then
+    return string.format("%.2f", remaining)
+  end
+  return string.format("%.2f %s", remaining, tostring(unit))
+end
+
+local function aigate_execute_ccs_usage(adapter, ctx, payload)
+  if type(adapter.extractor) ~= "function" then
+    return {
+      ok = false,
+      error = {
+        kind = "config_error",
+        message = "ccs_usage requires extractor(response)"
+      }
+    }
+  end
+  local extracted = adapter.extractor(payload)
+  if type(extracted) ~= "table" then
+    return {
+      ok = false,
+      error = {
+        kind = "config_error",
+        message = "ccs_usage extractor(response) must return a table"
+      }
+    }
+  end
+
+  local remaining = extracted.remaining
+  local unit = extracted.unit
+  local is_valid = extracted.isValid
+  if is_valid == nil then
+    is_valid = extracted.is_valid
+  end
+  if is_valid == nil then
+    is_valid = true
+  end
+  if unit == nil then
+    unit = "USD"
+  end
+
+  local formatted = aigate_format_ccs_balance(remaining, unit)
+  local display = adapter.display
+  if display == nil then
+    display = {
+      summary = { label = "余额", value = formatted },
+      detail_stats = {
+        { label = "余额", value = formatted }
+      },
+      detail_items = {
+        { label = "计费单位", value = tostring(unit) }
+      }
+    }
+  else
+    display = aigate_resolve_any(display, payload)
+  end
+
+  return {
+    ok = true,
+    source = adapter.source or "remote",
+    confidence = adapter.confidence or "high",
+    limits = {
+      balance = remaining
+    },
+    meta = {
+      unit = unit,
+      is_valid = is_valid
+    },
+    display = display,
+    payload = payload
+  }
+end
+
 local function aigate_execute_usage_adapter(adapter, ctx)
   local payload = aigate_fetch_json(adapter, ctx)
   if type(payload) == "table" and payload.ok == false and payload.error ~= nil then
@@ -304,6 +387,9 @@ local function aigate_execute_usage_adapter(adapter, ctx)
   end
   if adapter.__aigate_simple_usage == true then
     return aigate_execute_simple_usage(adapter, ctx, payload)
+  end
+  if adapter.__aigate_ccs_usage == true then
+    return aigate_execute_ccs_usage(adapter, ctx, payload)
   end
 
   local extracted = aigate_resolve_map(adapter.extract, payload)
@@ -330,6 +416,11 @@ end
 
 function simple_usage(adapter)
   adapter.__aigate_simple_usage = true
+  usage_adapter(adapter)
+end
+
+function ccs_usage(adapter)
+  adapter.__aigate_ccs_usage = true
   usage_adapter(adapter)
 end
 `

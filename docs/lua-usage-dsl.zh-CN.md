@@ -4,6 +4,42 @@
 
 ## 推荐入口
 
+从 CCS Switch 迁移的余额脚本优先使用 `ccs_usage`。它保留 CCS 的 `request` 和 `extractor(response)` 字段语义，只需将 JavaScript 函数改写为 Lua：
+
+```lua
+ccs_usage({
+  request = {
+    url = "{{baseUrl}}/v1/usage",
+    method = "GET",
+    headers = { Authorization = "Bearer {{apiKey}}" }
+  },
+  extractor = function(response)
+    local quota = type(response.quota) == "table" and response.quota or {}
+    local is_valid = response.is_active
+    if is_valid == nil then
+      is_valid = response.isValid
+    end
+    if is_valid == nil then
+      is_valid = true
+    end
+    return {
+      isValid = is_valid,
+      remaining = response.remaining or quota.remaining or response.balance,
+      unit = response.unit or quota.unit or "USD"
+    }
+  end
+})
+```
+
+`ccs_usage` 自动完成以下标准化映射：
+
+- `remaining` -> `limits.balance`
+- `unit` -> `meta.unit`
+- `isValid` -> `meta.is_valid`
+- `remaining + unit` -> 默认余额摘要和详情展示
+
+`{{baseUrl}}` / `{{base_url}}` 和 `{{apiKey}}` / `{{api_key}}` 均可使用。账户地址已包含 `/v1` 时，模板中的重复 `/v1/v1` 会自动去重。
+
 简单余额接口使用 `simple_usage`：
 
 ```lua

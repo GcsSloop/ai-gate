@@ -191,6 +191,30 @@ function inferLuaScriptKeyFromBaseURL(baseURL: string): string {
   }
 }
 
+const ccsCompatibleLuaTemplate = `ccs_usage({
+  request = {
+    url = "{{baseUrl}}/v1/usage",
+    method = "GET",
+    headers = { Authorization = "Bearer {{apiKey}}" }
+  },
+  extractor = function(response)
+    local quota = type(response.quota) == "table" and response.quota or {}
+    local is_valid = response.is_active
+    if is_valid == nil then
+      is_valid = response.isValid
+    end
+    if is_valid == nil then
+      is_valid = true
+    end
+    return {
+      isValid = is_valid,
+      remaining = response.remaining or quota.remaining or response.balance,
+      unit = response.unit or quota.unit or "USD"
+    }
+  end
+})
+`;
+
 function getKnownLuaDSLTemplate(account: Pick<AccountRecord, "base_url" | "source_icon">): string {
   const baseURL = account.base_url.trim().toLowerCase();
   if (/nodeseek\.in/i.test(baseURL)) {
@@ -288,26 +312,7 @@ function getKnownLuaDSLTemplate(account: Pick<AccountRecord, "base_url" | "sourc
 })
 `;
   }
-  return `simple_usage({
-  get = "/v1/usage",
-  auth = "bearer",
-  remaining = pick("remaining", "quota.remaining", "balance"),
-  unit = pick("unit", "quota.unit", default("USD")),
-  valid = pick("is_active", "isValid", default(true)),
-  display = {
-    summary = { label = "余额", value = function(payload)
-      local remaining = payload.remaining or payload.balance
-      if remaining == nil and type(payload.quota) == "table" then
-        remaining = payload.quota.remaining
-      end
-      if type(remaining) == "number" then
-        return "$" .. string.format("%.2f", remaining)
-      end
-      return "--"
-    end }
-  }
-})
-`;
+  return ccsCompatibleLuaTemplate;
 }
 
 function stringifyLuaConfigDraft(raw: string, scriptKey: string): string {
@@ -349,6 +354,11 @@ ${JSON.stringify(accountContext, null, 2)}
 4. 若第三方 usage 接口需要额外字段，请直接写入 \`usage_config_json\`。
 
 ## Lua DSL 规范（优先使用）
+- CCS Switch 风格脚本优先使用 \`ccs_usage({...})\`。字段语义与 CCS 的 \`request + extractor(response)\` 一致，仅将 JavaScript 函数语法改为 Lua：
+\`\`\`lua
+${ccsCompatibleLuaTemplate.trimEnd()}
+\`\`\`
+- \`ccs_usage\` 会自动把 \`remaining\` 映射为 \`limits.balance\`，把 \`unit\` 和 \`isValid\` 映射为标准 meta，并生成余额展示；无需手写 AI Gate 返回结构。
 - 简单余额接口优先使用 \`simple_usage({...})\`：
 \`\`\`lua
 simple_usage({
