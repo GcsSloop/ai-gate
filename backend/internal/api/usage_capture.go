@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/gcssloop/codex-router/backend/internal/usage"
@@ -17,15 +18,15 @@ type usageSnapshotReader interface {
 }
 
 type responsesUsageCollector struct {
-	snapshot                  usage.Snapshot
-	hasData                   bool
-	outputs                   []map[string]any
-	observedBalance           bool
-	observedQuotaRemaining    bool
-	observedModelContext      bool
-	observedPrimaryWindow     bool
-	observedSecondaryWindow   bool
-	observedProviderSnapshot  bool
+	snapshot                 usage.Snapshot
+	hasData                  bool
+	outputs                  []map[string]any
+	observedBalance          bool
+	observedQuotaRemaining   bool
+	observedModelContext     bool
+	observedPrimaryWindow    bool
+	observedSecondaryWindow  bool
+	observedProviderSnapshot bool
 }
 
 type chatCompletionsUsageCollector struct {
@@ -267,23 +268,33 @@ func (c *responsesUsageCollector) applyRateLimits(limits map[string]any) {
 	if limits == nil {
 		return
 	}
+	// Codex can emit snapshots for additional model-specific limits (for
+	// example, codex_other). Those limits describe the selected model, not the
+	// account's normal 5H/7D window shown and used by AI Gate routing.
+	if limitID, ok := rateLimitID(limits); ok && limitID != "codex" {
+		return
+	}
 	if credits, ok := limits["credits"].(map[string]any); ok {
-		if _, exists := credits["balance"]; exists {
+		if balance, ok := usageNumber(credits["balance"]); ok {
 			c.observedBalance = true
+			c.snapshot.Balance = balance
 		}
-		c.snapshot.Balance = asFloat(credits["balance"])
 	}
 	if primary, ok := limits["primary"].(map[string]any); ok {
-		c.observedPrimaryWindow = true
-		c.snapshot.PrimaryUsedPercent = asFloat(primary["used_percent"])
-		c.snapshot.RPMRemaining = math.Max(100-c.snapshot.PrimaryUsedPercent, 0)
-		c.snapshot.PrimaryResetsAt = asUnixTimePtr(primary["resets_at"])
+		if usedPercent, ok := usagePercent(primary["used_percent"]); ok {
+			c.observedPrimaryWindow = true
+			c.snapshot.PrimaryUsedPercent = usedPercent
+			c.snapshot.RPMRemaining = math.Max(100-usedPercent, 0)
+			c.snapshot.PrimaryResetsAt = asUnixTimePtr(primary["resets_at"])
+		}
 	}
 	if secondary, ok := limits["secondary"].(map[string]any); ok {
-		c.observedSecondaryWindow = true
-		c.snapshot.SecondaryUsedPercent = asFloat(secondary["used_percent"])
-		c.snapshot.TPMRemaining = math.Max(100-c.snapshot.SecondaryUsedPercent, 0)
-		c.snapshot.SecondaryResetsAt = asUnixTimePtr(secondary["resets_at"])
+		if usedPercent, ok := usagePercent(secondary["used_percent"]); ok {
+			c.observedSecondaryWindow = true
+			c.snapshot.SecondaryUsedPercent = usedPercent
+			c.snapshot.TPMRemaining = math.Max(100-usedPercent, 0)
+			c.snapshot.SecondaryResetsAt = asUnixTimePtr(secondary["resets_at"])
+		}
 	}
 	if c.snapshot.PrimaryUsedPercent > 0 || c.snapshot.SecondaryUsedPercent > 0 {
 		primaryRemaining := math.Max(100-c.snapshot.PrimaryUsedPercent, 0)
@@ -291,6 +302,20 @@ func (c *responsesUsageCollector) applyRateLimits(limits map[string]any) {
 		c.snapshot.HealthScore = (primaryRemaining + secondaryRemaining) / 200
 		c.snapshot.ThrottledRecently = primaryRemaining < 10 || secondaryRemaining < 10
 	}
+}
+
+func rateLimitID(limits map[string]any) (string, bool) {
+	for _, key := range []string{"limit_id", "limit_name", "metered_limit_name"} {
+		value, ok := limits[key].(string)
+		if !ok {
+			continue
+		}
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" {
+			return value, true
+		}
+	}
+	return "", false
 }
 
 func unwrapResponsesFrame(frame map[string]any) map[string]any {
@@ -331,6 +356,34 @@ func asFloat(value any) float64 {
 		}
 	}
 	return 0
+}
+
+// usageNumber distinguishes a missing or malformed upstream value from a real
+// zero. The latter is valid for balances and usage percentages and must not be
+// used as a destructive fallback for a partial rate-limit update.
+func usageNumber(value any) (float64, bool) {
+	switch value.(type) {
+	case nil:
+		return 0, false
+	}
+	parsed := asFloat(value)
+	if math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, false
+	}
+	switch value.(type) {
+	case string, json.Number, float64, float32, int, int32, int64:
+		return parsed, true
+	default:
+		return 0, false
+	}
+}
+
+func usagePercent(value any) (float64, bool) {
+	parsed, ok := usageNumber(value)
+	if !ok || parsed < 0 || parsed > 100 {
+		return 0, false
+	}
+	return parsed, true
 }
 
 func asUnixTimePtr(value any) *time.Time {
