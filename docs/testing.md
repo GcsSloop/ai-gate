@@ -55,6 +55,15 @@ recently returned something renderable. An account without a matching driver, or
 one whose refresh returns no usage figures, shows a neutral dot and keeps the
 usage slot blank. Hovering the dot explains which of the two cases applies.
 
+流式 `/responses` 里的 Codex `rate_limits` 允许只携带部分窗口，也可能包含
+模型专用的 `limit_id`（例如 `codex_other`）。采集器只接受主 `codex` 窗口中
+处于 `0..100` 的 `used_percent`；缺失字段会沿用最近一次完整快照，避免把
+临时事件误判成账号额度已用尽。相关回归测试：
+
+```bash
+cd backend && go test ./internal/api -run 'TestResponsesUsageCollector' -count=1
+```
+
 ## Lua usage closed loop
 
 Platform-specific usage adapters are user-managed Lua scripts. Select the Lua
