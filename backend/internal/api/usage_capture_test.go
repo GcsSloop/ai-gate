@@ -1,6 +1,22 @@
 package api
 
-import "testing"
+import (
+	"encoding/json"
+	"math"
+	"testing"
+)
+
+func TestResponsesUsageCollectorIgnoresInvalidUsageNumbers(t *testing.T) {
+	t.Parallel()
+	for _, value := range []any{nil, "invalid", "", json.Number("invalid"), math.NaN(), math.Inf(1), -1.0, 101.0, true} {
+		collector := newResponsesUsageCollector(7)
+		collector.applyRateLimits(map[string]any{"primary": map[string]any{"used_percent": 34.0}})
+		collector.applyRateLimits(map[string]any{"primary": map[string]any{"used_percent": value}})
+		if collector.snapshot.PrimaryUsedPercent != 34 || collector.snapshot.RPMRemaining != 66 {
+			t.Errorf("invalid value %v overwrote primary window: %+v", value, collector.snapshot)
+		}
+	}
+}
 
 func TestResponsesUsageCollectorIgnoresPartialRateLimitWindows(t *testing.T) {
 	t.Parallel()

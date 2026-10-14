@@ -362,20 +362,22 @@ func asFloat(value any) float64 {
 // zero. The latter is valid for balances and usage percentages and must not be
 // used as a destructive fallback for a partial rate-limit update.
 func usageNumber(value any) (float64, bool) {
-	switch value.(type) {
-	case nil:
-		return 0, false
-	}
-	parsed := asFloat(value)
-	if math.IsNaN(parsed) || math.IsInf(parsed, 0) {
-		return 0, false
-	}
-	switch value.(type) {
-	case string, json.Number, float64, float32, int, int32, int64:
-		return parsed, true
+	var parsed float64
+	var err error
+	switch typed := value.(type) {
+	case string:
+		parsed, err = json.Number(typed).Float64()
+	case json.Number:
+		parsed, err = typed.Float64()
+	case float64, float32, int, int32, int64:
+		parsed = asFloat(value)
 	default:
 		return 0, false
 	}
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, false
+	}
+	return parsed, true
 }
 
 func usagePercent(value any) (float64, bool) {
