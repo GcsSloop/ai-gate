@@ -180,10 +180,12 @@ Implemented auth-gated admin console with minimal UI:
 - `/admin/api/users/:hash/skills`
 - `/admin/api/tracked-repos` (CRUD)
 - `/admin/api/rankings/skills`
-- `/admin/api/skills/final` (仓库 skills 数量 + 最终 skills 列表，支持 `refresh=1`)
+- `/admin/api/skills/final` (仓库 skills 数量 + 最终 skills 列表；`refresh=1` 只重建目录缓存，不强制执行外部同步)
 - `/admin/api/scan/start`
 - `/admin/api/scan/step`
 - `/admin/api/scan/status`
+- `/skills/external-sync/start`（管理员鉴权）
+- `/skills/external-sync/status`（管理员鉴权）
 
 Public-only endpoint:
 

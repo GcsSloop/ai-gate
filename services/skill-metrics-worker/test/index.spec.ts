@@ -7,6 +7,49 @@ const noopEnv = {
   SKILL_METRICS_CACHE: {} as KVNamespace,
 };
 
+function createCatalogRebuildEnv() {
+	const future = "2099-01-01T00:00:00.000Z";
+	const syncState = JSON.stringify({
+		repos: { name: "repos", next_run_at: future, retry_count: 0, cursor: 0 },
+		audits: { name: "audits", next_run_at: future, retry_count: 0, cursor: 0 },
+		robots_allowed: true,
+		robots_checked_at: future,
+		updated_at: future,
+	});
+	const result = { results: [] };
+	const mockDb = {
+		prepare: () => ({
+			bind: () => ({
+				all: async () => result,
+				first: async () => null,
+				run: async () => ({ meta: { changes: 0 } }),
+			}),
+			all: async () => result,
+			first: async () => null,
+			run: async () => ({ meta: { changes: 0 } }),
+		}),
+	} as unknown as D1Database;
+	const mockKv = {
+		get: async (key: string) => key === "external:skills-sh:state:v1" ? syncState : null,
+		put: async () => null,
+		delete: async () => null,
+	} as unknown as KVNamespace;
+	return { DB: mockDb, SKILL_METRICS_CACHE: mockKv };
+}
+
+function mockCatalogSourceFetch() {
+	return vi.fn(async (input: RequestInfo | URL) => {
+		const url = String(input);
+		if (url.includes("/api/")) {
+			return new Response(JSON.stringify({ skills: [], total: 0, hasMore: false }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}
+		return new Response("<html></html>", { status: 200, headers: { "content-type": "text/html" } });
+	});
+}
+
 describe("skill metrics worker", () => {
 	it("GET / renders public skills landing page", async () => {
 		const mockKv = {
@@ -112,6 +155,20 @@ describe("skill metrics worker", () => {
 		const ctx = createExecutionContext();
 		const response = await worker.fetch(request, noopEnv, ctx);
 		await waitOnExecutionContext(ctx);
+		expect(response.status).toBe(401);
+		const payload = (await response.json()) as { error: string };
+		expect(payload.error).toBe("unauthorized");
+	});
+
+	it.each([
+		["POST", "/skills/external-sync/start"],
+		["GET", "/skills/external-sync/status"],
+	])("%s %s requires admin auth", async (method, path) => {
+		const request = new Request(`https://example.com${path}`, { method });
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, noopEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
 		expect(response.status).toBe(401);
 		const payload = (await response.json()) as { error: string };
 		expect(payload.error).toBe("unauthorized");
@@ -531,6 +588,46 @@ describe("skill metrics worker", () => {
 			expect(payload.total_items).toBe(1);
 			expect(payload.items.map((item) => item.name)).toEqual(["Alpha Skill"]);
 			expect(fetchMock).not.toHaveBeenCalled();
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it("scheduled rebuild respects the external sync interval", async () => {
+		const originalFetch = globalThis.fetch;
+		const fetchMock = mockCatalogSourceFetch();
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+		try {
+			await worker.scheduled({} as ScheduledController, createCatalogRebuildEnv());
+
+			const urls = fetchMock.mock.calls.map(([input]) => String(input));
+			expect(urls.some((url) => url.includes("/api/audits/"))).toBe(false);
+			expect(urls.filter((url) => url.includes("/api/skills/all-time"))).toHaveLength(1);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it("GET /admin/api/skills/final refresh rebuilds only the catalog cache", async () => {
+		const originalFetch = globalThis.fetch;
+		const fetchMock = mockCatalogSourceFetch();
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+		try {
+			const request = new Request("https://example.com/admin/api/skills/final?refresh=1&offset=0&limit=10", {
+				headers: { authorization: "Bearer admin-token" },
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(
+				request,
+				{ ...createCatalogRebuildEnv(), TRACKED_REPOS_ADMIN_TOKEN: "admin-token" },
+				ctx,
+			);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const urls = fetchMock.mock.calls.map(([input]) => String(input));
+			expect(urls.some((url) => url.includes("/api/audits/"))).toBe(false);
+			expect(urls.filter((url) => url.includes("/api/skills/all-time"))).toHaveLength(1);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
