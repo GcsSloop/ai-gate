@@ -12,7 +12,8 @@ import (
 const (
 	// Codex ChatGPT backend gates newer models behind minimum Codex versions: gpt-5.6-* needs
 	// 0.144.0 and gpt-6-astra needs 0.153.0. Advertise the Codex CLI version this adapter tracks
-	// (references/openai-codex is pinned to the same tag) so those models stay reachable.
+	// as a released compatibility baseline so those models stay reachable. The reference source
+	// may track development main, whose workspace version (0.0.0) is not a client version.
 	codexClientVersion = "0.154.0"
 	codexOriginator    = "codex_cli_rs"
 	codexUserAgent     = "codex_cli_rs/" + codexClientVersion + " (ai-gate)"

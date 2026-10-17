@@ -113,20 +113,24 @@ type proxyState struct {
 }
 
 type proxySession struct {
-	SessionID         string `json:"session_id"`
-	Mode              string `json:"mode"`
-	EnabledConfigHash string `json:"enabled_config_hash"`
-	CreatedAt         string `json:"created_at"`
+	SessionID         string                 `json:"session_id"`
+	Mode              string                 `json:"mode"`
+	EnabledConfigHash string                 `json:"enabled_config_hash"`
+	CreatedAt         string                 `json:"created_at"`
+	SessionMigration  *codexSessionMigration `json:"session_migration,omitempty"`
+	MigrationPending  bool                   `json:"session_migration_pending,omitempty"`
 }
 
 type proxyStatusResponse struct {
-	Enabled        bool   `json:"enabled"`
-	LastBackupID   string `json:"last_backup_id,omitempty"`
-	Mode           string `json:"mode,omitempty"`
-	TargetProvider string `json:"target_provider,omitempty"`
-	ConfigConflict bool   `json:"config_conflict,omitempty"`
-	Host           string `json:"host"`
-	Port           int    `json:"port"`
+	Enabled          bool                          `json:"enabled"`
+	LastBackupID     string                        `json:"last_backup_id,omitempty"`
+	Mode             string                        `json:"mode,omitempty"`
+	TargetProvider   string                        `json:"target_provider,omitempty"`
+	ConfigConflict   bool                          `json:"config_conflict,omitempty"`
+	Host             string                        `json:"host"`
+	Port             int                           `json:"port"`
+	SessionMigration *codexSessionMigrationSummary `json:"session_migration,omitempty"`
+	MigrationPending bool                          `json:"session_migration_pending,omitempty"`
 }
 
 const defaultModelProvider = "openai"
@@ -497,9 +501,33 @@ func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
 		Mode:              "aigate_only",
 		EnabledConfigHash: hashString(updated),
 		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
+		MigrationPending:  true,
 	}
+	backupDir := filepath.Join(aigateDataRoot(home), "codex", "provider-migrations", session.SessionID)
+	session.SessionMigration = &codexSessionMigration{ReloadRequired: true, BackupPath: filepath.Join(backupDir, "manifest.json")}
+	// Publish a pending record before touching history so an interrupted migration
+	// remains visible and disabling the proxy can recover from its journal.
 	if err := writeProxySession(home, session); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, errors.Join(err, writeAtomic(configPath, raw, 0o600)).Error(), http.StatusInternalServerError)
+		return
+	}
+	migration, err := migrateCodexSessionProviders(filepath.Join(home, ".codex"), backupDir)
+	if err == nil {
+		session.SessionMigration = &migration
+		session.MigrationPending = false
+		err = writeProxySession(home, session)
+	}
+	if err != nil {
+		// Keep the pending marker and usable aigate definition if recovery fails.
+		// The status endpoint will report that recovery is still required.
+		recoveryErr := restoreProxySessionProviders(home, session)
+		if recoveryErr == nil {
+			recoveryErr = writeAtomic(configPath, raw, 0o600)
+			if recoveryErr == nil {
+				clearProxySession(home)
+			}
+		}
+		http.Error(w, errors.Join(fmt.Errorf("Codex session migration failed: %w", err), recoveryErr).Error(), http.StatusInternalServerError)
 		return
 	}
 	state, _ := readProxyState(home)
@@ -507,11 +535,23 @@ func (h *SettingsHandler) enableProxy(w http.ResponseWriter) {
 	_ = writeProxyState(home, state)
 
 	writeJSON(w, http.StatusOK, proxyStatusResponse{
-		Enabled: true,
-		Mode:    session.Mode,
-		Host:    h.appSettings().ProxyHost,
-		Port:    h.appSettings().ProxyPort,
+		Enabled:          true,
+		Mode:             session.Mode,
+		Host:             h.appSettings().ProxyHost,
+		Port:             h.appSettings().ProxyPort,
+		SessionMigration: summarizeCodexSessionMigration(session.SessionMigration),
 	})
+}
+
+func restoreProxySessionProviders(home string, session proxySession) error {
+	if session.SessionMigration == nil || session.SessionMigration.BackupPath == "" {
+		return nil
+	}
+	path := session.SessionMigration.BackupPath
+	if _, err := os.Stat(path); session.MigrationPending && errors.Is(err, os.ErrNotExist) {
+		return nil // An interrupted attempt that had not backed up or changed history.
+	}
+	return restoreCodexSessionProviders(filepath.Join(home, ".codex"), path)
 }
 
 func (h *SettingsHandler) disableProxy(w http.ResponseWriter, r *http.Request) {
@@ -537,6 +577,10 @@ func (h *SettingsHandler) disableProxy(w http.ResponseWriter, r *http.Request) {
 	updated, err := detachProxyConfig(string(raw), session)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := restoreProxySessionProviders(home, session); err != nil {
+		http.Error(w, fmt.Sprintf("restore Codex session providers; close Codex and retry: %v", err), http.StatusInternalServerError)
 		return
 	}
 	if err := writeAtomic(configPath, []byte(updated), 0o600); err != nil {
@@ -570,6 +614,8 @@ func (h *SettingsHandler) getProxyStatus(w http.ResponseWriter) {
 	}
 	if sessionErr == nil {
 		resp.Mode = session.Mode
+		resp.SessionMigration = summarizeCodexSessionMigration(session.SessionMigration)
+		resp.MigrationPending = session.MigrationPending
 		configPath := filepath.Join(home, ".codex", "config.toml")
 		if raw, err := os.ReadFile(configPath); err == nil {
 			resp.ConfigConflict = hashBytes(raw) != session.EnabledConfigHash

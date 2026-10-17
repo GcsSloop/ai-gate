@@ -436,6 +436,12 @@ export function App() {
     try {
       const status = checked ? await enableProxy() : await disableProxy();
       setProxyEnabled(status.enabled);
+      if (checked && status.session_migration?.reload_required) {
+        const count = status.session_migration.migrated_sessions;
+        void messageApi.warning(
+          `${count} ${t("个会话已切换 provider；正在运行的会话需要重新加载后生效")}`,
+        );
+      }
       void refreshDesktopTrayState();
     } catch (error) {
       if (!checked && error instanceof Error && error.message.includes("config.toml changed externally")) {
