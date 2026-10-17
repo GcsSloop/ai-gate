@@ -37,6 +37,7 @@ const enUSMessages: Record<string, string> = {
   "代理已关闭": "Proxy disabled",
   "覆盖恢复失败": "Overwrite restore failed",
   "代理已关闭（未覆盖当前配置）": "Proxy disabled (current config preserved)",
+  "个会话已切换 provider；正在运行的会话需要重新加载后生效": "session providers switched; running sessions must be reloaded to take effect",
   "关闭代理失败": "Failed to disable proxy",
   "代理切换失败，请检查配置冲突后重试": "Failed to toggle proxy. Resolve the configuration conflict and try again.",
   "通用": "General",

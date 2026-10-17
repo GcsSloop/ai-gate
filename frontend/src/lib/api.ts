@@ -373,6 +373,12 @@ export type CodexBackupFiles = {
 export type ProxyStatus = {
   enabled: boolean;
   last_backup_id?: string;
+  session_migration?: {
+    migrated_sessions: number;
+    reload_required: boolean;
+    backup_path?: string;
+  };
+  session_migration_pending?: boolean;
   host?: string;
   port?: number;
 };
