@@ -144,6 +144,11 @@ type SkillCatalog = {
   items: CatalogSkillItem[];
 };
 
+type SkillCatalogLoadOptions = {
+  bypassCache?: boolean;
+  ctx?: ExecutionContext;
+};
+
 type SkillsSourceEntry = {
   source: string;
   skill_id: string;
@@ -284,9 +289,11 @@ const EXTERNAL_STATE_CACHE_KEY = "external:skills-sh:state:v1";
 const EXTERNAL_RUN_LOCK_CACHE_KEY = "external:skills-sh:run:lock:v1";
 const EXTERNAL_RUN_STATUS_CACHE_KEY = "external:skills-sh:run:status:v1";
 const EXTERNAL_SKILL_AUDIT_CACHE_TTL_SECONDS = 14 * 24 * 60 * 60;
+const EXTERNAL_SKILL_AUDIT_RENEW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const EXTERNAL_SYNC_RETRY_BACKOFF_MS = [5 * 60 * 1000, 30 * 60 * 1000, 2 * 60 * 60 * 1000];
 const EXTERNAL_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const EXTERNAL_SYNC_JITTER_MAX_MS = 90 * 60 * 1000;
+const EXTERNAL_SYNC_CRON_TOLERANCE_MS = 2 * 60 * 60 * 1000;
 const EXTERNAL_SYNC_PAGE_DELAY_MIN_MS = 200;
 const EXTERNAL_SYNC_PAGE_DELAY_MAX_MS = 800;
 const SKILLS_SH_SKILLS_MAX_PAGES = 300;
@@ -304,7 +311,7 @@ export default {
     try {
       if (request.method === "GET" && url.pathname === "/") {
         const query = (url.searchParams.get("q") ?? "").trim();
-        const catalog = await getSkillCatalog(env, false, ctx);
+        const catalog = await getSkillCatalog(env, { ctx });
         const ranking = await getSkillRanking(env, utcDay(), 24);
         const recommended = ranking.items.map((item) => item.skill_name);
         const skills = filterAndSliceCatalog(catalog, query, 0, 24, recommended);
@@ -349,7 +356,7 @@ export default {
         const force = url.searchParams.get("refresh") === "1";
         const limit = normalizeCatalogLimit(url.searchParams.get("limit"));
         const offset = normalizeCatalogOffset(url.searchParams.get("offset"));
-        const catalog = await getSkillCatalog(env, force, ctx);
+        const catalog = await getSkillCatalog(env, { bypassCache: force, ctx });
         const sliced = sliceCatalog(catalog, offset, limit);
         return json(sliced);
       }
@@ -358,7 +365,7 @@ export default {
         const offset = normalizeCatalogOffset(url.searchParams.get("offset"));
         const query = (url.searchParams.get("q") ?? "").trim();
         const day = normalizeDay(url.searchParams.get("day")) ?? utcDay();
-        const catalog = await getSkillCatalog(env, false, ctx);
+        const catalog = await getSkillCatalog(env, { ctx });
         const ranking = await getSkillRanking(env, day, 10);
         const { items, total, indexedTotal } = filterAndSliceCatalog(catalog, query, offset, limit, ranking.items.map((item) => item.skill_name));
         return json({
@@ -373,10 +380,12 @@ export default {
         });
       }
       if (request.method === "POST" && url.pathname === "/skills/external-sync/start") {
+        await assertAdmin(request, env);
         const result = await triggerExternalSyncBackground(env, ctx);
         return json(result, result.started ? 202 : 200);
       }
       if (request.method === "GET" && url.pathname === "/skills/external-sync/status") {
+        await assertAdmin(request, env);
         const status = await getExternalSyncRunStatus(env);
         return json(status ?? { running: false });
       }
@@ -471,7 +480,7 @@ export default {
         const limit = normalizeCatalogLimit(url.searchParams.get("limit"));
         const offset = normalizeCatalogOffset(url.searchParams.get("offset"));
         const query = trim(url.searchParams.get("q") ?? "", 160);
-        const catalog = await getSkillCatalog(env, force, ctx);
+        const catalog = await getSkillCatalog(env, { bypassCache: force, ctx });
         if (query) {
           const filtered = filterAndSliceCatalog(catalog, query, offset, limit, []);
           return json({
@@ -563,7 +572,7 @@ export default {
     await rebuildDailyRanking(env, day, 200);
     try {
       await runSkillsShEnhancementSync(env);
-      await getSkillCatalog(env, true);
+      await getSkillCatalog(env, { bypassCache: true });
     } catch {
       // keep scheduled task resilient; ranking rebuild should not fail on catalog refresh
     }
@@ -702,7 +711,7 @@ async function getOverviewStats(env: Env, windowDays: number, rankingDay: string
   const active30d = await getUserStats(env, 30);
   const userCurve = await getUserCurve(env, curveDays);
   const repos = await listTrackedRepos(env);
-  const catalog = await getSkillCatalog(env, false, ctx);
+  const catalog = await getSkillCatalog(env, { ctx });
   const history = await getScanHistory(env);
   const durationRows = history.runs.filter((item) => item.duration_ms > 0);
   const avgDuration = durationRows.length
@@ -1062,8 +1071,9 @@ async function deleteTrackedRepo(env: Env, platform: "github" | "gitlab", owner:
   await env.DB.prepare("DELETE FROM tracked_repos WHERE repo_key = ?1").bind(repoKey(platform, owner, name)).run();
 }
 
-async function getSkillCatalog(env: Env, forceRefresh: boolean, ctx?: ExecutionContext): Promise<SkillCatalog> {
-  if (!forceRefresh) {
+async function getSkillCatalog(env: Env, options: SkillCatalogLoadOptions = {}): Promise<SkillCatalog> {
+  const { bypassCache = false, ctx } = options;
+  if (!bypassCache) {
     const raw = await env.SKILL_METRICS_CACHE.get(SKILL_CATALOG_CACHE_KEY);
     if (raw) {
       return JSON.parse(raw) as SkillCatalog;
@@ -1076,13 +1086,6 @@ async function getSkillCatalog(env: Env, forceRefresh: boolean, ctx?: ExecutionC
     }
     ctx?.waitUntil(refreshSkillCatalogCache(env));
     return emptySkillCatalog();
-  }
-  if (forceRefresh) {
-    try {
-      await runSkillsShEnhancementSync(env, { force: true });
-    } catch {
-      // keep catalog rebuild resilient if external enhancement sync fails
-    }
   }
   const repos = await listTrackedRepos(env);
   const repoStars = await readCachedRepoStars(env);
@@ -1098,7 +1101,7 @@ async function refreshSkillCatalogCache(env: Env): Promise<void> {
   }
   await env.SKILL_METRICS_CACHE.put(SKILL_CATALOG_REFRESH_LOCK_CACHE_KEY, new Date().toISOString(), { expirationTtl: 10 * 60 });
   try {
-    await getSkillCatalog(env, true);
+    await getSkillCatalog(env, { bypassCache: true });
   } catch {
     // Read endpoints must stay responsive even if the external catalog source is slow or unavailable.
   } finally {
@@ -1374,7 +1377,7 @@ async function runExternalSyncNow(
   state.updated_at = new Date().toISOString();
   await saveSkillsShSyncState(env, state);
   await onProgress?.("refresh_catalog");
-  const catalog = await getSkillCatalog(env, true);
+  const catalog = await getSkillCatalog(env, { bypassCache: true });
   const tracked = await env.DB.prepare("SELECT COUNT(*) AS total FROM tracked_repos").first<{ total?: number }>();
   const mapped = await env.DB.prepare("SELECT COUNT(*) AS total FROM skills_external_map").first<{ total?: number }>();
   const auditSkills = await env.DB.prepare("SELECT COUNT(DISTINCT skill_key) AS total FROM skills_audit_cache").first<{ total?: number }>();
@@ -1761,29 +1764,19 @@ async function fetchSkillsSourceEntries(): Promise<SkillsSourceEntry[]> {
   return entries;
 }
 
-async function runSkillsShEnhancementSync(env: Env, options?: { force?: boolean }): Promise<void> {
+async function runSkillsShEnhancementSync(env: Env): Promise<void> {
   let state = await loadSkillsShSyncState(env);
-  const fastMode = Boolean(options?.force);
-  state = await ensureSkillsShRobotsState(env, state, Boolean(options?.force));
+  state = await ensureSkillsShRobotsState(env, state);
   if (state.robots_allowed === false) {
     await saveSkillsShSyncState(env, state);
     return;
   }
-  const now = Date.now();
-  if (fastMode) {
-    if (options?.force || Date.parse(state.audits.next_run_at) <= now) {
-      state = await runSkillsShAuditSyncTask(env, state, fastMode);
-    }
-    if (options?.force || Date.parse(state.repos.next_run_at) <= now) {
-      state = await runSkillsShRepoSyncTask(env, state, fastMode);
-    }
-  } else {
-    if (options?.force || Date.parse(state.repos.next_run_at) <= now) {
-      state = await runSkillsShRepoSyncTask(env, state, fastMode);
-    }
-    if (options?.force || Date.parse(state.audits.next_run_at) <= now) {
-      state = await runSkillsShAuditSyncTask(env, state, fastMode);
-    }
+  const dueBefore = Date.now() + EXTERNAL_SYNC_CRON_TOLERANCE_MS;
+  if (Date.parse(state.repos.next_run_at) <= dueBefore) {
+    state = await runSkillsShRepoSyncTask(env, state);
+  }
+  if (Date.parse(state.audits.next_run_at) <= dueBefore) {
+    state = await runSkillsShAuditSyncTask(env, state);
   }
   state.updated_at = new Date().toISOString();
   await saveSkillsShSyncState(env, state);
@@ -2207,6 +2200,7 @@ function inferSnykStatus(tokens: string[]): "pass" | "warn" | "fail" | "info" {
 async function upsertSkillsShAuditEntries(env: Env, entries: SkillsShAuditEntry[]): Promise<void> {
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + EXTERNAL_SKILL_AUDIT_CACHE_TTL_SECONDS * 1000).toISOString();
+  const renewBefore = new Date(Date.now() + EXTERNAL_SKILL_AUDIT_RENEW_WINDOW_MS).toISOString();
   for (const entry of entries) {
     for (const provider of entry.providers) {
       const skillKey = `${entry.source.toLowerCase()}:${entry.skill_id.toLowerCase()}`;
@@ -2222,7 +2216,13 @@ async function upsertSkillsShAuditEntries(env: Env, entries: SkillsShAuditEntry[
             label=excluded.label,
             source_url=excluded.source_url,
             fetched_at=excluded.fetched_at,
-            expires_at=excluded.expires_at`,
+            expires_at=excluded.expires_at
+          WHERE skills_audit_cache.source_repo IS NOT excluded.source_repo
+             OR skills_audit_cache.source_skill_id IS NOT excluded.source_skill_id
+             OR skills_audit_cache.status IS NOT excluded.status
+             OR skills_audit_cache.label IS NOT excluded.label
+             OR skills_audit_cache.source_url IS NOT excluded.source_url
+             OR skills_audit_cache.expires_at < ?10`,
         )
         .bind(
           skillKey,
@@ -2234,6 +2234,7 @@ async function upsertSkillsShAuditEntries(env: Env, entries: SkillsShAuditEntry[
           provider.url,
           now,
           expiresAt,
+          renewBefore,
         )
         .run();
     }
@@ -2259,7 +2260,13 @@ async function upsertSkillsShExternalMappings(env: Env, entries: SkillsShAuditEn
           skills_sh_slug=excluded.skills_sh_slug,
           skills_sh_url=excluded.skills_sh_url,
           match_confidence=excluded.match_confidence,
-          matched_at=excluded.matched_at`,
+          matched_at=excluded.matched_at
+        WHERE skills_external_map.source_repo IS NOT excluded.source_repo
+           OR skills_external_map.source_path IS NOT excluded.source_path
+           OR skills_external_map.source_name_normalized IS NOT excluded.source_name_normalized
+           OR skills_external_map.skills_sh_slug IS NOT excluded.skills_sh_slug
+           OR skills_external_map.skills_sh_url IS NOT excluded.skills_sh_url
+           OR skills_external_map.match_confidence IS NOT excluded.match_confidence`,
       )
       .bind(
         exactSkillKey,

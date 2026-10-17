@@ -15,9 +15,10 @@ Cloudflare Worker service for lightweight skill install telemetry and ranking.
 - `GET /admin/api/stats/users`: total users and recent 1-day active users (auth required).
 - `GET /admin/api/users`: user list with install counts (auth required).
 - `GET /admin/api/users/:hash/skills`: per-user installed skills (auth required).
-- `GET /admin/api/skills/final`: tracked-repo skill counts + final skill list (auth required, supports `?refresh=1`).
+- `GET /admin/api/skills/final`: tracked-repo skill counts + final skill list (auth required, supports `?refresh=1` to rebuild the catalog cache without forcing an external sync).
 - `POST /admin/api/scan/start|step`, `GET /admin/api/scan/status`: manual scan and progress for repo-level scanning.
-- `scheduled()` cron trigger: rebuilds daily ranking and writes KV snapshots.
+- `POST /skills/external-sync/start`, `GET /skills/external-sync/status`: run and inspect a full external sync (admin auth required).
+- `scheduled()` cron trigger: runs once per day, rebuilds the daily ranking, runs due external sync tasks, and refreshes KV catalog snapshots.
 
 ## Resource Bindings
 
