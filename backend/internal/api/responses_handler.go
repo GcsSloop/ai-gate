@@ -158,8 +158,12 @@ func (h *ResponsesHandler) handleResponses(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *ResponsesHandler) handleResponsesTransparentSubpath(w http.ResponseWriter, r *http.Request) {
-	account, err := h.selectThinGatewayAccount(r.Context())
+	account, err := h.selectThinGatewayAccount(r.Context(), true)
 	if err != nil {
+		if errors.Is(err, errQuotaProtected) {
+			writeQuotaProtected(w)
+			return
+		}
 		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
 			writeThinGatewayUnsupported(w, err.Error())
 			return
@@ -195,6 +199,9 @@ func (h *ResponsesHandler) handleResponsesTransparentSubpath(w http.ResponseWrit
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < http.StatusBadRequest {
+		h.recordSuccessfulThinRoute(r.Context(), gatewayStickyScope(r.Context(), "responses"), account)
+	}
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
@@ -217,6 +224,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 	var fallbackStatusCode int
 	var fallbackHeaders http.Header
 	var fallbackBody []byte
+	quotaProtected := false
 
 	for index, candidate := range candidates {
 		maxAttempts := 1
@@ -230,6 +238,7 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 				break
 			}
 			if reason, ok := h.skipReasonForThinCandidate(candidate); ok {
+				quotaProtected = quotaProtected || reason == "quota_protected"
 				logThinGatewayCandidate(account, "skip", reason)
 				h.invalidateSticky(stickyScope, account.ID)
 				cooldownUntil := computeThinCandidateCooldownUntil(candidate.Snapshot, reason)
@@ -421,6 +430,10 @@ func (h *ResponsesHandler) handleResponsesThin(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if errors.Is(lastErr, errThinGatewayNoHealthyCandidate) || errors.Is(lastErr, errThinGatewayRequiresResponsesAccount) {
+		if quotaProtected {
+			writeQuotaProtected(w)
+			return
+		}
 		writeThinGatewayUnsupported(w, lastErr.Error())
 		return
 	}
@@ -509,7 +522,28 @@ func shouldRetryOfficialResponsesTransportError(account accounts.Account, err er
 	return usesOfficialCodexAdapter(account) && errors.Is(err, io.EOF)
 }
 
-func (h *ResponsesHandler) selectThinGatewayAccount(ctx context.Context) (accounts.Account, error) {
+func (h *ResponsesHandler) selectThinGatewayAccount(ctx context.Context, protectQuota bool) (accounts.Account, error) {
+	if protectQuota {
+		candidates, err := h.orderedThinGatewayCandidates(ctx)
+		if err != nil {
+			return accounts.Account{}, err
+		}
+		quotaProtected := false
+		for _, candidate := range candidates {
+			if reason, skip := h.skipReasonForThinCandidate(candidate); skip {
+				quotaProtected = quotaProtected || reason == "quota_protected"
+				h.invalidateSticky(gatewayStickyScope(ctx, "responses"), candidate.Account.ID)
+				continue
+			}
+			if candidate.Account.NativeResponsesCapable() {
+				return candidate.Account, nil
+			}
+		}
+		if quotaProtected {
+			return accounts.Account{}, errQuotaProtected
+		}
+		return accounts.Account{}, errThinGatewayRequiresResponsesAccount
+	}
 	accountList, err := h.accounts.List()
 	if err != nil {
 		return accounts.Account{}, err
@@ -600,6 +634,9 @@ func (h *ResponsesHandler) orderedThinGatewayCandidates(ctx context.Context) ([]
 				return nil, errThinGatewayActiveAccountUnsupported
 			}
 			logThinGatewayCandidate(candidate.Account, "select", "active_account")
+			if routing.QuotaProtected(candidate, time.Now().UTC()) {
+				return orderCandidatesActiveFirst(candidates), nil
+			}
 			return []routing.Candidate{candidate}, nil
 		}
 	}
@@ -837,7 +874,7 @@ func (h *ResponsesHandler) handleModelDetail(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *ResponsesHandler) handleModelsPassthrough(w http.ResponseWriter, r *http.Request, endpointPath string) {
-	account, err := h.selectThinGatewayAccount(r.Context())
+	account, err := h.selectThinGatewayAccount(r.Context(), false)
 	if err != nil {
 		if errors.Is(err, errThinGatewayRequiresResponsesAccount) || errors.Is(err, errThinGatewayActiveAccountUnsupported) {
 			writeThinGatewayUnsupported(w, err.Error())
@@ -936,6 +973,9 @@ func (h *ResponsesHandler) skipReasonForThinCandidate(candidate routing.Candidat
 	}
 	if !routing.CanAttemptCandidate(candidate) {
 		return "account_locked", true
+	}
+	if routing.QuotaProtected(candidate, now) {
+		return "quota_protected", true
 	}
 	if candidate.Account.RoutingCooldownActive(now) && !candidate.Account.IsActive {
 		return "routing_cooldown", true

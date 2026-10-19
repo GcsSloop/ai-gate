@@ -41,15 +41,21 @@ func (s *AsyncUsageStore) GetLatest(accountID int64) (usage.Snapshot, error) {
 	s.cacheMu.RLock()
 	snapshot, ok := s.cache[accountID]
 	s.cacheMu.RUnlock()
-	if ok {
-		return snapshot, nil
-	}
-	snapshot, err := s.base.GetLatest(accountID)
+	// Background refreshes write directly to the base repository. Routing must
+	// observe them so a cached window cannot hide a newly protected quota.
+	latest, err := s.base.GetLatest(accountID)
 	if err != nil {
+		if ok {
+			return snapshot, nil
+		}
 		return usage.Snapshot{}, err
 	}
-	s.rememberSnapshot(snapshot)
-	return snapshot, nil
+	// A Save may still be queued; retain its newer snapshot until it is flushed.
+	if ok && snapshot.CheckedAt.After(latest.CheckedAt) {
+		return snapshot, nil
+	}
+	s.rememberSnapshot(latest)
+	return latest, nil
 }
 
 func (s *AsyncUsageStore) Save(snapshot usage.Snapshot) error {
@@ -125,6 +131,8 @@ func (s *AsyncUsageStore) rememberSnapshot(snapshot usage.Snapshot) {
 		return
 	}
 	s.cacheMu.Lock()
-	s.cache[snapshot.AccountID] = snapshot
+	if cached, ok := s.cache[snapshot.AccountID]; !ok || !cached.CheckedAt.After(snapshot.CheckedAt) {
+		s.cache[snapshot.AccountID] = snapshot
+	}
 	s.cacheMu.Unlock()
 }

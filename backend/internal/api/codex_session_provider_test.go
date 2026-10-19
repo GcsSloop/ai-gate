@@ -334,3 +334,59 @@ func TestCodexSessionProviderRestorePreservesExternalProviderChange(t *testing.T
 		t.Fatal("external provider overwritten")
 	}
 }
+
+func TestCodexSessionProviderMigrationSkipsEmptyRollout(t *testing.T) {
+	home, db := sessionProviderFixture(t)
+	seedProviderSession(t, home, db, "official", "openai", false, false)
+	empty := filepath.Join(home, "sessions", "2026", "10", "09", "rollout-2026-10-09T09-56-40-01a11e60-7774-7e10-938b-6ee1cbec1c96.jsonl")
+	if err := os.MkdirAll(filepath.Dir(empty), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := migrateCodexSessionProviders(home, filepath.Join(t.TempDir(), "backup"))
+	if err != nil {
+		t.Fatalf("empty rollout blocked migration: %v", err)
+	}
+	if result.MigratedSessions != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	assertStoredProvider(t, db, "official", "aigate")
+	info, err := os.Stat(empty)
+	if err != nil || info.Size() != 0 {
+		t.Fatalf("empty rollout changed: %+v, %v", info, err)
+	}
+	if err := restoreCodexSessionProviders(home, result.BackupPath); err != nil {
+		t.Fatal(err)
+	}
+	assertStoredProvider(t, db, "official", "openai")
+}
+
+func TestCodexSessionProviderMigrationAcceptsHeaderWithoutNewline(t *testing.T) {
+	home, db := sessionProviderFixture(t)
+	path := seedProviderSession(t, home, db, "official", "openai", false, false)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := data[:strings.IndexByte(string(data), '\n')]
+	if err := os.WriteFile(path, header, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := migrateCodexSessionProviders(home, filepath.Join(t.TempDir(), "backup"))
+	if err != nil {
+		t.Fatalf("header without newline blocked migration: %v", err)
+	}
+	assertStoredProvider(t, db, "official", "aigate")
+	if got, _ := os.ReadFile(path); string(got) != strings.Replace(string(header), `"model_provider":"openai"`, `"model_provider":"aigate"`, 1) {
+		t.Fatalf("unexpected rewrite: %s", got)
+	}
+	if err := restoreCodexSessionProviders(home, result.BackupPath); err != nil {
+		t.Fatal(err)
+	}
+	assertStoredProvider(t, db, "official", "openai")
+	if got, _ := os.ReadFile(path); string(got) != string(header) {
+		t.Fatalf("header changed on restore: %s", got)
+	}
+}

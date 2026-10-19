@@ -57,6 +57,10 @@ cd backend && go test ./internal/api -run 'TestSettingsHandler(Proxy|UpdatingPro
 `SQL logic error: out of memory (1)`，不能据此判断系统内存不足。
 数据库连接在读取会话前主动验证，继续保留 `mode=rw`，避免意外创建 Codex 数据库。
 
+2026-10-19 起，Codex 创建后未写入任何内容的空 rollout 文件会被跳过，不再让整批
+迁移以 `read Codex session header: EOF` 失败；首行 JSON 完整但缺少结尾换行时仍按
+有效 header 迁移，只有内容损坏的 header 才会中止并回滚。
+
 定向回归覆盖盘符、中文、空格、URI 特殊字符、不创建缺失数据库，以及代理迁移和恢复：
 
 ```bash
@@ -85,6 +89,28 @@ override it from the account edit dialog (`走代理`):
 
 ```bash
 curl http://127.0.0.1:<port>/ai-router/api/accounts | jq '.[] | {account_name, proxy_mode, uses_upstream_proxy}'
+```
+
+## 官方账户额度保护
+
+2026-10-19 新增账号级 `quota_protection_enabled`，官方账户创建、授权、导入及旧数据库迁移后默认开启。
+编辑弹窗在“走代理”后显示“额度保护”，第三方账户不显示，路由也不会对第三方应用此阈值。
+`PUT /accounts/<id>` 可以传 `{"quota_protection_enabled":false}` 手动关闭；未传字段的更新保留原值。
+复制、分享、导入及数据库备份保留设置，旧分享缺少字段时官方账户默认开启。
+
+任一官方窗口的 `used_percent >= 97` 时，AI Gate 在转发前跳过该账户并尝试其他可用账户，
+即使全局自动故障转移关闭也触发这次保护切换。覆盖流式及非流式 `/responses`、
+`/chat/completions` 和 Responses 子路径；成功后沿用活动账户或服务端用户粘性路由的切换机制。
+保护不写入持久冷却状态，窗口重置或关闭保护后即可恢复候选资格。
+没有替代账户时返回 HTTP 429、`error.code=quota_protected`，流式请求也会立即结束。
+
+判断使用上游报告的最后一次额度快照。未知额度允许请求；已经到达重置时间的旧窗口不再拦截。
+保护在新请求开始前执行，已经转发的请求和并发中的请求仍可能继续消耗额度，因此不能保证实际剩余恰好为 3%。
+
+```bash
+cd backend && go test ./internal/routing ./internal/api -run 'TestQuotaProtection' -count=1
+cd backend && go test ./internal/accounts ./internal/store/sqlite -run 'TestSQLiteRepositoryCreateAndListAccounts|TestOpenEnablesQuotaProtectionForExistingAccounts' -count=1
+npm --prefix frontend test -- src/features/accounts/AccountsPage.test.tsx -t 'quota protection|proxy_mode='
 ```
 
 ## Usage availability signals

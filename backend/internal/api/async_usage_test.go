@@ -1,11 +1,34 @@
 package api
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
+	sqlitestore "github.com/gcssloop/codex-router/backend/internal/store/sqlite"
 	"github.com/gcssloop/codex-router/backend/internal/usage"
 )
+
+func TestAsyncUsageStoreObservesRefreshedQuota(t *testing.T) {
+	db, err := sqlitestore.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	base := usage.NewSQLiteRepository(db.DB())
+	store := NewAsyncUsageStore(base, AsyncUsageStoreOptions{})
+	defer store.Close()
+	now := time.Now().UTC()
+	for i, used := range []float64{95, 97, 0} {
+		if err := base.Save(usage.Snapshot{AccountID: 1, PrimaryUsedPercent: used, CheckedAt: now.Add(time.Duration(i) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := store.GetLatest(1)
+		if err != nil || got.PrimaryUsedPercent != used {
+			t.Fatalf("fresh usage = %+v, %v; want %v%% used", got, err, used)
+		}
+	}
+}
 
 type slowUsageStore struct {
 	saveEventDelay time.Duration

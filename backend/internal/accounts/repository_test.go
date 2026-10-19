@@ -25,12 +25,13 @@ func TestSQLiteRepositoryCreateAndListAccounts(t *testing.T) {
 	cooldownUntil := time.Now().Add(3 * time.Hour).UTC().Truncate(time.Second)
 
 	official := accounts.Account{
-		ProviderType:  accounts.ProviderOpenAIOfficial,
-		AccountName:   "official-primary",
-		AuthMode:      accounts.AuthModeOAuth,
-		Status:        accounts.StatusActive,
-		CredentialRef: "cred-1",
-		Priority:      10,
+		ProviderType:           accounts.ProviderOpenAIOfficial,
+		AccountName:            "official-primary",
+		AuthMode:               accounts.AuthModeOAuth,
+		Status:                 accounts.StatusActive,
+		CredentialRef:          "cred-1",
+		QuotaProtectionEnabled: true,
+		Priority:               10,
 	}
 	if err := repo.Create(official); err != nil {
 		t.Fatalf("Create(official) returned error: %v", err)
@@ -62,6 +63,21 @@ func TestSQLiteRepositoryCreateAndListAccounts(t *testing.T) {
 
 	if got[0].AuthMode != accounts.AuthModeOAuth {
 		t.Fatalf("got[0].AuthMode = %q, want %q", got[0].AuthMode, accounts.AuthModeOAuth)
+	}
+	if !got[0].QuotaProtectionEnabled {
+		t.Fatal("List lost enabled quota protection")
+	}
+	updated, err := repo.GetByID(got[0].ID)
+	if err != nil || !updated.QuotaProtectionEnabled {
+		t.Fatalf("GetByID quota protection: %+v, %v", updated, err)
+	}
+	updated.QuotaProtectionEnabled = false
+	if err := repo.Update(updated); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = repo.GetByID(updated.ID)
+	if err != nil || updated.QuotaProtectionEnabled {
+		t.Fatalf("Update lost disabled quota protection: %+v, %v", updated, err)
 	}
 	if got[1].Status != accounts.StatusActive {
 		t.Fatalf("got[1].Status = %q, want %q", got[1].Status, accounts.StatusActive)

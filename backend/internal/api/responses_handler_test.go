@@ -1901,7 +1901,7 @@ func TestResponsesHandlerThinModeFailsOverAfterThirdPartyForbiddenQuotaError(t *
 	}
 }
 
-func TestResponsesHandlerThinModeAttemptsOfficialWithLowWindowRemaining(t *testing.T) {
+func TestResponsesHandlerThinModeAttemptsOfficialWithQuotaProtectionDisabled(t *testing.T) {
 	t.Parallel()
 
 	primaryCalls := 0
@@ -1929,10 +1929,11 @@ func TestResponsesHandlerThinModeAttemptsOfficialWithLowWindowRemaining(t *testi
 	accountRepo := accounts.NewSQLiteRepository(store.DB())
 	for _, account := range []accounts.Account{
 		{
-			ProviderType: accounts.ProviderOpenAIOfficial,
-			AccountName:  "official-low-remaining",
-			AuthMode:     accounts.AuthModeLocalImport,
-			BaseURL:      primary.URL + "/backend-api/codex",
+			ProviderType:           accounts.ProviderOpenAIOfficial,
+			AccountName:            "official-low-remaining",
+			QuotaProtectionEnabled: false,
+			AuthMode:               accounts.AuthModeLocalImport,
+			BaseURL:                primary.URL + "/backend-api/codex",
 			CredentialRef: `{
 				"auth_mode":"chatgpt",
 				"tokens":{"access_token":"token-primary","account_id":"acct-primary"}
