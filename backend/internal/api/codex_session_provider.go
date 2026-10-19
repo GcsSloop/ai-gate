@@ -84,18 +84,33 @@ func openCodexStateDatabase(path string) (*sql.DB, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("Codex state database is not a regular file")
 	}
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	db, err := sql.Open("sqlite", codexStateDatabaseDSN(path))
+	if err != nil {
+		return nil, fmt.Errorf("open Codex state database: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	// sql.Open is lazy; report connection failures before querying thread metadata.
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open Codex state database: %w", err)
+	}
+	return db, nil
+}
+
+func codexStateDatabaseDSN(path string) string {
+	path = filepath.ToSlash(path)
+	// A drive path needs a leading slash: file:///C:/..., not file://C:/... .
+	// Otherwise SQLite treats the drive letter as an unsupported URI authority.
+	if len(path) >= 3 && path[1] == ':' && path[2] == '/' {
+		path = "/" + path
+	}
+	u := url.URL{Scheme: "file", Path: path}
 	q := u.Query()
 	q.Set("mode", "rw") // Never create or initialize a Codex-owned database.
 	q.Set("_pragma", "busy_timeout(1500)")
 	q.Set("_txlock", "immediate")
 	u.RawQuery = q.Encode()
-	db, err := sql.Open("sqlite", u.String())
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	return db, nil
+	return u.String()
 }
 
 func jsonFieldSpan(raw []byte, name string) (int, []byte, error) {
