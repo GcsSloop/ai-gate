@@ -140,10 +140,23 @@ func jsonFieldSpan(raw []byte, name string) (int, []byte, error) {
 	return start, found, nil
 }
 
+// errEmptyCodexSession marks a rollout Codex created but never wrote to. Some
+// aborted sessions leave a zero-byte file behind; it carries no provider to
+// patch and must not block the migration of the remaining sessions.
+var errEmptyCodexSession = errors.New("empty Codex session header")
+
 func readCodexProviderHeader(file *os.File) ([]byte, codexProviderHeader, error) {
 	// Session metadata can include instructions; cap reads without loading history.
 	line, err := bufio.NewReader(io.LimitReader(file, 4<<20)).ReadBytes('\n')
-	if err != nil {
+	if len(bytes.TrimSpace(line)) == 0 {
+		if err == nil || errors.Is(err, io.EOF) {
+			return nil, codexProviderHeader{}, errEmptyCodexSession
+		}
+		return nil, codexProviderHeader{}, fmt.Errorf("read Codex session header: %w", err)
+	}
+	// A header without its trailing newline is still patchable when the JSON is
+	// complete; only a partial write should fail.
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, codexProviderHeader{}, fmt.Errorf("read Codex session header: %w", err)
 	}
 	if !json.Valid(line) {
@@ -304,6 +317,9 @@ func migrateCodexSessionProviders(home, backupDir string) (result codexSessionMi
 			}
 			line, header, err := readCodexProviderHeader(f)
 			f.Close()
+			if errors.Is(err, errEmptyCodexSession) {
+				return nil
+			}
 			if err != nil {
 				return fmt.Errorf("inspect Codex rollout %s: %w", filepath.Base(path), err)
 			}

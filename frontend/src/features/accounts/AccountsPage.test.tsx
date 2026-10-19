@@ -62,7 +62,7 @@ function renderAccountsPage() {
 
 function accountsProxyFetchMock(
   accountName: string,
-  extra: { uses_upstream_proxy: boolean },
+  extra: { uses_upstream_proxy: boolean; provider_type?: string; quota_protection_enabled?: boolean },
 ) {
   const account = {
     id: 1,
@@ -4078,6 +4078,33 @@ describe("AccountsPage", () => {
     });
   });
 
+  it.each([
+    { initial: undefined, expected: false },
+    { initial: false, expected: true },
+  ])("persists quota protection changes for official accounts ($initial)", async ({ initial, expected }) => {
+    const fetchMock = vi.fn(accountsProxyFetchMock("official-protected", {
+      uses_upstream_proxy: false,
+      provider_type: "openai-official",
+      quota_protection_enabled: initial,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderAccountsPage();
+    fireEvent.click(await screen.findByRole("button", { name: "编辑-official-protected" }));
+    const modal = await screen.findByRole("dialog", { name: "编辑账户" });
+    const protection = within(modal).getByRole("switch", { name: "额度保护" });
+    expect(protection).toHaveAttribute("aria-checked", String(initial ?? true));
+    const switches = within(modal).getAllByRole("switch");
+    expect(switches.indexOf(protection)).toBe(switches.indexOf(within(modal).getByRole("switch", { name: "走代理" })) + 1);
+    fireEvent.click(protection);
+    fireEvent.click(within(modal).getByRole("button", { name: /保\s*存/ }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/ai-router/api/accounts/1", expect.objectContaining({
+        method: "PUT",
+        body: expect.stringContaining(`"quota_protection_enabled":${expected}`),
+      }));
+    });
+  });
+
   it("sends proxy_mode=direct when the edit switch is turned off", async () => {
     const fetchMock = vi.fn(
       accountsProxyFetchMock("proxy-on", { uses_upstream_proxy: true }),
@@ -4092,6 +4119,7 @@ describe("AccountsPage", () => {
     );
     const editModal = await screen.findByRole("dialog", { name: "编辑账户" });
 
+    expect(within(editModal).queryByRole("switch", { name: "额度保护" })).not.toBeInTheDocument();
     const proxySwitch = within(editModal).getByRole("switch", {
       name: "走代理",
     });

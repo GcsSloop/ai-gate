@@ -188,18 +188,19 @@ func (h *AccountsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type createAccountRequest struct {
-	ProviderType      accounts.ProviderType `json:"provider_type"`
-	AccountName       string                `json:"account_name"`
-	SourceIcon        string                `json:"source_icon"`
-	AuthMode          accounts.AuthMode     `json:"auth_mode"`
-	BaseURL           string                `json:"base_url"`
-	CredentialRef     string                `json:"credential_ref"`
-	AccountDriver     string                `json:"account_driver"`
-	UsageDriver       string                `json:"usage_driver"`
-	UsageConfigJSON   string                `json:"usage_config_json"`
-	SupportsResponses *bool                 `json:"supports_responses"`
-	SkipTLSVerify     bool                  `json:"skip_tls_verify"`
-	ProxyMode         string                `json:"proxy_mode"`
+	ProviderType           accounts.ProviderType `json:"provider_type"`
+	AccountName            string                `json:"account_name"`
+	SourceIcon             string                `json:"source_icon"`
+	AuthMode               accounts.AuthMode     `json:"auth_mode"`
+	BaseURL                string                `json:"base_url"`
+	CredentialRef          string                `json:"credential_ref"`
+	AccountDriver          string                `json:"account_driver"`
+	UsageDriver            string                `json:"usage_driver"`
+	UsageConfigJSON        string                `json:"usage_config_json"`
+	SupportsResponses      *bool                 `json:"supports_responses"`
+	SkipTLSVerify          bool                  `json:"skip_tls_verify"`
+	ProxyMode              string                `json:"proxy_mode"`
+	QuotaProtectionEnabled *bool                 `json:"quota_protection_enabled"`
 }
 
 type importLocalAuthRequest struct {
@@ -230,35 +231,37 @@ type accountShareEnvelope struct {
 }
 
 type accountSharePayload struct {
-	ProviderType      accounts.ProviderType `json:"provider_type"`
-	AccountName       string                `json:"account_name"`
-	SourceIcon        string                `json:"source_icon"`
-	AuthMode          accounts.AuthMode     `json:"auth_mode"`
-	BaseURL           string                `json:"base_url"`
-	CredentialRef     string                `json:"credential_ref"`
-	AccountDriver     string                `json:"account_driver"`
-	UsageDriver       string                `json:"usage_driver"`
-	UsageConfigJSON   string                `json:"usage_config_json"`
-	SupportsResponses bool                  `json:"supports_responses"`
-	SkipTLSVerify     bool                  `json:"skip_tls_verify"`
-	ProxyMode         string                `json:"proxy_mode"`
+	ProviderType           accounts.ProviderType `json:"provider_type"`
+	AccountName            string                `json:"account_name"`
+	SourceIcon             string                `json:"source_icon"`
+	AuthMode               accounts.AuthMode     `json:"auth_mode"`
+	BaseURL                string                `json:"base_url"`
+	CredentialRef          string                `json:"credential_ref"`
+	AccountDriver          string                `json:"account_driver"`
+	UsageDriver            string                `json:"usage_driver"`
+	UsageConfigJSON        string                `json:"usage_config_json"`
+	SupportsResponses      bool                  `json:"supports_responses"`
+	SkipTLSVerify          bool                  `json:"skip_tls_verify"`
+	ProxyMode              string                `json:"proxy_mode"`
+	QuotaProtectionEnabled *bool                 `json:"quota_protection_enabled,omitempty"`
 }
 
 type updateAccountRequest struct {
-	AccountName       string          `json:"account_name"`
-	SourceIcon        string          `json:"source_icon"`
-	BaseURL           string          `json:"base_url"`
-	CredentialRef     string          `json:"credential_ref"`
-	AccountDriver     *string         `json:"account_driver"`
-	UsageDriver       *string         `json:"usage_driver"`
-	UsageConfigJSON   *string         `json:"usage_config_json"`
-	Status            accounts.Status `json:"status"`
-	Priority          *int            `json:"priority"`
-	IsActive          *bool           `json:"is_active"`
-	IsLocked          *bool           `json:"is_locked"`
-	SupportsResponses *bool           `json:"supports_responses"`
-	SkipTLSVerify     *bool           `json:"skip_tls_verify"`
-	ProxyMode         *string         `json:"proxy_mode"`
+	AccountName            string          `json:"account_name"`
+	SourceIcon             string          `json:"source_icon"`
+	BaseURL                string          `json:"base_url"`
+	CredentialRef          string          `json:"credential_ref"`
+	AccountDriver          *string         `json:"account_driver"`
+	UsageDriver            *string         `json:"usage_driver"`
+	UsageConfigJSON        *string         `json:"usage_config_json"`
+	Status                 accounts.Status `json:"status"`
+	Priority               *int            `json:"priority"`
+	IsActive               *bool           `json:"is_active"`
+	IsLocked               *bool           `json:"is_locked"`
+	SupportsResponses      *bool           `json:"supports_responses"`
+	SkipTLSVerify          *bool           `json:"skip_tls_verify"`
+	ProxyMode              *string         `json:"proxy_mode"`
+	QuotaProtectionEnabled *bool           `json:"quota_protection_enabled"`
 }
 
 type accountTestResponse struct {
@@ -321,21 +324,26 @@ func (h *AccountsHandler) createAccount(w http.ResponseWriter, r *http.Request) 
 	if req.ProviderType == accounts.ProviderOpenAIOfficial {
 		supportsResponses = true
 	}
+	quotaProtectionEnabled := req.QuotaProtectionEnabled != nil && *req.QuotaProtectionEnabled
+	if req.QuotaProtectionEnabled == nil && req.ProviderType == accounts.ProviderOpenAIOfficial {
+		quotaProtectionEnabled = true
+	}
 
 	account := applyBuiltInDriverDefaults(accounts.Account{
-		ProviderType:      req.ProviderType,
-		AccountName:       req.AccountName,
-		SourceIcon:        normalizeAccountSourceIcon(req.SourceIcon),
-		AuthMode:          req.AuthMode,
-		BaseURL:           req.BaseURL,
-		CredentialRef:     req.CredentialRef,
-		AccountDriver:     strings.TrimSpace(req.AccountDriver),
-		UsageDriver:       strings.TrimSpace(req.UsageDriver),
-		UsageConfigJSON:   strings.TrimSpace(req.UsageConfigJSON),
-		Status:            accounts.StatusActive,
-		SupportsResponses: supportsResponses,
-		SkipTLSVerify:     req.SkipTLSVerify,
-		ProxyMode:         accounts.NormalizeProxyMode(req.ProxyMode),
+		ProviderType:           req.ProviderType,
+		AccountName:            req.AccountName,
+		SourceIcon:             normalizeAccountSourceIcon(req.SourceIcon),
+		AuthMode:               req.AuthMode,
+		BaseURL:                req.BaseURL,
+		CredentialRef:          req.CredentialRef,
+		AccountDriver:          strings.TrimSpace(req.AccountDriver),
+		UsageDriver:            strings.TrimSpace(req.UsageDriver),
+		UsageConfigJSON:        strings.TrimSpace(req.UsageConfigJSON),
+		Status:                 accounts.StatusActive,
+		SupportsResponses:      supportsResponses,
+		SkipTLSVerify:          req.SkipTLSVerify,
+		ProxyMode:              accounts.NormalizeProxyMode(req.ProxyMode),
+		QuotaProtectionEnabled: quotaProtectionEnabled,
 	})
 
 	err := h.repo.Create(account)
@@ -388,6 +396,7 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 		SupportsResponses               bool                  `json:"supports_responses"`
 		SkipTLSVerify                   bool                  `json:"skip_tls_verify"`
 		ProxyMode                       string                `json:"proxy_mode"`
+		QuotaProtectionEnabled          bool                  `json:"quota_protection_enabled"`
 		UsesUpstreamProxy               bool                  `json:"uses_upstream_proxy"`
 	}
 
@@ -397,35 +406,36 @@ func (h *AccountsHandler) listAccounts(w http.ResponseWriter, _ *http.Request) {
 	for _, account := range accountList {
 		account = applyBuiltInDriverDefaults(account)
 		item := responseItem{
-			ID:                   account.ID,
-			ProviderType:         account.ProviderType,
-			AccountName:          account.AccountName,
-			AuthMode:             account.AuthMode,
-			SourceIcon:           normalizeAccountSourceIcon(account.SourceIcon),
-			BaseURL:              account.BaseURL,
-			Status:               account.Status,
-			Priority:             account.Priority,
-			IsActive:             account.IsActive,
-			IsLocked:             account.IsLocked,
-			SupportsResponses:    account.SupportsResponses,
-			SkipTLSVerify:        account.SkipTLSVerify,
-			ProxyMode:            string(account.ProxyMode),
-			UsesUpstreamProxy:    accountUsesUpstreamProxy(account, globalUpstreamProxyActive),
-			Balance:              0,
-			QuotaRemaining:       0,
-			RPMRemaining:         0,
-			TPMRemaining:         0,
-			HealthScore:          0,
-			RecentErrorRate:      0,
-			LastTotalTokens:      0,
-			LastInputTokens:      0,
-			LastOutputTokens:     0,
-			ModelContextWindow:   0,
-			PrimaryUsedPercent:   0,
-			SecondaryUsedPercent: 0,
-			AccountDriver:        account.AccountDriver,
-			UsageDriver:          account.UsageDriver,
-			UsageConfigJSON:      account.UsageConfigJSON,
+			ID:                     account.ID,
+			ProviderType:           account.ProviderType,
+			AccountName:            account.AccountName,
+			AuthMode:               account.AuthMode,
+			SourceIcon:             normalizeAccountSourceIcon(account.SourceIcon),
+			BaseURL:                account.BaseURL,
+			Status:                 account.Status,
+			Priority:               account.Priority,
+			IsActive:               account.IsActive,
+			IsLocked:               account.IsLocked,
+			SupportsResponses:      account.SupportsResponses,
+			SkipTLSVerify:          account.SkipTLSVerify,
+			ProxyMode:              string(account.ProxyMode),
+			QuotaProtectionEnabled: account.QuotaProtectionEnabled,
+			UsesUpstreamProxy:      accountUsesUpstreamProxy(account, globalUpstreamProxyActive),
+			Balance:                0,
+			QuotaRemaining:         0,
+			RPMRemaining:           0,
+			TPMRemaining:           0,
+			HealthScore:            0,
+			RecentErrorRate:        0,
+			LastTotalTokens:        0,
+			LastInputTokens:        0,
+			LastOutputTokens:       0,
+			ModelContextWindow:     0,
+			PrimaryUsedPercent:     0,
+			SecondaryUsedPercent:   0,
+			AccountDriver:          account.AccountDriver,
+			UsageDriver:            account.UsageDriver,
+			UsageConfigJSON:        account.UsageConfigJSON,
 		}
 		if account.CooldownUntil != nil {
 			remaining := int64(account.CooldownUntil.Sub(now).Seconds())
@@ -671,14 +681,15 @@ func (h *AccountsHandler) completeDeviceAuth(w http.ResponseWriter, r *http.Requ
 		accountName = "local-codex"
 	}
 	err = h.repo.Create(applyBuiltInDriverDefaults(accounts.Account{
-		ProviderType:      accounts.ProviderOpenAIOfficial,
-		AccountName:       accountName,
-		SourceIcon:        "openai",
-		AuthMode:          accounts.AuthModeLocalImport,
-		CredentialRef:     string(raw),
-		BaseURL:           officialCodexBaseURL,
-		Status:            accounts.StatusActive,
-		SupportsResponses: true,
+		ProviderType:           accounts.ProviderOpenAIOfficial,
+		AccountName:            accountName,
+		SourceIcon:             "openai",
+		AuthMode:               accounts.AuthModeLocalImport,
+		CredentialRef:          string(raw),
+		BaseURL:                officialCodexBaseURL,
+		Status:                 accounts.StatusActive,
+		SupportsResponses:      true,
+		QuotaProtectionEnabled: true,
 	}))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -699,14 +710,15 @@ func (h *AccountsHandler) importLocalAuth(w http.ResponseWriter, r *http.Request
 	}
 
 	err = h.repo.Create(applyBuiltInDriverDefaults(accounts.Account{
-		ProviderType:      accounts.ProviderOpenAIOfficial,
-		AccountName:       accountName,
-		SourceIcon:        "openai",
-		AuthMode:          accounts.AuthModeLocalImport,
-		CredentialRef:     string(raw),
-		BaseURL:           officialCodexBaseURL,
-		Status:            accounts.StatusActive,
-		SupportsResponses: true,
+		ProviderType:           accounts.ProviderOpenAIOfficial,
+		AccountName:            accountName,
+		SourceIcon:             "openai",
+		AuthMode:               accounts.AuthModeLocalImport,
+		CredentialRef:          string(raw),
+		BaseURL:                officialCodexBaseURL,
+		Status:                 accounts.StatusActive,
+		SupportsResponses:      true,
+		QuotaProtectionEnabled: true,
 	}))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -743,14 +755,15 @@ func (h *AccountsHandler) importCurrentAuth(w http.ResponseWriter, r *http.Reque
 	}
 
 	err = h.repo.Create(applyBuiltInDriverDefaults(accounts.Account{
-		ProviderType:      accounts.ProviderOpenAIOfficial,
-		AccountName:       accountName,
-		SourceIcon:        "openai",
-		AuthMode:          accounts.AuthModeLocalImport,
-		CredentialRef:     string(raw),
-		BaseURL:           officialCodexBaseURL,
-		Status:            accounts.StatusActive,
-		SupportsResponses: true,
+		ProviderType:           accounts.ProviderOpenAIOfficial,
+		AccountName:            accountName,
+		SourceIcon:             "openai",
+		AuthMode:               accounts.AuthModeLocalImport,
+		CredentialRef:          string(raw),
+		BaseURL:                officialCodexBaseURL,
+		Status:                 accounts.StatusActive,
+		SupportsResponses:      true,
+		QuotaProtectionEnabled: true,
 	}))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -805,23 +818,25 @@ func (h *AccountsHandler) shareAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	account = applyBuiltInDriverDefaults(account)
 
+	quotaProtectionEnabled := account.QuotaProtectionEnabled
 	payload, err := json.Marshal(accountShareEnvelope{
 		Kind:          accountShareKind,
 		SchemaVersion: accountShareSchemaVersion,
 		ExportedAt:    time.Now().UTC().Format(time.RFC3339),
 		Account: accountSharePayload{
-			ProviderType:      account.ProviderType,
-			AccountName:       account.AccountName,
-			SourceIcon:        normalizeAccountSourceIcon(account.SourceIcon),
-			AuthMode:          account.AuthMode,
-			BaseURL:           account.BaseURL,
-			CredentialRef:     account.CredentialRef,
-			AccountDriver:     account.AccountDriver,
-			UsageDriver:       account.UsageDriver,
-			UsageConfigJSON:   account.UsageConfigJSON,
-			SupportsResponses: account.NativeResponsesCapable(),
-			SkipTLSVerify:     account.SkipTLSVerify,
-			ProxyMode:         string(account.ProxyMode),
+			ProviderType:           account.ProviderType,
+			AccountName:            account.AccountName,
+			SourceIcon:             normalizeAccountSourceIcon(account.SourceIcon),
+			AuthMode:               account.AuthMode,
+			BaseURL:                account.BaseURL,
+			CredentialRef:          account.CredentialRef,
+			AccountDriver:          account.AccountDriver,
+			UsageDriver:            account.UsageDriver,
+			UsageConfigJSON:        account.UsageConfigJSON,
+			SupportsResponses:      account.NativeResponsesCapable(),
+			SkipTLSVerify:          account.SkipTLSVerify,
+			ProxyMode:              string(account.ProxyMode),
+			QuotaProtectionEnabled: &quotaProtectionEnabled,
 		},
 	})
 	if err != nil {
@@ -1029,23 +1044,28 @@ func (h *AccountsHandler) importSharedAccount(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	quotaProtectionEnabled := envelope.Account.ProviderType == accounts.ProviderOpenAIOfficial
+	if envelope.Account.QuotaProtectionEnabled != nil {
+		quotaProtectionEnabled = *envelope.Account.QuotaProtectionEnabled
+	}
 
 	account := applyBuiltInDriverDefaults(accounts.Account{
-		ProviderType:      envelope.Account.ProviderType,
-		AccountName:       envelope.Account.AccountName,
-		SourceIcon:        normalizeAccountSourceIcon(envelope.Account.SourceIcon),
-		AuthMode:          envelope.Account.AuthMode,
-		BaseURL:           strings.TrimSpace(envelope.Account.BaseURL),
-		CredentialRef:     envelope.Account.CredentialRef,
-		AccountDriver:     strings.TrimSpace(envelope.Account.AccountDriver),
-		UsageDriver:       strings.TrimSpace(envelope.Account.UsageDriver),
-		UsageConfigJSON:   strings.TrimSpace(envelope.Account.UsageConfigJSON),
-		Status:            accounts.StatusActive,
-		Priority:          0,
-		IsActive:          false,
-		SupportsResponses: envelope.Account.SupportsResponses,
-		SkipTLSVerify:     envelope.Account.SkipTLSVerify,
-		ProxyMode:         accounts.NormalizeProxyMode(envelope.Account.ProxyMode),
+		ProviderType:           envelope.Account.ProviderType,
+		AccountName:            envelope.Account.AccountName,
+		SourceIcon:             normalizeAccountSourceIcon(envelope.Account.SourceIcon),
+		AuthMode:               envelope.Account.AuthMode,
+		BaseURL:                strings.TrimSpace(envelope.Account.BaseURL),
+		CredentialRef:          envelope.Account.CredentialRef,
+		AccountDriver:          strings.TrimSpace(envelope.Account.AccountDriver),
+		UsageDriver:            strings.TrimSpace(envelope.Account.UsageDriver),
+		UsageConfigJSON:        strings.TrimSpace(envelope.Account.UsageConfigJSON),
+		Status:                 accounts.StatusActive,
+		Priority:               0,
+		IsActive:               false,
+		SupportsResponses:      envelope.Account.SupportsResponses,
+		SkipTLSVerify:          envelope.Account.SkipTLSVerify,
+		ProxyMode:              accounts.NormalizeProxyMode(envelope.Account.ProxyMode),
+		QuotaProtectionEnabled: quotaProtectionEnabled,
 	})
 
 	if err := h.repo.Create(account); err != nil {
@@ -1123,6 +1143,9 @@ func (h *AccountsHandler) updateAccount(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.ProxyMode != nil {
 		current.ProxyMode = accounts.NormalizeProxyMode(*req.ProxyMode)
+	}
+	if req.QuotaProtectionEnabled != nil {
+		current.QuotaProtectionEnabled = *req.QuotaProtectionEnabled
 	}
 	current = applyBuiltInDriverDefaults(current)
 

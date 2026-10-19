@@ -144,6 +144,10 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var upstreamResponse []byte
 	orderedCandidates, err := h.orderedCandidates(r.Context(), candidates)
 	if err != nil {
+		if errors.Is(err, errQuotaProtected) {
+			writeQuotaProtected(w)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -230,6 +234,10 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *GatewayHandler) serveStream(ctx context.Context, w http.ResponseWriter, req gatewayopenai.ChatCompletionRequest, body []byte, candidates []routing.Candidate, conversationID int64) {
 	orderedCandidates, err := h.orderedCandidates(ctx, candidates)
 	if err != nil {
+		if errors.Is(err, errQuotaProtected) {
+			writeQuotaProtected(w)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -382,10 +390,24 @@ func (h *GatewayHandler) publishAccountRoutingStateChanged() {
 }
 
 func (h *GatewayHandler) orderedCandidates(ctx context.Context, candidates []routing.Candidate) ([]routing.Candidate, error) {
+	activeProtected := false
+	eligible := make([]routing.Candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if routing.QuotaProtected(candidate, time.Now().UTC()) {
+			activeProtected = activeProtected || candidate.Account.IsActive
+			h.sticky.Invalidate(gatewayStickyScope(ctx, "chat_completions"), candidate.Account.ID)
+			continue
+		}
+		eligible = append(eligible, candidate)
+	}
+	if len(eligible) == 0 && len(candidates) > 0 {
+		return nil, errQuotaProtected
+	}
+	candidates = eligible
 	if serverUserFromContextExists(ctx) {
 		return orderServerUserCandidates(ctx, h.sticky, "chat_completions", candidates), nil
 	}
-	if !autoFailoverEnabled(h.settings) {
+	if !autoFailoverEnabled(h.settings) && !activeProtected {
 		if candidate, ok := activeCandidate(candidates); ok {
 			return expandActiveCandidateRetries([]routing.Candidate{candidate}, activeAccountFailoverRetryAttempts), nil
 		}

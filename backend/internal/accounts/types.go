@@ -49,26 +49,27 @@ func NormalizeProxyMode(raw string) ProxyMode {
 }
 
 type Account struct {
-	ID                int64
-	ProviderType      ProviderType
-	AccountName       string
-	SourceIcon        string
-	AuthMode          AuthMode
-	CredentialRef     string
-	UsageDriver       string
-	UsageConfigJSON   string
-	AccountDriver     string
-	BaseURL           string
-	Status            Status
-	Priority          int
-	IsActive          bool
-	IsLocked          bool
-	SupportsResponses bool
-	SkipTLSVerify     bool
-	ProxyMode         ProxyMode
-	CooldownUntil     *time.Time
-	CooldownReason    string
-	CreatedAt         time.Time
+	ID                     int64
+	ProviderType           ProviderType
+	AccountName            string
+	SourceIcon             string
+	AuthMode               AuthMode
+	CredentialRef          string
+	UsageDriver            string
+	UsageConfigJSON        string
+	AccountDriver          string
+	BaseURL                string
+	Status                 Status
+	Priority               int
+	IsActive               bool
+	IsLocked               bool
+	SupportsResponses      bool
+	SkipTLSVerify          bool
+	ProxyMode              ProxyMode
+	QuotaProtectionEnabled bool
+	CooldownUntil          *time.Time
+	CooldownReason         string
+	CreatedAt              time.Time
 }
 
 func (a Account) NativeResponsesCapable() bool {

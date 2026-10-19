@@ -1691,6 +1691,7 @@ export function AccountsPage({
       usage_driver: account.usage_driver === "lua" ? account.usage_driver : "",
       skip_tls_verify: account.skip_tls_verify ?? false,
       use_proxy: account.uses_upstream_proxy ?? false,
+      quota_protection_enabled: account.quota_protection_enabled ?? true,
     });
     testForm.setFieldsValue({
       model: getDefaultTestModel(account),
@@ -1706,6 +1707,7 @@ export function AccountsPage({
     usage_driver?: string;
     skip_tls_verify?: boolean;
     use_proxy?: boolean;
+    quota_protection_enabled?: boolean;
   }) {
     if (!editingAccount) {
       return;
@@ -1739,6 +1741,9 @@ export function AccountsPage({
       supports_responses: true,
       skip_tls_verify: values.skip_tls_verify ?? false,
       proxy_mode: values.use_proxy ? "proxy" : "direct",
+      ...(editingAccount.provider_type === "openai-official"
+        ? { quota_protection_enabled: values.quota_protection_enabled ?? true }
+        : {}),
     });
     try {
       await refreshAccountUsage();
@@ -3063,6 +3068,16 @@ export function AccountsPage({
           >
             <Switch aria-label={t("走代理")} />
           </Form.Item>
+          {editingAccount?.provider_type === "openai-official" ? (
+            <Form.Item
+              label={t("额度保护")}
+              name="quota_protection_enabled"
+              valuePropName="checked"
+              extra={t("默认保留 5 小时和总体额度的最后 3%；任一额度剩余不超过 3% 时，拦截新请求并切换到其他可用账户。")}
+            >
+              <Switch aria-label={t("额度保护")} />
+            </Form.Item>
+          ) : null}
           <Form.Item label={t("用量驱动")} name="usage_driver">
             <Select
               options={[

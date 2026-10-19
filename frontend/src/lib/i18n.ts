@@ -23,6 +23,8 @@ const enUSMessages: Record<string, string> = {
   "应用到 Codex": "Apply to Codex",
   "导入到管理": "Import to management",
   "官方账户": "Official account",
+  "额度保护": "Quota protection",
+  "默认保留 5 小时和总体额度的最后 3%；任一额度剩余不超过 3% 时，拦截新请求并切换到其他可用账户。": "Reserves the final 3% of the 5-hour and overall quotas by default. When either has 3% or less remaining, new requests are blocked and routed to another available account.",
   "第三方账户": "Third-party account",
   "添加账户": "Add account",
   "初始化设置中心失败": "Failed to initialize settings center",

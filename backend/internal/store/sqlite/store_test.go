@@ -46,6 +46,36 @@ func TestOpenCreatesCoreTables(t *testing.T) {
 	}
 }
 
+func TestOpenEnablesQuotaProtectionForExistingAccounts(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "legacy.sqlite")
+	store, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`ALTER TABLE accounts DROP COLUMN quota_protection_enabled`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO accounts (provider_type, account_name, auth_mode, credential_ref) VALUES ('openai-official', 'legacy', 'oauth', 'fixture')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	var enabled int
+	if err := reopened.DB().QueryRow(`SELECT quota_protection_enabled FROM accounts WHERE account_name = 'legacy'`).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 1 {
+		t.Fatalf("legacy account quota protection = %d, want 1", enabled)
+	}
+}
+
 func TestOpenAddsUsageDriverColumnsToAccounts(t *testing.T) {
 	t.Parallel()
 

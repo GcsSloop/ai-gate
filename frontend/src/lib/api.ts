@@ -19,6 +19,7 @@ export type AccountRecord = {
   is_locked?: boolean;
   supports_responses?: boolean;
   skip_tls_verify?: boolean;
+  quota_protection_enabled?: boolean;
   proxy_mode?: AccountProxyMode;
   uses_upstream_proxy?: boolean;
   cooldown_remaining_seconds?: number;
@@ -106,6 +107,7 @@ export type CreateAccountPayload = {
   usage_config_json?: string;
   supports_responses?: boolean;
   skip_tls_verify?: boolean;
+  quota_protection_enabled?: boolean;
   proxy_mode?: AccountProxyMode;
 };
 

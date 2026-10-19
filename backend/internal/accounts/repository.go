@@ -43,8 +43,8 @@ func (r *SQLiteRepository) Create(account Account) error {
 	}
 
 	_, err = r.db.Exec(
-		`INSERT INTO accounts (provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, is_locked, supports_responses, skip_tls_verify, proxy_mode, cooldown_until, cooldown_reason)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO accounts (provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, is_locked, supports_responses, skip_tls_verify, proxy_mode, quota_protection_enabled, cooldown_until, cooldown_reason)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		account.ProviderType,
 		account.AccountName,
 		account.SourceIcon,
@@ -61,6 +61,7 @@ func (r *SQLiteRepository) Create(account Account) error {
 		boolToInt(account.SupportsResponses),
 		boolToInt(account.SkipTLSVerify),
 		string(account.ProxyMode),
+		boolToInt(account.QuotaProtectionEnabled),
 		nullTime(account.CooldownUntil),
 		account.CooldownReason,
 	)
@@ -72,7 +73,7 @@ func (r *SQLiteRepository) Create(account Account) error {
 
 func (r *SQLiteRepository) List() ([]Account, error) {
 	records, err := r.db.Query(
-		`SELECT id, provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, is_locked, supports_responses, skip_tls_verify, proxy_mode, cooldown_until, cooldown_reason, created_at
+		`SELECT id, provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, is_locked, supports_responses, skip_tls_verify, proxy_mode, quota_protection_enabled, cooldown_until, cooldown_reason, created_at
 		 FROM accounts
 		 ORDER BY priority DESC, id ASC`,
 	)
@@ -90,6 +91,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 		var supportsResponses int
 		var skipTLSVerify int
 		var proxyMode string
+		var quotaProtectionEnabled int
 
 		if err := records.Scan(
 			&account.ID,
@@ -109,6 +111,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 			&supportsResponses,
 			&skipTLSVerify,
 			&proxyMode,
+			&quotaProtectionEnabled,
 			&cooldown,
 			&account.CooldownReason,
 			&account.CreatedAt,
@@ -120,6 +123,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 		account.SupportsResponses = supportsResponses == 1
 		account.SkipTLSVerify = skipTLSVerify == 1
 		account.ProxyMode = NormalizeProxyMode(proxyMode)
+		account.QuotaProtectionEnabled = quotaProtectionEnabled == 1
 		if account.NativeResponsesCapable() {
 			account.SupportsResponses = true
 		}
@@ -145,7 +149,7 @@ func (r *SQLiteRepository) List() ([]Account, error) {
 
 func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 	row := r.db.QueryRow(
-		`SELECT id, provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, is_locked, supports_responses, skip_tls_verify, proxy_mode, cooldown_until, cooldown_reason, created_at
+		`SELECT id, provider_type, account_name, source_icon, auth_mode, credential_ref, account_driver, usage_driver, usage_config_json, base_url, status, priority, is_active, is_locked, supports_responses, skip_tls_verify, proxy_mode, quota_protection_enabled, cooldown_until, cooldown_reason, created_at
 		 FROM accounts WHERE id = ?`,
 		id,
 	)
@@ -157,6 +161,7 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 	var supportsResponses int
 	var skipTLSVerify int
 	var proxyMode string
+	var quotaProtectionEnabled int
 	if err := row.Scan(
 		&account.ID,
 		&account.ProviderType,
@@ -175,6 +180,7 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 		&supportsResponses,
 		&skipTLSVerify,
 		&proxyMode,
+		&quotaProtectionEnabled,
 		&cooldown,
 		&account.CooldownReason,
 		&account.CreatedAt,
@@ -186,6 +192,7 @@ func (r *SQLiteRepository) GetByID(id int64) (Account, error) {
 	account.SupportsResponses = supportsResponses == 1
 	account.SkipTLSVerify = skipTLSVerify == 1
 	account.ProxyMode = NormalizeProxyMode(proxyMode)
+	account.QuotaProtectionEnabled = quotaProtectionEnabled == 1
 	if account.NativeResponsesCapable() {
 		account.SupportsResponses = true
 	}
@@ -212,7 +219,7 @@ func (r *SQLiteRepository) Update(account Account) error {
 
 	_, err = r.db.Exec(
 		`UPDATE accounts
-		 SET account_name = ?, source_icon = ?, base_url = ?, credential_ref = ?, account_driver = ?, usage_driver = ?, usage_config_json = ?, status = ?, priority = ?, is_locked = ?, supports_responses = ?, skip_tls_verify = ?, proxy_mode = ?, cooldown_until = ?, cooldown_reason = ?
+			 SET account_name = ?, source_icon = ?, base_url = ?, credential_ref = ?, account_driver = ?, usage_driver = ?, usage_config_json = ?, status = ?, priority = ?, is_locked = ?, supports_responses = ?, skip_tls_verify = ?, proxy_mode = ?, quota_protection_enabled = ?, cooldown_until = ?, cooldown_reason = ?
 		 WHERE id = ?`,
 		account.AccountName,
 		account.SourceIcon,
@@ -227,6 +234,7 @@ func (r *SQLiteRepository) Update(account Account) error {
 		boolToInt(account.SupportsResponses),
 		boolToInt(account.SkipTLSVerify),
 		string(account.ProxyMode),
+		boolToInt(account.QuotaProtectionEnabled),
 		nullTime(account.CooldownUntil),
 		account.CooldownReason,
 		account.ID,

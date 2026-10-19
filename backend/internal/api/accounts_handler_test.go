@@ -2211,3 +2211,72 @@ func assertProxyState(t *testing.T, handler *api.AccountsHandler, wantMode strin
 		t.Fatalf("uses_upstream_proxy = %v, want %v", payload[0].UsesUpstreamProxy, wantUsesProxy)
 	}
 }
+
+func TestAccountsHandlerQuotaProtectionShareRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlitestore.Open(filepath.Join(t.TempDir(), "router.sqlite"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	repo := accounts.NewSQLiteRepository(store.DB())
+	handler := api.NewAccountsHandler(repo, nil, auth.NewOAuthConnector(auth.Config{}), auth.NewStateStore(5*time.Minute))
+	if err := repo.Create(accounts.Account{
+		ProviderType:           accounts.ProviderOpenAIOfficial,
+		AccountName:            "official-quota",
+		SourceIcon:             "openai",
+		AuthMode:               accounts.AuthModeLocalImport,
+		BaseURL:                "https://chatgpt.com/backend-api/codex",
+		CredentialRef:          `{"auth_mode":"chatgpt","tokens":{"access_token":"fixture","account_id":"fixture"}}`,
+		Status:                 accounts.StatusActive,
+		SupportsResponses:      true,
+		QuotaProtectionEnabled: false,
+	}); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	shareRec := httptest.NewRecorder()
+	handler.ServeHTTP(shareRec, httptest.NewRequest(http.MethodPost, "/accounts/1/share", nil))
+	if shareRec.Code != http.StatusOK {
+		t.Fatalf("share status = %d: %s", shareRec.Code, shareRec.Body.String())
+	}
+	var shareResponse struct {
+		Payload string `json:"payload"`
+	}
+	if err := json.Unmarshal(shareRec.Body.Bytes(), &shareResponse); err != nil {
+		t.Fatal(err)
+	}
+	var shared map[string]any
+	if err := json.Unmarshal([]byte(shareResponse.Payload), &shared); err != nil {
+		t.Fatal(err)
+	}
+	sharedAccount := shared["account"].(map[string]any)
+	if enabled, ok := sharedAccount["quota_protection_enabled"]; !ok || enabled != false {
+		t.Fatalf("shared quota protection = %v, present=%v; want false", enabled, ok)
+	}
+
+	importRec := httptest.NewRecorder()
+	importBody, _ := json.Marshal(map[string]string{"payload": shareResponse.Payload})
+	handler.ServeHTTP(importRec, httptest.NewRequest(http.MethodPost, "/accounts/import-shared", bytes.NewReader(importBody)))
+	if importRec.Code != http.StatusCreated {
+		t.Fatalf("import status = %d: %s", importRec.Code, importRec.Body.String())
+	}
+	imported, err := repo.GetByID(2)
+	if err != nil || imported.QuotaProtectionEnabled {
+		t.Fatalf("imported quota protection = %v, err=%v; want false", imported.QuotaProtectionEnabled, err)
+	}
+
+	// Shares created before the field existed default official accounts to enabled.
+	legacy := `{"payload":"{\"kind\":\"aigate-account-share\",\"schema_version\":1,\"exported_at\":\"2026-10-19T00:00:00Z\",\"account\":{\"provider_type\":\"openai-official\",\"account_name\":\"legacy-official\",\"source_icon\":\"openai\",\"auth_mode\":\"codex_local_import\",\"base_url\":\"https://chatgpt.com/backend-api/codex\",\"credential_ref\":\"{}\",\"supports_responses\":true}}"}`
+	legacyRec := httptest.NewRecorder()
+	handler.ServeHTTP(legacyRec, httptest.NewRequest(http.MethodPost, "/accounts/import-shared", strings.NewReader(legacy)))
+	if legacyRec.Code != http.StatusCreated {
+		t.Fatalf("legacy import status = %d: %s", legacyRec.Code, legacyRec.Body.String())
+	}
+	legacyAccount, err := repo.GetByID(3)
+	if err != nil || !legacyAccount.QuotaProtectionEnabled {
+		t.Fatalf("legacy import quota protection = %v, err=%v; want true", legacyAccount.QuotaProtectionEnabled, err)
+	}
+}
