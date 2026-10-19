@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,7 @@ func sessionProviderFixture(t *testing.T) (string, *sql.DB) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", filepath.Dir(home))
+	t.Setenv("USERPROFILE", filepath.Dir(home))
 	db, err := sql.Open("sqlite", filepath.Join(home, "state_5.sqlite"))
 	if err != nil {
 		t.Fatal(err)
@@ -27,6 +29,78 @@ func sessionProviderFixture(t *testing.T) (string, *sql.DB) {
 		t.Fatal(err)
 	}
 	return home, db
+}
+
+func TestCodexStateDatabaseDSN(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		path     string
+		wantPath string
+	}{
+		{"unix", "/home/user/.codex/state_5.sqlite", "/home/user/.codex/state_5.sqlite"},
+		{"windows", "C:/Users/user/.codex/state_5.sqlite", "/C:/Users/user/.codex/state_5.sqlite"},
+		{"windows_special_characters", "D:/Users/用户 #1%/.codex/state_5.sqlite", "/D:/Users/用户 #1%/.codex/state_5.sqlite"},
+		{"unix_special_characters", "/home/用户 #1%?/.codex/state_5.sqlite", "/home/用户 #1%?/.codex/state_5.sqlite"},
+		{"unc", "//server/share/.codex/state_5.sqlite", "//server/share/.codex/state_5.sqlite"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dsn := codexStateDatabaseDSN(tc.path)
+			u, err := url.Parse(dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if u.Scheme != "file" || u.Host != "" || u.Path != tc.wantPath || u.Fragment != "" {
+				t.Fatalf("invalid SQLite file URI: %s (host=%q path=%q)", dsn, u.Host, u.Path)
+			}
+			q := u.Query()
+			if q.Get("mode") != "rw" || q.Get("_pragma") != "busy_timeout(1500)" || q.Get("_txlock") != "immediate" {
+				t.Fatalf("database safeguards missing: %s", dsn)
+			}
+		})
+	}
+}
+
+func TestCodexStateDatabaseOpenSpecialPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "用户 #1%", "state_5.sqlite")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Seed through a plain native path, then reopen through the migration helper.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE threads (id TEXT, model_provider TEXT); INSERT INTO threads VALUES ('official', 'openai')`); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := openCodexStateDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	var provider string
+	if err := opened.QueryRow(`SELECT model_provider FROM threads WHERE id = 'official'`).Scan(&provider); err != nil {
+		t.Fatal(err)
+	}
+	if provider != "openai" {
+		t.Fatalf("provider=%q", provider)
+	}
+}
+
+func TestCodexStateDatabaseDSNDoesNotCreateMissingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state_5.sqlite")
+	db, err := sql.Open("sqlite", codexStateDatabaseDSN(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Ping(); err == nil {
+		t.Fatal("opened a missing Codex database")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("missing database must not be created: %v", err)
+	}
 }
 
 func TestSettingsHandlerProxyAutomaticallySwitchesAndRestoresSessionProviders(t *testing.T) {

@@ -51,6 +51,22 @@ cd backend && go test ./internal/api -run 'TestSettingsHandler(Proxy|UpdatingPro
 详细源码证据与验证边界见
 [2026-10-17 分析](plans/2026-10-17-codex-proxy-mixed-session-providers.md)。
 
+2026-10-19 修复 Windows 开启代理时的数据库路径问题。带盘符的路径必须转换为
+`file:///C:/Users/.../.codex/state_5.sqlite`；`file://C:/Users/...` 会将盘符误作 URI
+主机名。`modernc.org/sqlite v1.39.0` 在此打开失败场景会返回误导性的
+`SQL logic error: out of memory (1)`，不能据此判断系统内存不足。
+数据库连接在读取会话前主动验证，继续保留 `mode=rw`，避免意外创建 Codex 数据库。
+
+定向回归覆盖盘符、中文、空格、URI 特殊字符、不创建缺失数据库，以及代理迁移和恢复：
+
+```bash
+cd backend && go test ./internal/api -run '^(TestCodexStateDatabase|TestCodexSessionProvider|TestSettingsHandlerProxyAutomaticallySwitchesAndRestoresSessionProviders|TestSettingsHandlerProxyMigrationFailureRestoresConfig)' -count=1
+```
+
+Dev CI 的 `Windows Codex Session Migration` job 在 Windows runner 上执行同一组测试，
+验证原生盘符路径下的数据库读写及代理开关。UNC 路径仅验证 URI 编码，不代表已验证
+网络共享上的 SQLite/WAL 可用性。
+
 ## Per-account upstream proxy override
 
 The upstream proxy configured on the settings page stays global. Each account can

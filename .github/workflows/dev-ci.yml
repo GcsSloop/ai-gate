@@ -34,6 +34,24 @@ jobs:
       - name: Build routerd
         run: go build ./cmd/routerd
 
+  windows-codex-session-test:
+    name: Windows Codex Session Migration
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.23"
+
+      - name: Test Codex database paths and session migration
+        run: go test ./internal/api -run '^(TestCodexStateDatabase|TestCodexSessionProvider|TestSettingsHandlerProxyAutomaticallySwitchesAndRestoresSessionProviders|TestSettingsHandlerProxyMigrationFailureRestoresConfig)' -count=1
+
   frontend-test-build:
     name: Frontend Test & Build
     runs-on: ubuntu-latest
